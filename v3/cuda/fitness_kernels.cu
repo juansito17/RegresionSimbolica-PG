@@ -284,9 +284,9 @@ extern "C" __global__ void evaluateTreesKernel(
             break;
         }
 
-        // --- TEMPORARY CHANGE: Use absolute error instead of pow ---
-        total_error += error;
-        // total_error += pow(error, 1.3); // Original calculation
+        // --- Use powf for error calculation ---
+        // total_error += error; // Old absolute error
+        total_error += powf(error, 1.3f); // Use powf for consistency with CPU
 
         // Check for massive cumulative error
         if (total_error > 1e50) { // Reduced threshold
