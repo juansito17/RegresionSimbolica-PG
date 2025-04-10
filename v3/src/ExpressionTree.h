@@ -3,7 +3,7 @@
 
 #include <memory>
 #include <string>
-#include <vector> // Ensure vector is included
+#include <vector>
 
 // Forward declaration
 struct Node;
@@ -33,25 +33,5 @@ NodePtr clone_tree(const NodePtr& node);
 // Helper for mutation/crossover
 void collect_node_ptrs(NodePtr& node, std::vector<NodePtr*>& vec);
 
-// --- Tree Operations ---
-// Flattens the tree into arrays suitable for CUDA processing
-// Returns true if successful, false if tree exceeds limits
-bool flatten_tree(const NodePtr& node,
-                  std::vector<int>& structure,
-                  std::vector<double>& constants,
-                  int max_struct_size,
-                  int max_consts);
-
-// Helper for flatten_tree
-void flatten_tree_recursive(const NodePtr& node,
-                            std::vector<int>& structure,
-                            std::vector<double>& constants,
-                            int& const_idx,
-                            int max_struct_size,
-                            int max_consts,
-                            bool& success);
-
-// Add this declaration with the other tree operation functions
-int tree_depth(const NodePtr& root);
 
 #endif // EXPRESSIONTREE_H

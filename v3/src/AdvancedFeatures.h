@@ -91,9 +91,15 @@ private:
     static bool is_valid_recursive(const NodePtr& node);
 };
 
-//---------------------------------
-// Target Pattern Detection
-//---------------------------------
+// Local Improvement/Search (Example: small mutations around a good solution)
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
+                                                  double current_fitness,
+                                                  const std::vector<double>& targets,
+                                                  const std::vector<double>& x_values,
+                                                  int attempts = 10);
+
+
+// Pattern Detection in Targets
 std::pair<std::string, double> detect_target_pattern(const std::vector<double>& targets);
 NodePtr generate_pattern_based_tree(const std::string& pattern_type, double pattern_value);
 

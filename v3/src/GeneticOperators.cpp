@@ -5,57 +5,87 @@
 #include <cmath>
 #include <algorithm>
 #include <map>
-#include <stdexcept> // <--- AÑADIDO: Incluir para std::runtime_error
+#include <stdexcept>
+#include <iostream> // For potential debug output
 
-// Generates a random tree. A higher probability of terminals at greater depths.
-NodePtr generate_random_tree(int max_depth, int current_depth) {
-    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+// Generates a random tree with strict max_depth enforcement.
+NodePtr generate_random_tree(int max_depth, int current_depth) { // Default current_depth to 0
     auto& rng = get_rng();
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
 
-    // Increase probability of terminal node as depth increases
-    double terminal_prob = 0.2 + 0.8 * (static_cast<double>(current_depth) / max_depth);
-
-    if (current_depth >= max_depth || prob_dist(rng) < terminal_prob) {
+    // Force terminal node if max depth is reached
+    if (current_depth >= max_depth) {
         // Create a terminal node (Constant or Variable)
         if (prob_dist(rng) < 0.75) { // 75% chance of Variable 'x'
-            auto node = std::make_shared<Node>(NodeType::Variable);
-            return node;
+            return std::make_shared<Node>(NodeType::Variable);
         } else { // 25% chance of Constant
             auto node = std::make_shared<Node>(NodeType::Constant);
-             // Generate constants within a reasonable integer range initially
-            std::uniform_int_distribution<int> const_dist(1, 10); // Smaller range for initial constants
+            std::uniform_int_distribution<int> const_dist(1, 10);
             node->value = const_dist(rng);
             return node;
         }
-    } else {
+    }
+
+    // Decide between operator or terminal based on depth (grow method often uses this)
+    // Simple approach: 50/50 chance unless at max_depth-1
+    bool force_terminal_children = (current_depth == max_depth - 1);
+    bool create_operator = !force_terminal_children && (prob_dist(rng) < 0.5); // 50% chance for operator if not at penultimate level
+
+    if (create_operator) {
         // Create an operator node
         auto node = std::make_shared<Node>(NodeType::Operator);
 
-        // Define operators and their probabilities
-        // Favor simpler operators slightly more
         const std::vector<char> ops = {'+', '-', '*', '/', '^'};
-        const std::vector<double> weights = {0.3, 0.3, 0.25, 0.1, 0.05}; // Sum must match usage in discrete_distribution
+        const std::vector<double> weights = {0.3, 0.3, 0.25, 0.1, 0.05};
         std::discrete_distribution<int> op_dist(weights.begin(), weights.end());
         node->op = ops[op_dist(rng)];
 
-        // Handle children generation
-        if (node->op == '^') {
-            // For power, ensure the exponent is a small integer constant for stability
-            node->left = generate_random_tree(max_depth, current_depth + 1);
-            auto right = std::make_shared<Node>(NodeType::Constant);
-            std::uniform_int_distribution<int> exp_dist(2, 4); // Exponents 2, 3, 4
-            right->value = exp_dist(rng);
-            node->right = right;
-        } else {
-            // For other operators, generate children recursively
-            node->left = generate_random_tree(max_depth, current_depth + 1);
-            node->right = generate_random_tree(max_depth, current_depth + 1);
+        // Generate children recursively
+        node->left = generate_random_tree(max_depth, current_depth + 1);
+        node->right = generate_random_tree(max_depth, current_depth + 1);
+
+        // Ensure children are not null (shouldn't happen with strict depth)
+        if (!node->left) { // Fallback just in case
+             node->left = std::make_shared<Node>(NodeType::Variable);
         }
-         // Ensure generated nodes are not null (handle potential nulls from recursion if needed)
-        if (!node->left) node->left = generate_random_tree(max_depth, current_depth + 1); // Re-generate if null
-        if (!node->right) node->right = generate_random_tree(max_depth, current_depth + 1); // Re-generate if null
+        if (!node->right) { // Fallback just in case
+             // Special case for power: ensure right child is suitable if regenerated
+             if (node->op == '^') {
+                 auto right = std::make_shared<Node>(NodeType::Constant);
+                 std::uniform_int_distribution<int> exp_dist(2, 4);
+                 right->value = exp_dist(rng);
+                 node->right = right;
+             } else {
+                 node->right = std::make_shared<Node>(NodeType::Variable);
+             }
+        }
+
+         // Special handling for power operator's right child (exponent) - ensure it's simple constant
+         if (node->op == '^') {
+             // Force right child to be a small integer constant if it wasn't already generated as terminal
+             if (node->right->type != NodeType::Constant) {
+                 auto right_const = std::make_shared<Node>(NodeType::Constant);
+                 std::uniform_int_distribution<int> exp_dist(2, 4); // Exponents 2, 3, 4
+                 right_const->value = exp_dist(rng);
+                 node->right = right_const;
+             } else {
+                 // Ensure existing constant is a small integer
+                 node->right->value = std::round(std::clamp(node->right->value, 2.0, 4.0));
+             }
+         }
+
 
         return node;
+    } else {
+        // Create a terminal node (Constant or Variable) - same logic as max depth case
+        if (prob_dist(rng) < 0.75) {
+            return std::make_shared<Node>(NodeType::Variable);
+        } else {
+            auto node = std::make_shared<Node>(NodeType::Constant);
+            std::uniform_int_distribution<int> const_dist(1, 10);
+            node->value = const_dist(rng);
+            return node;
+        }
     }
 }
 
@@ -74,11 +104,10 @@ std::vector<Individual> create_initial_population(int population_size) {
 // Tournament Selection - returns reference to avoid copy
 const Individual& tournament_selection(const std::vector<Individual>& population, int tournament_size) {
     if (population.empty()) {
-        // Usa std::runtime_error (ahora incluido)
         throw std::runtime_error("Cannot perform tournament selection on empty population.");
     }
     if (tournament_size <= 0) tournament_size = 1; // Ensure valid size
-    if (tournament_size > population.size()) tournament_size = population.size(); // Cap size
+    if (static_cast<size_t>(tournament_size) > population.size()) tournament_size = static_cast<int>(population.size()); // Cap size
 
     std::uniform_int_distribution<int> dist(0, population.size() - 1);
     auto& rng = get_rng();
@@ -118,49 +147,44 @@ enum class MutationType {
     Simplification
 };
 
-NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
+NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_mutation_depth) { // Renamed max_depth param
     auto& rng = get_rng();
     std::uniform_real_distribution<double> prob(0.0, 1.0);
 
     // Clone the tree first to avoid modifying the original
     auto new_tree = clone_tree(tree);
 
-    // Apply mutation recursively with a probability at each node? Or just once per tree?
-    // Original code applied mutation once per tree based on rate. Let's stick to that.
     if (prob(rng) >= mutation_rate) {
         return new_tree; // No mutation applied
     }
 
     std::vector<NodePtr*> nodes;
-    collect_node_ptrs(new_tree, nodes); // Collect pointers to the NodePtrs in the new tree
+    collect_node_ptrs(new_tree, nodes);
 
     if (nodes.empty()) {
-        return new_tree; // Cannot mutate an empty tree
+        return new_tree;
     }
 
-    // Select a random node to mutate
     std::uniform_int_distribution<int> node_dist(0, nodes.size() - 1);
     int node_idx = node_dist(rng);
-    NodePtr* node_to_mutate_ptr = nodes[node_idx]; // Pointer to the NodePtr to be modified
+    NodePtr* node_to_mutate_ptr = nodes[node_idx];
 
-    // Select mutation type
-    // NodeDeletion is tricky, let's skip for now. Simplification can be part of constraints.
     const std::vector<MutationType> mutation_types = {
         MutationType::ConstantChange,
         MutationType::OperatorChange,
         MutationType::SubtreeReplace,
         MutationType::NodeInsertion,
-        // MutationType::Simplification // Handle via constraints/simplification pass
     };
     std::uniform_int_distribution<int> type_dist(0, mutation_types.size() - 1);
     MutationType mut_type = mutation_types[type_dist(rng)];
 
-    // Get the actual NodePtr and the Node object
     NodePtr& current_node_ptr = *node_to_mutate_ptr;
-    if (!current_node_ptr) return new_tree; // Should not happen if collect_node_ptrs is correct
+    if (!current_node_ptr) return new_tree;
 
     Node& current_node = *current_node_ptr;
 
+    // Calculate remaining depth budget if needed (more complex)
+    // For now, just use the global max_mutation_depth for replacements
 
     switch (mut_type) {
         case MutationType::ConstantChange:
@@ -178,8 +202,8 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                  // If 0 is problematic (e.g., denominator), maybe change to 1 or -1? Requires context.
 
             } else {
-                 // If not a constant, maybe fallback to subtree replacement?
-                 *node_to_mutate_ptr = generate_random_tree(max_depth);
+                 // Fallback: Replace non-constant with a small random tree
+                 *node_to_mutate_ptr = generate_random_tree(max_mutation_depth); // Use mutation depth limit
             }
             break;
 
@@ -205,20 +229,20 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                              right->value = exp_dist(rng);
                              current_node.right = right;
                         } else {
-                            // If it was already constant, ensure it's a small integer
+                            // Ensure existing constant is a small integer
                              current_node.right->value = std::round(std::clamp(current_node.right->value, 2.0, 4.0));
                         }
                     }
                 }
             } else {
-                // Fallback if not an operator
-                 *node_to_mutate_ptr = generate_random_tree(max_depth);
+                // Fallback: Replace non-operator with a small random tree
+                 *node_to_mutate_ptr = generate_random_tree(max_mutation_depth); // Use mutation depth limit
             }
             break;
 
         case MutationType::SubtreeReplace:
             // Replace the entire subtree pointed to by node_to_mutate_ptr
-            *node_to_mutate_ptr = generate_random_tree(max_depth);
+            *node_to_mutate_ptr = generate_random_tree(max_mutation_depth); // Use mutation depth limit
             break;
 
         case MutationType::NodeInsertion:
@@ -233,29 +257,30 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                 new_op_node->left = current_node_ptr;
 
                 // Create a new simple right child (e.g., small constant or 'x')
+                 NodePtr right_child;
                  if (prob(rng) < 0.5) {
                      auto right_const = std::make_shared<Node>(NodeType::Constant);
                      std::uniform_int_distribution<int> const_val(1, 3);
                      right_const->value = const_val(rng);
-                     new_op_node->right = right_const;
+                     right_child = right_const;
                  } else {
-                     new_op_node->right = std::make_shared<Node>(NodeType::Variable);
+                     right_child = std::make_shared<Node>(NodeType::Variable);
                  }
-
+                 new_op_node->right = right_child; // Assign generated right child
 
                 // Replace the original node pointer with the new operator node pointer
                 *node_to_mutate_ptr = new_op_node;
             }
             break;
 
-         // case MutationType::Simplification:
-             // Handled better by a dedicated simplification function / domain constraints
-             // break;
          default: // Fallback to subtree replacement
-             *node_to_mutate_ptr = generate_random_tree(max_depth);
+             *node_to_mutate_ptr = generate_random_tree(max_mutation_depth); // Use mutation depth limit
             break;
-
     }
+
+    // Optional: Check overall tree size/depth after mutation and simplify/reject if too large?
+    // int final_size = tree_size(new_tree);
+    // if (final_size > MAX_ALLOWED_MUTATED_SIZE) { /* handle */ }
 
     return new_tree;
 }

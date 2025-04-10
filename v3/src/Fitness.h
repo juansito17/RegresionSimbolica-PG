@@ -2,19 +2,35 @@
 #define FITNESS_H
 
 #include "ExpressionTree.h"
-#include "GeneticOperators.h"
 #include <vector>
-#include <fstream>
-#include <algorithm>
 
-// Evaluates fitness for the entire population using CUDA
-// Updates fitness and fitness_valid flags in the population vector directly.
-void evaluate_population_fitness_cuda(std::vector<Individual>& population,
-                                      const std::vector<double>& targets,
-                                      const std::vector<double>& x_values);
+// Forward declaration of GPU evaluation function
+// Nota: La función ahora es declarada como función C pura
+extern "C" {
+    void evaluatePopulationGPU(
+        const std::vector<NodePtr>& trees,
+        const std::vector<double>& x_values,
+        const std::vector<double>& targets,
+        std::vector<double>& fitness_results
+    );
+}
 
-void plot_predictions(const NodePtr& tree, 
-                     const std::vector<double>& targets,
-                     const std::vector<double>& x_values);
+// Calculates raw fitness based on target matching
+// Lower is better. Returns INF if evaluation results in NaN/Inf.
+double calculate_raw_fitness(const NodePtr& tree,
+                             const std::vector<double>& targets,
+                             const std::vector<double>& x_values);
+
+// Calculates final fitness including complexity penalty
+double evaluate_fitness(const NodePtr& tree,
+                        const std::vector<double>& targets,
+                        const std::vector<double>& x_values);
+
+// Evaluates multiple trees in parallel using GPU
+void evaluate_population_fitness(
+    const std::vector<NodePtr>& trees,
+    const std::vector<double>& targets,
+    const std::vector<double>& x_values,
+    std::vector<double>& fitness_results);
 
 #endif // FITNESS_H

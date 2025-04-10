@@ -6,9 +6,17 @@ Este repositorio contiene implementaciones de un sistema de Programación Genét
 
 Este proyecto incluye múltiples versiones con diferentes características:
 
-*   **v2:** Implementación basada en CPU que utiliza un modelo de islas, OpenMP para paralelismo y varias características avanzadas como parámetros adaptativos y optimización de Pareto. Consulta [v2/README.md](v2/README.md) para más detalles.
-*   **v3:** Implementación acelerada por GPU (CUDA) basada en el modelo de islas, diseñada para un mayor rendimiento en hardware compatible. Consulta [v3/README.md](v3/README.md) para más detalles.
+* **v2:** Implementación basada en CPU utilizando modelo de islas, OpenMP para paralelismo, y características avanzadas como parámetros adaptativos y optimización de Pareto. Ver [v2/README.md](v2/README.md) para detalles.
+* **v3:** Implementación acelerada por GPU (CUDA) basada en modelo de islas, diseñada para mayor rendimiento en hardware compatible. Ver [v3/README.md](v3/README.md) para detalles.
+
+## Características
+
+- Modelo de islas para diversidad poblacional
+- Paralelización con OpenMP y CUDA
+- Parámetros genéticos adaptativos
+- Optimización multi-objetivo basada en Pareto
+- Capacidades de regresión simbólica
 
 ## Licencia
 
-Este proyecto está licenciado bajo la Licencia MIT - consulta el archivo [LICENSE](LICENSE) para más detalles.
+Este proyecto está licenciado bajo la Licencia Apache 2.0 - ver el archivo [LICENSE](LICENSE) para más detalles.

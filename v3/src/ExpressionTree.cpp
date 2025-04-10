@@ -1,11 +1,9 @@
 #include "ExpressionTree.h"
-#include "Globals.h" // Include for MAX constants if needed elsewhere
-#include <stdexcept>
+#include "Globals.h" // For INF
 #include <cmath>
-#include <sstream>
-#include <stack>
+#include <limits>
+#include <stdexcept> // For potential errors
 #include <vector>
-#include <map> // For operator mapping
 
 double evaluate_tree(const NodePtr& node, double x) {
     if (!node) {
@@ -92,20 +90,6 @@ int tree_size(const NodePtr& node) {
     return 1 + tree_size(node->left) + tree_size(node->right);
 }
 
-int tree_depth(const NodePtr& root) {
-    if (!root) return 0;
-    
-    // Leaf nodes (variable or constant)
-    if (!root->left && !root->right) return 1;
-    
-    // Get depth of both subtrees
-    int left_depth = tree_depth(root->left);
-    int right_depth = tree_depth(root->right);
-    
-    // Return the larger depth plus one for current node
-    return std::max(left_depth, right_depth) + 1;
-}
-
 NodePtr clone_tree(const NodePtr& node) {
     if (!node) return nullptr;
 
@@ -151,102 +135,4 @@ namespace {
 
 std::mt19937& get_rng() {
     return global_rng;
-}
-
-// --- Flattening Implementation ---
-
-// Operator mapping for flattening
-const std::map<char, int> op_to_int = {
-    {'+', 0}, {'-', 1}, {'*', 2}, {'/', 3}, {'^', 4}
-};
-const int VAR_CODE = -1; // Code for variable 'x'
-const int CONST_CODE_OFFSET = 1000; // Constants will be encoded as 1000, 1001, ...
-
-void flatten_tree_recursive(const NodePtr& node,
-                            std::vector<int>& structure,
-                            std::vector<double>& constants,
-                            int& const_idx,
-                            int max_struct_size,
-                            int max_consts,
-                            bool& success)
-{
-    if (!success || !node) {
-        success = false;
-        return;
-    }
-    if (structure.size() >= max_struct_size) {
-        success = false;
-        return;
-    }
-
-    // Declare iterator outside switch to fix cross-initialization error
-    std::map<char, int>::const_iterator op_it;
-
-    switch (node->type) {
-        case NodeType::Constant:
-            if (const_idx >= max_consts) {
-                success = false;
-                return;
-            }
-            structure.push_back(CONST_CODE_OFFSET + const_idx);
-            constants[const_idx++] = node->value;
-            break;
-
-        case NodeType::Variable:
-            structure.push_back(VAR_CODE);
-            break;
-
-        case NodeType::Operator:
-            flatten_tree_recursive(node->left, structure, constants, const_idx, max_struct_size, max_consts, success);
-            if (!success) return;
-
-            flatten_tree_recursive(node->right, structure, constants, const_idx, max_struct_size, max_consts, success);
-            if (!success) return;
-
-            if (structure.size() >= max_struct_size) {
-                success = false;
-                return;
-            }
-            op_it = op_to_int.find(node->op);
-            if (op_it != op_to_int.end()) {
-                structure.push_back(op_it->second);
-            } else {
-                success = false;
-            }
-            break;
-
-        default:
-            success = false;
-            break;
-    }
-}
-
-bool flatten_tree(const NodePtr& tree,
-                  std::vector<int>& structure,
-                  std::vector<double>& constants,
-                  int max_struct_size,
-                  int max_consts)
-{
-    structure.clear();
-    structure.reserve(max_struct_size);
-    // Initialize constants vector with a placeholder (e.g., 0 or NaN)
-    // We only fill up to const_idx, but the vector passed to CUDA needs the full size.
-    constants.assign(max_consts, 0.0);
-
-    int const_idx = 0;
-    bool success = true;
-    flatten_tree_recursive(tree, structure, constants, const_idx, max_struct_size, max_consts, success);
-
-    // Pad structure vector to full size if needed (CUDA kernel expects fixed size)
-    if (success) {
-         // Use a special code (e.g., -99) for padding? Or ensure kernel handles shorter structures.
-         // Let's assume the kernel can handle the actual size based on structure content.
-         // No padding needed if kernel is robust.
-    } else {
-        // Clear vectors on failure to indicate invalid state
-        structure.clear();
-        constants.clear();
-    }
-
-    return success;
 }

@@ -1,132 +1,151 @@
 #include "GeneticAlgorithm.h"
-#include "GeneticOperators.h"
+#include "Globals.h"
 #include "Fitness.h"
-#include "ExpressionTree.h"
-#include "AdvancedFeatures.h" // Include for advanced features
-#include "Globals.h"          // Include Globals for constants like FITNESS_THRESHOLD
 #include <iostream>
+#include <algorithm> // For sort, min_element, sample
 #include <vector>
-#include <algorithm>
-#include <limits>
-#include <iomanip> // For std::setprecision, std::fixed, std::setw
-#include <cmath>   // For std::isinf, std::isnan, std::fabs
-#include <random>  // For shuffling islands
-#include <thread>  // For potential parallel island evolution (optional)
-#include <future>  // For std::async (optional)
-#include <memory>  // For std::make_unique
-#include "Fitness.h" // Make sure Fitness.h is included for plot_predictions
+#include <cmath>
+#include <omp.h> // For OpenMP parallelization
+#include <iomanip> // For std::setprecision
 
-// Constructor
-GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets,
-                                   const std::vector<double>& x_values,
-                                   int total_population_size,
-                                   int generations,
-                                   int num_islands)
-    : targets(targets),
-      x_values(x_values),
-      total_population_size_(total_population_size),
-      generations_(generations),
-      num_islands_(std::max(1, num_islands)), // Ensure at least one island
-      migration_interval_(MIGRATION_INTERVAL) // Initialize from global or parameter
+
+GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
+                                     const std::vector<double>& x_values_ref,
+                                     int total_pop,
+                                     int gens,
+                                     int n_islands)
+    : targets(targets_ref),
+      x_values(x_values_ref),
+      total_population_size(total_pop),
+      generations(gens),
+      num_islands(n_islands)
 {
-    if (num_islands_ <= 0) {
-        throw std::invalid_argument("Number of islands must be positive.");
+    if (num_islands <= 0) num_islands = 1;
+    pop_per_island = total_population_size / num_islands;
+    if (pop_per_island < 10) { // Ensure reasonable population per island
+        pop_per_island = 10;
+        num_islands = total_population_size / pop_per_island;
+        if (num_islands == 0) num_islands = 1;
+        std::cerr << "Warning: Adjusted number of islands to " << num_islands
+                  << " for minimum population size." << std::endl;
     }
-    if (total_population_size_ < num_islands_) {
-         throw std::invalid_argument("Total population size must be at least the number of islands.");
+
+    islands.reserve(num_islands);
+    for (int i = 0; i < num_islands; ++i) {
+        islands.push_back(std::make_unique<Island>(i, pop_per_island));
     }
+
+     // --- Initial Population Enhancement ---
+     // 1. Detect patterns in target data
+     auto [pattern_type, pattern_value] = detect_target_pattern(targets);
+     if (pattern_type != "none") {
+         std::cout << "Detected target pattern: " << pattern_type
+                   << " (Value: " << pattern_value << ")" << std::endl;
+         NodePtr pattern_tree = generate_pattern_based_tree(pattern_type, pattern_value);
+         if (pattern_tree) {
+             std::cout << "Injecting pattern-based seed: " << tree_to_string(pattern_tree) << std::endl;
+             // Add this seed tree to each island's initial population
+             for (auto& island_ptr : islands) {
+                 // Replace a random individual or just add? Let's replace the last one.
+                 if (!island_ptr->population.empty()) {
+                      island_ptr->population.back() = Individual(pattern_tree);
+                 } else {
+                      island_ptr->population.emplace_back(pattern_tree);
+                 }
+             }
+         }
+     }
+
+     // 2. Initial fitness evaluation and best tracking
+     std::cout << "Evaluating initial population..." << std::endl;
+     for (auto& island_ptr : islands) {
+         evaluate_population(*island_ptr);
+         update_overall_best(*island_ptr);
+     }
+      std::cout << "Initial best fitness: " << std::fixed << std::setprecision(6) << overall_best_fitness << std::endl;
+      if (overall_best_tree) {
+          std::cout << "Initial best formula: " << tree_to_string(overall_best_tree) << std::endl;
+      }
+       std::cout << "----------------------------------------" << std::endl;
+
 }
 
-// --- Private Helper Functions ---
-
-// Initializes the islands and their populations
-void GeneticAlgorithm::initialize_islands() {
-    islands.clear();
-    int base_pop_size = total_population_size_ / num_islands_;
-    int remainder = total_population_size_ % num_islands_;
-
-    for (int i = 0; i < num_islands_; ++i) {
-        int island_pop_size = base_pop_size + (i < remainder ? 1 : 0);
-        auto island_ptr = std::make_unique<Island>(i);
-        island_ptr->population = create_initial_population(island_pop_size);
-        islands.push_back(std::move(island_ptr));
-    }
-    std::cout << "Initialized " << num_islands_ << " islands." << std::endl;
-}
-
-// Updates the overall best individual found so far and prints details if improved
-void GeneticAlgorithm::update_best_individual(const Island& island) {
-    for (const auto& ind : island.population) {
-        if (ind.fitness_valid && ind.fitness < overall_best_fitness) {
-            overall_best_fitness = ind.fitness;
-            overall_best_individual = clone_tree(ind.tree); // Clone for safety
-
-            // --- Output Improvement in v2 Format ---
-            std::cout << "\n========================================" << std::endl;
-            std::cout << "New Best Found (Island " << island.id << ")" << std::endl;
-            std::cout << "Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
-            int size = tree_size(overall_best_individual);
-            std::cout << "Size: " << size << std::endl;
-            std::cout << "Formula: " << tree_to_string(overall_best_individual) << std::endl;
-            std::cout << "Predictions vs Targets:" << std::endl;
-            std::cout << std::fixed << std::setprecision(4); // Set precision for predictions
-            for (size_t i = 0; i < x_values.size(); ++i) {
-                double pred = evaluate_tree(overall_best_individual, x_values[i]);
-                double diff = std::fabs(pred - targets[i]);
-                std::cout << "  x=" << std::setw(2) << x_values[i] // Adjust setw as needed
-                          << ": Pred=" << std::setw(10) << pred
-                          << ", Target=" << std::setw(10) << targets[i]
-                          << ", Diff=" << std::setw(10) << diff << std::endl;
+// Evaluate fitness for all individuals in an island's population
+// Uses GPU for parallel evaluation.
+void GeneticAlgorithm::evaluate_population(Island& island) {
+    int pop_size = island.population.size();
+    std::vector<NodePtr> trees;
+    std::vector<double> fitness_results;
+    std::vector<int> indices;
+    
+    // Recolectar árboles que necesitan evaluación
+    for (int i = 0; i < pop_size; ++i) {
+        Individual& ind = island.population[i];
+        if (!ind.fitness_valid && ind.tree) {
+            ind.tree = DomainConstraints::fix_or_simplify(ind.tree);
+            if (ind.tree) {
+                trees.push_back(ind.tree);
+                indices.push_back(i);
+            } else {
+                ind.fitness = INF;
+                ind.fitness_valid = true;
             }
-            std::cout << "========================================" << std::endl;
-            // --- End Output ---
-
-            // Plot the new best solution
-            plot_predictions(overall_best_individual, targets, x_values);
         }
     }
-}
 
-// Evaluates the fitness of the entire population of an island
-void GeneticAlgorithm::evaluate_population(Island& island) {
-    // Invalidate fitness for all individuals before evaluation
-    for (auto& ind : island.population) {
-        ind.fitness_valid = false;
-    }
+    // Si hay árboles para evaluar, usar GPU
+    if (!trees.empty()) {
+        fitness_results.resize(trees.size());
 
-    // Always use the function that handles CUDA/CPU internally (or just CUDA now)
-    try {
-        // This function now MUST be implemented, either via CUDA or potentially
-        // a CPU implementation if USE_CUDA is off (though the request was to remove CPU path).
-        // If USE_CUDA is mandatory, this call assumes it's defined during compilation.
-        evaluate_population_fitness_cuda(island.population, targets, x_values);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error during fitness evaluation: " << e.what() << std::endl;
-        // Handle error appropriately - mark all as INF since evaluation failed
-        for (auto& ind : island.population) {
-            ind.fitness = INF;
+        try {
+            evaluate_population_fitness(trees, targets, x_values, fitness_results);
+        } catch (const std::exception&) {
+            // Silenciosamente caer a CPU si la GPU falla
+            fitness_results.clear();
+            fitness_results.reserve(trees.size());
+            for (const auto& tree : trees) {
+                fitness_results.push_back(evaluate_fitness(tree, targets, x_values));
+            }
+        }
+        
+        // Actualizar fitness de los individuos
+        for (size_t i = 0; i < trees.size(); ++i) {
+            Individual& ind = island.population[indices[i]];
+            ind.fitness = fitness_results[i];
             ind.fitness_valid = true;
         }
     }
-
-    // Post-evaluation checks (optional but recommended)
-    for (auto& ind : island.population) {
-        if (!ind.fitness_valid) {
-             std::cerr << "Warning: Individual fitness not validated after evaluation." << std::endl;
-             ind.fitness = INF; // Assign penalty if validation failed
-             ind.fitness_valid = true;
-        }
-         // Ensure fitness is not NaN, handle potential issues from evaluation
-         if (std::isnan(ind.fitness)) {
-             // std::cerr << "Warning: NaN fitness detected, setting to INF." << std::endl;
-             ind.fitness = INF;
-         }
-    }
 }
 
-// Evolves a single island for one generation
-// Note: Renamed 'current_generation' parameter to 'generation' to match call site
-void GeneticAlgorithm::evolve_island(Island& island, int generation, NodePtr& overall_best_tree, double& overall_best_fitness) {
+void GeneticAlgorithm::update_overall_best(const Island& island) {
+     for (const auto& ind : island.population) {
+         if (ind.fitness_valid && ind.fitness < overall_best_fitness) {
+             overall_best_fitness = ind.fitness;
+             overall_best_tree = clone_tree(ind.tree); // Clone to store the best safely
+
+             // --- Output Improvement ---
+             std::cout << "\n========================================" << std::endl;
+             std::cout << "New Best Found (Island " << island.id << ")" << std::endl;
+             std::cout << "Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
+             std::cout << "Size: " << tree_size(overall_best_tree) << std::endl;
+             std::cout << "Formula: " << tree_to_string(overall_best_tree) << std::endl;
+              std::cout << "Predictions vs Targets:" << std::endl;
+              std::cout << std::fixed << std::setprecision(4);
+              for (size_t j = 0; j < x_values.size(); ++j) {
+                    double val = evaluate_tree(overall_best_tree, x_values[j]);
+                    double diff = std::fabs(val - targets[j]);
+                    std::cout << "  x=" << std::setw(2) << static_cast<int>(x_values[j])
+                              << ": Pred=" << std::setw(10) << val
+                              << ", Target=" << std::setw(10) << targets[j]
+                              << ", Diff=" << std::setw(10) << diff << std::endl;
+               }
+               std::cout << "========================================" << std::endl;
+             // --- End Output ---
+         }
+     }
+ }
+
+void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
     int current_pop_size = island.population.size();
     if (current_pop_size == 0) return; // Skip empty island
 
@@ -136,30 +155,44 @@ void GeneticAlgorithm::evolve_island(Island& island, int generation, NodePtr& ov
     std::sort(island.population.begin(), island.population.end());
 
     double current_best_fitness = island.population[0].fitness;
-
-    // Track fitness history
     island.fitness_history.push_back(current_best_fitness);
 
-    // Update island's best
+    // Update stagnation counter
     if (current_best_fitness < island.best_fitness - 1e-9) { // Improved (with tolerance)
         island.best_fitness = current_best_fitness;
         island.stagnation_counter = 0;
+
+        // Try local improvement on the very best individual of the island
+         auto local_search_result = try_local_improvement(
+             island.population[0].tree,
+             island.population[0].fitness,
+             targets, x_values, 15); // More attempts for local search
+
+         if (local_search_result.second < island.population[0].fitness) {
+            // std::cout << "Local search improved island " << island.id << " best." << std::endl;
+             island.population[0].tree = local_search_result.first;
+             island.population[0].fitness = local_search_result.second;
+             // fitness_valid remains true
+             island.best_fitness = local_search_result.second; // Update island best fitness too
+         }
+
     } else {
         island.stagnation_counter++;
     }
 
-    // Update overall best
-    update_best_individual(island, overall_best_tree, overall_best_fitness);
+    // Update overall best across all islands
+    update_overall_best(island);
 
-    // Update advanced features
+
+    // Update Pareto Front and Pattern Memory for this island
     island.pareto_optimizer.update(island.population, targets, x_values);
-
-    // Record successful patterns
-    for (const auto& ind : island.population) {
-        if (ind.fitness_valid && ind.fitness < island.best_fitness) {
+    for(const auto& ind : island.population) {
+        // Record success for good solutions (e.g., fitness < 10 or significantly better than average)
+        if(ind.fitness_valid && ind.fitness < 10.0) {
             island.pattern_memory.record_success(ind.tree, ind.fitness);
         }
     }
+
 
     // --- 2. Selection & Reproduction ---
     std::vector<Individual> next_generation;
@@ -183,7 +216,7 @@ void GeneticAlgorithm::evolve_island(Island& island, int generation, NodePtr& ov
     }
     // Add pattern-based individuals occasionally
      int pattern_injection_count = 0;
-     if (generation % 10 == 0) { // Every 10 generations
+     if (current_generation % 10 == 0) { // Every 10 generations
          pattern_injection_count = static_cast<int>(current_pop_size * 0.05); // Inject 5% from patterns
          for (int i = 0; i < pattern_injection_count; ++i) {
              NodePtr pattern_tree = island.pattern_memory.suggest_pattern_based_tree(MAX_TREE_DEPTH_INITIAL);
@@ -225,7 +258,7 @@ void GeneticAlgorithm::evolve_island(Island& island, int generation, NodePtr& ov
         }
 
         // Mutate the child
-        child.tree = mutate_tree(child.tree, island.params.mutation_rate, MAX_TREE_DEPTH_EVOLVE);
+        child.tree = mutate_tree(child.tree, island.params.mutation_rate, MAX_TREE_DEPTH_MUTATION);
         child.fitness_valid = false; // Ensure fitness is marked invalid after mutation
 
 
@@ -237,7 +270,7 @@ void GeneticAlgorithm::evolve_island(Island& island, int generation, NodePtr& ov
 
     // --- 4. Meta-Evolution ---
     // Adapt island's parameters periodically or based on stagnation
-    if (generation > 0 && generation % 50 == 0) { // Every 50 generations
+    if (current_generation > 0 && current_generation % 50 == 0) { // Every 50 generations
          island.params.mutate();
          // std::cout << "Island " << island.id << " params mutated." << std::endl; // Debug
     }
@@ -248,170 +281,127 @@ void GeneticAlgorithm::evolve_island(Island& island, int generation, NodePtr& ov
      // Let's ensure evaluate_population() handles the fitness_valid flag correctly.
 }
 
-// Performs migration between islands
 void GeneticAlgorithm::migrate() {
-    if (num_islands_ <= 1) return; // No migration needed for a single island
+    if (num_islands <= 1) return; // No migration needed for single island
 
-    auto& rng = get_rng();
-    std::vector<int> island_indices(num_islands_);
-    std::iota(island_indices.begin(), island_indices.end(), 0); // 0, 1, 2, ...
-    std::shuffle(island_indices.begin(), island_indices.end(), rng); // Shuffle for random ring topology
+    int num_migrants = std::min(MIGRATION_SIZE, pop_per_island / 5); // Don't migrate too many
+    if (num_migrants == 0) return;
 
-    for (int i = 0; i < num_islands_; ++i) {
-        int source_island_idx = island_indices[i];
-        int dest_island_idx = island_indices[(i + 1) % num_islands_]; // Next island in the shuffled ring
+    std::vector<std::vector<Individual>> outgoing_migrants(num_islands);
 
-        Island& source_island = *islands[source_island_idx];
-        Island& dest_island = *islands[dest_island_idx];
-
-        if (source_island.population.empty() || dest_island.population.empty()) continue;
-
-        // Sort source island by fitness to select best individuals for migration
+    // Select migrants from each island (best individuals)
+    for (int i = 0; i < num_islands; ++i) {
+        Island& source_island = *islands[i];
+        // Sort population to easily get the best
         std::sort(source_island.population.begin(), source_island.population.end());
-
-        // Sort destination island by fitness (worst first) to select individuals to replace
-        std::sort(dest_island.population.rbegin(), dest_island.population.rend()); // Sort descending
-
-        int num_to_migrate = std::min({MIGRATION_SIZE, (int)source_island.population.size(), (int)dest_island.population.size()});
-
-        // std::cout << "  Migrating " << num_to_migrate << " from Island " << source_island.id << " to Island " << dest_island.id << std::endl;
-
-        for (int j = 0; j < num_to_migrate; ++j) {
-            if (source_island.population[j].fitness < INF) { // Only migrate valid individuals
-                // Replace the worst individual in the destination island with a clone of the migrant
-                dest_island.population[j] = source_island.population[j]; // Direct copy (includes tree shared_ptr and fitness)
-                dest_island.population[j].tree = clone_tree(source_island.population[j].tree); // Give dest its own copy
-                dest_island.population[j].fitness_valid = false; // Mark fitness as invalid after migration
-            }
+        
+        // Fix signed/unsigned comparison
+        size_t max_migrants = std::min(static_cast<size_t>(num_migrants), source_island.population.size());
+        for (size_t j = 0; j < max_migrants; ++j) {
+            // Clone the migrant's tree for sending
+            outgoing_migrants[i].emplace_back(clone_tree(source_island.population[j].tree));
+            outgoing_migrants[i].back().fitness = source_island.population[j].fitness;
+            outgoing_migrants[i].back().fitness_valid = source_island.population[j].fitness_valid;
         }
-        // Invalidate fitness for the entire destination island population after receiving migrants?
-        // Or just rely on the next generation's evaluation step. Let's rely on the next eval.
+    }
+
+    // Receive migrants in each island (replace worst individuals)
+     // Circular migration: island i sends to (i+1)%N
+    for (int dest_idx = 0; dest_idx < num_islands; ++dest_idx) {
+        int source_idx = (dest_idx + num_islands - 1) % num_islands; // Get migrants from previous island
+        Island& dest_island = *islands[dest_idx];
+        const auto& migrants = outgoing_migrants[source_idx];
+
+        if (migrants.empty()) continue;
+
+        // Sort destination population by fitness (worst first) for replacement
+        std::sort(dest_island.population.begin(), dest_island.population.end(),
+                  [](const Individual& a, const Individual& b) {
+                      // Put invalid fitness individuals last (worst)
+                      if (!a.fitness_valid) return false;
+                      if (!b.fitness_valid) return true;
+                      return a.fitness > b.fitness; // Sort descending by fitness (worst first)
+                  });
+
+        // Fix signed/unsigned comparison
+        size_t max_replacements = std::min(migrants.size(), dest_island.population.size());
+        for (size_t i = 0; i < max_replacements; ++i) {
+            dest_island.population[i] = migrants[i];
+        }
     }
 }
 
-// --- Public run() method ---
 
 NodePtr GeneticAlgorithm::run() {
-    initialize_islands(); // <--- Use the helper function
-
-    NodePtr overall_best_individual = nullptr;
-    double overall_best_fitness = INF;
-
-    // Initial evaluation
-    std::cout << "--- Initial Population Evaluation ---" << std::endl;
-    for (auto& island_ptr : islands) { // Iterate over unique_ptrs
-        Island& island = *island_ptr; // Dereference the pointer
-        evaluate_population(island);
-        update_best_individual(island, overall_best_individual, overall_best_fitness); // <--- Use the helper function
-    }
-     std::cout << "Initial Best Fitness: " << (overall_best_fitness >= INF ? "inf" : std::to_string(overall_best_fitness)) << std::endl;
-     if(overall_best_individual) {
-         std::cout << "Initial Best Tree: " << tree_to_string(overall_best_individual) << std::endl;
-     }
+    std::cout << "Starting Genetic Algorithm..." << std::endl;
+    std::cout << "Islands: " << num_islands << ", Pop/Island: " << pop_per_island
+              << ", Generations: " << generations << std::endl;
+    std::cout << "----------------------------------------" << std::endl;
 
 
-    // Main generational loop
-    for (int gen = 1; gen <= generations_; ++gen) { // Use member variable generations_
-        // --- Evolution Step ---
-        // Evolve islands (potentially in parallel)
-        // Simple sequential evolution for now:
-        for (auto& island_ptr : islands) { // Iterate over unique_ptrs
-            evolve_island(*island_ptr, gen, overall_best_individual, overall_best_fitness); // Dereference the pointer
+    for (int gen = 0; gen < generations; ++gen) {
+
+        // Evolve each island
+        for (auto& island_ptr : islands) {
+             // 1. Evaluate fitness for the current population
+             evaluate_population(*island_ptr); // Ensures fitness is up-to-date before evolution steps
+
+             // 2. Perform evolutionary steps (selection, crossover, mutation, etc.)
+             evolve_island(*island_ptr, gen); // Creates the *next* generation
+
         }
 
-        // --- Evaluation Step ---
-        // std::cout << "--- Evaluating Generation " << gen << " ---" << std::endl; // Can be verbose
-        for (auto& island_ptr : islands) { // Iterate over unique_ptrs
-            evaluate_population(*island_ptr); // Dereference the pointer
+        // Periodic Migration
+        if ((gen + 1) % MIGRATION_INTERVAL == 0 && num_islands > 1) {
+             std::cout << "\n--- Generation " << gen + 1 << ": Performing Migration ---" << std::endl;
+             migrate();
+             // Fitness of migrants needs re-evaluation in their new islands?
+             // evaluate_population() at the start of the next gen handles this.
         }
 
-        // --- Update Overall Best ---
-        double current_gen_best_fitness = INF; // Track best in *this* generation
-        for (auto& island_ptr : islands) { // Iterate over unique_ptrs
-             Island& island = *island_ptr; // Dereference the pointer
-             update_best_individual(island, overall_best_individual, overall_best_fitness); // <--- Use the helper function
-             // Find the best fitness in the current generation across all islands
-             for(const auto& ind : island.population) { // Access population via dereferenced pointer
-                 if(ind.fitness_valid && ind.fitness < current_gen_best_fitness) {
-                     current_gen_best_fitness = ind.fitness;
-                 }
-             }
-        }
-
-        // --- Log Best Fitness for the Generation ---
-        std::cout << "Generation " << gen << " - Best: " 
-                  << std::fixed << std::setprecision(8) 
-                  << (current_gen_best_fitness >= INF ? "inf" : std::to_string(current_gen_best_fitness))
-                  << std::endl;
-
-
-        // --- Migration Step ---
-        // Use member variable migration_interval_
-        if (gen % migration_interval_ == 0 && gen < generations_) { // Don't migrate on the very last generation
-            std::cout << "\n--- Generation " << gen << ": Performing Migration ---" << std::endl;
-            migrate();
-             // Re-evaluate fitness after migration? Optional, depends on strategy.
-             // If migrants replace worst individuals, re-evaluation might be good.
-             // If they replace random ones, maybe wait until next generation's eval.
-             // Let's skip re-evaluation for now.
-        }
-
-        // --- Advanced Features Update ---
-        // ... (code for Pareto, PatternMemory - ensure correct population access if needed) ...
-
-        // Termination condition check (e.g., fitness threshold)
-        if (overall_best_fitness < FITNESS_THRESHOLD) { // Use constant from Globals.h
-            std::cout << "\n--- Target Fitness Threshold Reached! ---" << std::endl;
+        // Check for termination condition (e.g., perfect fitness)
+        if (overall_best_fitness < 1e-6) { // Threshold for "exact" solution
+            std::cout << "\n========================================" << std::endl;
+            std::cout << "Solution found meeting criteria at Generation " << gen + 1 << "!" << std::endl;
+            std::cout << "========================================" << std::endl;
             break;
         }
-         if (gen % 100 == 0) { // Periodic status update
-             std::cout << "Overall Best Fitness after " << gen << " gens: "
-                       << (overall_best_fitness >= INF ? "inf" : std::to_string(overall_best_fitness)) << std::endl;
-             if (overall_best_individual) {
-                 std::cout << "  Best Tree Structure: " << tree_to_string(overall_best_individual) << std::endl;
-             }
-         }
 
-    }
-
-    // Final results
-    std::cout << "\n--- Evolution Finished ---" << std::endl;
-    std::cout << "Overall Best Fitness Achieved: " << (overall_best_fitness >= INF ? "inf" : std::to_string(overall_best_fitness)) << std::endl;
-    if (overall_best_individual) {
-        std::cout << "Best Solution Tree: " << tree_to_string(overall_best_individual) << std::endl;
-        // Optionally, evaluate and print points for the best solution
-        std::cout << "Evaluating Best Solution:" << std::endl;
-        double final_raw_fitness = 0; // Needs recalculation if only final fitness stored
-        bool possible_precise = true;
-        for(size_t i=0; i < x_values.size(); ++i) {
-            double eval_val = evaluate_tree(overall_best_individual, x_values[i]);
-            std::cout << "  f(" << x_values[i] << ") = " << eval_val << " (Target: " << targets[i] << ")" << std::endl;
-             if (std::isnan(eval_val) || std::isinf(eval_val)) {
-                 final_raw_fitness = INF;
-                 possible_precise = false;
-                 break;
-             }
-             double diff = std::fabs(eval_val - targets[i]);
-             if (diff >= 0.001) possible_precise = false;
-             if (final_raw_fitness < INF) {
-                final_raw_fitness += std::pow(diff, 1.3);
-             }
+        // Progress Report (less frequent)
+        if ((gen + 1) % 100 == 0 || gen == generations - 1) {
+             std::cout << "\n--- Generation " << gen + 1 << " ---" << std::endl;
+             std::cout << "Overall Best Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
+              if(overall_best_tree) {
+                   std::cout << "Best Formula Size: " << tree_size(overall_best_tree) << std::endl;
+                  // std::cout << "Best Formula: " << tree_to_string(overall_best_tree) << std::endl; // Can be long
+              }
+              // Report average island fitness or diversity?
         }
-         if (possible_precise && final_raw_fitness < INF) final_raw_fitness *= 0.0001; // Apply bonus if applicable
-         std::cout << "Final Raw Fitness (recalculated): " << (final_raw_fitness >= INF ? "inf" : std::to_string(final_raw_fitness)) << std::endl;
 
-    } else {
-        std::cout << "No valid solution found." << std::endl;
-    }
-
-    // Optional: Print Pareto front solutions
-    // auto pareto_solutions = pareto_optimizer.get_pareto_solutions();
-    // std::cout << "\nPareto Front Solutions (" << pareto_solutions.size() << "):" << std::endl;
-    // for(const auto& sol_tree : pareto_solutions) {
-    //     // Need to recalculate fitness/complexity or store them in ParetoSolution
-    //     std::cout << "  Tree: " << tree_to_string(sol_tree) << " (Size: " << tree_size(sol_tree) << ")" << std::endl;
-    // }
+    } // End of generations loop
 
 
-    return overall_best_individual; // Return the best tree found
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "Evolution Finished!" << std::endl;
+    std::cout << "Final Best Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
+     if (overall_best_tree) {
+         std::cout << "Final Best Formula Size: " << tree_size(overall_best_tree) << std::endl;
+         std::cout << "Final Best Formula: " << tree_to_string(overall_best_tree) << std::endl;
+          std::cout << "--- Verification ---" << std::endl;
+          std::cout << std::fixed << std::setprecision(4);
+          for (size_t j = 0; j < x_values.size(); ++j) {
+                double val = evaluate_tree(overall_best_tree, x_values[j]);
+                double diff = std::fabs(val - targets[j]);
+                 std::cout << "  x=" << std::setw(2) << static_cast<int>(x_values[j])
+                          << ": Pred=" << std::setw(10) << val
+                          << ", Target=" << std::setw(10) << targets[j]
+                          << ", Diff=" << std::setw(10) << diff << std::endl;
+           }
+     } else {
+         std::cout << "No solution found." << std::endl;
+     }
+      std::cout << "========================================" << std::endl;
+
+
+    return overall_best_tree; // Return the best tree found
 }

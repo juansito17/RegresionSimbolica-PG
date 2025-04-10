@@ -134,8 +134,8 @@ bool ParetoSolution::dominates(const ParetoSolution& other) const {
 }
 
 void ParetoOptimizer::update(const std::vector<Individual>& population,
-                           const std::vector<double>& targets,
-                           const std::vector<double>& x_values) {
+                           const std::vector<double>& /*targets*/,    // Marked as unused
+                           const std::vector<double>& /*x_values*/) { // Marked as unused
     // Add current front members to the candidate pool
     std::vector<ParetoSolution> candidates = pareto_front;
 
@@ -328,9 +328,37 @@ NodePtr DomainConstraints::fix_or_simplify(NodePtr tree) {
 }
 
 //---------------------------------
-// Local Improvement - REMOVED
+// Local Improvement
 //---------------------------------
-// Implementation of try_local_improvement REMOVED
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
+                                                  double current_fitness,
+                                                  const std::vector<double>& targets,
+                                                  const std::vector<double>& x_values,
+                                                  int attempts)
+{
+    NodePtr best_neighbor = tree; // Start with the original tree
+    double best_neighbor_fitness = current_fitness;
+
+    if (current_fitness >= INF) return {best_neighbor, best_neighbor_fitness}; // Don't try if fitness is infinite
+
+    for (int i = 0; i < attempts; ++i) {
+        // Generate a neighbor using a small mutation
+        NodePtr neighbor = mutate_tree(tree, 1.0, 2); // Use high rate, small depth for local change
+        neighbor = DomainConstraints::fix_or_simplify(neighbor); // Simplify/fix neighbor
+
+        if (!neighbor) continue; // Skip if simplification failed badly
+
+        double neighbor_fitness = evaluate_fitness(neighbor, targets, x_values);
+
+        if (neighbor_fitness < best_neighbor_fitness) {
+            best_neighbor = neighbor;
+            best_neighbor_fitness = neighbor_fitness;
+        }
+    }
+
+    // Return the best neighbor found (could be the original tree)
+    return {best_neighbor, best_neighbor_fitness};
+}
 
 
 //---------------------------------
