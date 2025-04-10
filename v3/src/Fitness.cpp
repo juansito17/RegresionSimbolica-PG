@@ -97,116 +97,34 @@ void evaluate_population_fitness(
     const std::vector<double>& x_values,
     std::vector<double>& fitness_results) {
 
-    // Resize results vector
-    fitness_results.resize(trees.size());
-
-    // Collect trees that need evaluation (not in cache)
     std::vector<NodePtr> uncached_trees_all;
     std::vector<size_t> uncached_indices_all;
-    std::vector<std::string> tree_hashes(trees.size());
-    std::vector<bool> needs_evaluation(trees.size(), false);
 
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        for (size_t i = 0; i < trees.size(); i++) {
-            if (!trees[i]) { // Handle null trees immediately
-                 fitness_results[i] = INF;
-                 continue;
-            }
-            tree_hashes[i] = get_tree_hash(trees[i]);
-            auto it = evaluation_cache.find(tree_hashes[i]);
-            if (it != evaluation_cache.end() && it->second.valid) {
-                fitness_results[i] = it->second.fitness;
-            } else {
-                uncached_trees_all.push_back(trees[i]);
-                uncached_indices_all.push_back(i);
-                needs_evaluation[i] = true; // Mark original index as needing evaluation
-            }
-        }
+    // Prepare all trees for GPU evaluation
+    for (size_t i = 0; i < trees.size(); ++i) {
+        uncached_trees_all.push_back(trees[i]);
+        uncached_indices_all.push_back(i);
     }
 
+    size_t total_uncached = uncached_trees_all.size();
+    size_t processed_count = 0;
+
     if (!uncached_trees_all.empty()) {
-        const size_t total_uncached = uncached_trees_all.size();
-        // Increased batch size significantly
-        const size_t gpu_batch_size = 10000; // Increased from 2000
-        size_t processed_count = 0;
+        // Evaluate all trees in a single GPU batch
+        size_t current_batch_size = total_uncached - processed_count;
+        std::vector<NodePtr> batch_trees(uncached_trees_all.begin() + processed_count,
+                                         uncached_trees_all.begin() + processed_count + current_batch_size);
+        std::vector<size_t> batch_indices(uncached_indices_all.begin() + processed_count,
+                                          uncached_indices_all.begin() + processed_count + current_batch_size);
+        std::vector<double> batch_results(current_batch_size);
 
-        while(processed_count < total_uncached) {
-            size_t current_batch_size = std::min(gpu_batch_size, total_uncached - processed_count);
-            std::vector<NodePtr> batch_trees(uncached_trees_all.begin() + processed_count,
-                                             uncached_trees_all.begin() + processed_count + current_batch_size);
-            std::vector<size_t> batch_indices(uncached_indices_all.begin() + processed_count,
-                                              uncached_indices_all.begin() + processed_count + current_batch_size);
-            std::vector<double> batch_results(current_batch_size);
+        // GPU evaluation
+        evaluatePopulationGPU(batch_trees, x_values, targets, batch_results);
 
-            // Try GPU evaluation for the current batch
-            bool gpu_success = true;
-            try {
-                evaluatePopulationGPU(batch_trees, x_values, targets, batch_results);
-            } catch (const std::exception& e) {
-                // Keep error message for actual failures
-                std::cerr << "GPU evaluation failed for batch: " << e.what() << std::endl;
-                std::cerr << "Falling back to CPU evaluation for this batch..." << std::endl;
-                gpu_success = false;
-            }
-
-            // If GPU failed for the batch, fallback to CPU
-            if (!gpu_success) {
-                batch_results.resize(current_batch_size); // Ensure size
-                #pragma omp parallel for
-                for (size_t i = 0; i < current_batch_size; ++i) {
-                    if (batch_trees[i]) {
-                        // Calculate raw fitness first for CPU path
-                        batch_results[i] = calculate_raw_fitness(batch_trees[i], targets, x_values);
-                    } else {
-                        batch_results[i] = INF;
-                    }
-                }
-            }
-
-            // Apply complexity penalty (always done on CPU after getting raw fitness)
-            // and update cache and final results vector
-            {
-                std::lock_guard<std::mutex> lock(cache_mutex);
-                for (size_t i = 0; i < current_batch_size; ++i) {
-                    size_t orig_idx = batch_indices[i];
-                    double fitness = batch_results[i]; // Raw fitness from GPU or CPU fallback
-
-                    if (!std::isinf(fitness) && !std::isnan(fitness) && batch_trees[i]) {
-                        double penalty = static_cast<double>(tree_size(batch_trees[i])) * COMPLEXITY_PENALTY_FACTOR;
-                        fitness *= (1.0 + penalty);
-                         // Final check for NaN/Inf after penalty application
-                         if (std::isnan(fitness) || std::isinf(fitness)) {
-                            fitness = INF;
-                         }
-                    } else {
-                         fitness = INF; // Ensure invalid results are INF
-                    }
-
-                    fitness_results[orig_idx] = fitness;
-
-                    // Update cache only if fitness is valid
-                    if (!std::isinf(fitness) && !std::isnan(fitness)) {
-                         evaluation_cache[tree_hashes[orig_idx]] = {
-                            fitness,
-                            tree_to_string(batch_trees[i]), // Store string representation if needed
-                            true
-                        };
-                    } else {
-                         // Optionally cache invalid results too, or just skip
-                         evaluation_cache[tree_hashes[orig_idx]] = { INF, "", false };
-                    }
-                }
-            }
-             processed_count += current_batch_size;
-        } // End of batch processing loop
-
-    } // End if !uncached_trees_all.empty()
-
-    // Optional: Clean cache if it gets too large
-    if (evaluation_cache.size() > 100000) { // Adjust this number as needed
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        // Consider a more sophisticated cache eviction strategy than clear() if needed
-        evaluation_cache.clear();
+        // Update results vector
+        for (size_t i = 0; i < current_batch_size; ++i) {
+            size_t orig_idx = batch_indices[i];
+            fitness_results[orig_idx] = batch_results[i];
+        }
     }
 }

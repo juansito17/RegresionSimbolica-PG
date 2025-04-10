@@ -348,7 +348,11 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
 
         if (!neighbor) continue; // Skip if simplification failed badly
 
-        double neighbor_fitness = evaluate_fitness(neighbor, targets, x_values);
+        // Evaluate the neighbor using the GPU function
+        std::vector<NodePtr> neighbor_batch = {neighbor};
+        std::vector<double> neighbor_fitness_result(1);
+        evaluate_population_fitness(neighbor_batch, targets, x_values, neighbor_fitness_result);
+        double neighbor_fitness = neighbor_fitness_result[0];
 
         if (neighbor_fitness < best_neighbor_fitness) {
             best_neighbor = neighbor;

@@ -96,17 +96,7 @@ void GeneticAlgorithm::evaluate_population(Island& island) {
     // Si hay árboles para evaluar, usar GPU
     if (!trees.empty()) {
         fitness_results.resize(trees.size());
-
-        try {
-            evaluate_population_fitness(trees, targets, x_values, fitness_results);
-        } catch (const std::exception&) {
-            // Silenciosamente caer a CPU si la GPU falla
-            fitness_results.clear();
-            fitness_results.reserve(trees.size());
-            for (const auto& tree : trees) {
-                fitness_results.push_back(evaluate_fitness(tree, targets, x_values));
-            }
-        }
+        evaluate_population_fitness(trees, targets, x_values, fitness_results);
         
         // Actualizar fitness de los individuos
         for (size_t i = 0; i < trees.size(); ++i) {
