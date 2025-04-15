@@ -7,6 +7,7 @@ from fitness import evaluate_fitness, batch_fitness_gpu
 from globals import *
 import math
 import concurrent.futures
+from fitness import evaluate_fitness_with_cache
 
 class Island:
     def __init__(self, island_id: int, pop_size: int):
@@ -33,6 +34,7 @@ class GeneticAlgorithm:
         self.islands: List[Island] = [Island(i, self.pop_per_island) for i in range(self.num_islands)]
         self.overall_best_tree: Optional[Node] = None
         self.overall_best_fitness = INF
+        self.global_subtree_library = GlobalSubtreeLibrary(max_size=150)
         # Pattern-based seed injection
         pattern_type, pattern_value = detect_target_pattern(self.targets)
         if pattern_type != "none":
@@ -51,7 +53,7 @@ class GeneticAlgorithm:
     def evaluate_population(self, island: Island):
         # Evaluación de fitness en GPU para toda la población
         trees = [ind.tree for ind in island.population]
-        fitnesses = batch_fitness_gpu(trees, self.targets, self.x_values)
+        fitnesses = [evaluate_fitness_with_cache(tree, self.targets, self.x_values) for tree in trees]
         for ind, fit in zip(island.population, fitnesses):
             ind.fitness = fit
             ind.fitness_valid = True
@@ -123,6 +125,15 @@ class GeneticAlgorithm:
                     next_generation.append(Individual(pattern_tree))
                 else:
                     next_generation.append(Individual(generate_random_tree(MAX_TREE_DEPTH_INITIAL)))
+        # Inyección de sub-árboles globales en la nueva generación
+        subtree_injection_count = max(1, int(len(island.population) * 0.08))
+        for _ in range(subtree_injection_count):
+            subtree = self.global_subtree_library.get_random_subtree()
+            if subtree:
+                from expression_tree import insert_subtree_random
+                base_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL)
+                new_tree = insert_subtree_random(base_tree, subtree)
+                next_generation.append(Individual(new_tree))
         remaining = len(island.population) - len(next_generation)
         stats = analyze_population_statistics(island.population)
         for _ in range(remaining):
@@ -141,8 +152,10 @@ class GeneticAlgorithm:
             child.fitness_valid = False
             next_generation.append(child)
         island.population = next_generation
-        if current_generation > 0 and current_generation % 50 == 0:
-            island.params.mutate()
+        # Mutación adaptativa de parámetros evolutivos según estancamiento
+        if current_generation > 0 and (current_generation % 50 == 0 or island.stagnation_counter > STAGNATION_LIMIT // 2):
+            # Si la isla está muy estancada, mutar más agresivamente
+            island.params.mutate(stagnation_counter=island.stagnation_counter)
 
     def migrate(self):
         if self.num_islands <= 1:
@@ -172,6 +185,8 @@ class GeneticAlgorithm:
             adaptive_migration(self.islands)
             if (gen + 1) % 10 == 0:
                 transfer_successful_subtrees(self.islands, top_n=3)
+            if (gen + 1) % 10 == 0:
+                self.global_subtree_library.update_from_islands(self.islands, top_n=5)
             if (gen + 1) % MIGRATION_INTERVAL == 0 and self.num_islands > 1:
                 self.migrate()
             if self.overall_best_fitness < 1e-6:
@@ -379,3 +394,51 @@ def guided_mutation(tree, stats):
         return mutate_tree(tree, mutation_rate=0.8, max_depth=7)
     # Si la diversidad es alta, mutación estándar
     return mutate_tree(tree, mutation_rate=0.4, max_depth=5)
+
+class GlobalSubtreeLibrary:
+    """Biblioteca global de sub-árboles exitosos para todas las islas."""
+    def __init__(self, max_size=100):
+        self.max_size = max_size
+        self.subtrees = []  # Lista de (subtree, score, string_repr)
+        self.strings = set()
+    def add_subtree(self, subtree, score):
+        from expression_tree import tree_to_string, clone_tree
+        s = tree_to_string(subtree)
+        if s in self.strings:
+            return
+        self.subtrees.append((clone_tree(subtree), score, s))
+        self.strings.add(s)
+        self.subtrees.sort(key=lambda x: x[1])  # Menor score es mejor
+        if len(self.subtrees) > self.max_size:
+            self.subtrees = self.subtrees[:self.max_size]
+            self.strings = set(x[2] for x in self.subtrees)
+    def get_random_subtree(self):
+        import random
+        if not self.subtrees:
+            return None
+        return random.choice(self.subtrees)[0]
+    def update_from_islands(self, islands, top_n=5):
+        for island in islands:
+            island.population.sort()
+            for ind in island.population[:top_n]:
+                if ind.tree:
+                    # Extraer sub-árboles de tamaño intermedio
+                    for subtree in extract_subtrees(ind.tree, min_size=2, max_size=7):
+                        self.add_subtree(subtree, ind.fitness)
+
+def extract_subtrees(tree, min_size=2, max_size=7):
+    """Extrae todos los sub-árboles de un árbol cuyo tamaño esté en el rango dado."""
+    from expression_tree import tree_size
+    result = []
+    def visit(node):
+        if node is None:
+            return
+        size = tree_size(node)
+        if min_size <= size <= max_size:
+            result.append(node)
+        if hasattr(node, 'left'):
+            visit(node.left)
+        if hasattr(node, 'right'):
+            visit(node.right)
+    visit(tree)
+    return result

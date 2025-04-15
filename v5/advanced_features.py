@@ -13,14 +13,25 @@ class EvolutionParameters:
         self.elite_percentage = ELITE_PERCENTAGE
         self.tournament_size = TOURNAMENT_SIZE
         self.crossover_rate = CROSSOVER_RATE
+        self.history = []  # Guarda historial de parámetros y estancamiento
     @staticmethod
     def create_default():
         return EvolutionParameters()
-    def mutate(self):
-        self.mutation_rate = min(max(self.mutation_rate + random.uniform(-0.05, 0.05), 0.01), 0.5)
-        self.elite_percentage = min(max(self.elite_percentage + random.uniform(-0.02, 0.02), 0.01), 0.5)
-        self.tournament_size = max(2, self.tournament_size + random.choice([-1, 0, 1]))
-        self.crossover_rate = min(max(self.crossover_rate + random.uniform(-0.05, 0.05), 0.5), 1.0)
+    def mutate(self, stagnation_counter=0):
+        # Mutación adaptativa: más agresiva si hay mucho estancamiento
+        base = 1.0 + min(stagnation_counter, 20) / 10.0
+        self.mutation_rate = min(max(self.mutation_rate + random.uniform(-0.05, 0.05) * base, 0.01), 0.5)
+        self.elite_percentage = min(max(self.elite_percentage + random.uniform(-0.02, 0.02) * base, 0.01), 0.5)
+        self.tournament_size = max(2, self.tournament_size + int(random.choice([-1, 0, 1]) * base))
+        self.crossover_rate = min(max(self.crossover_rate + random.uniform(-0.05, 0.05) * base, 0.5), 1.0)
+        # Guarda el historial para análisis
+        self.history.append({
+            'mutation_rate': self.mutation_rate,
+            'elite_percentage': self.elite_percentage,
+            'tournament_size': self.tournament_size,
+            'crossover_rate': self.crossover_rate,
+            'stagnation_counter': stagnation_counter
+        })
 
 # --- PatternMemory (simplified) ---
 class PatternMemory:

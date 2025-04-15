@@ -111,6 +111,17 @@ def batch_fitness_gpu(trees, targets, x_values):
     cuda.synchronize()  # Sincroniza para detectar errores de kernel
     return d_fitness.copy_to_host().tolist()
 
+fitness_cache = {}
+
+def evaluate_fitness_with_cache(tree, targets, x_values):
+    from expression_tree import tree_to_string
+    key = tree_to_string(tree)
+    if key in fitness_cache:
+        return fitness_cache[key]
+    fit = evaluate_fitness(tree, targets, x_values)
+    fitness_cache[key] = fit
+    return fit
+
 def calculate_raw_fitness(tree: Node, targets: List[float], x_values: List[float]) -> float:
     # Vectorized evaluation for speed
     try:
