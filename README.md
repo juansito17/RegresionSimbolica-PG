@@ -30,4 +30,4 @@ El directorio `Code` contiene la implementación actual:
 
 ## Licencia
 
-Este proyecto está licenciado bajo la Licencia Apache 2.0 - ver el archivo `LICENSE` para más detalles (si existe, de lo contrario, considera añadir uno).
+Este proyecto está licenciado bajo la Licencia Apache 2.0 - ver el archivo `LICENSE` para más detalles.
