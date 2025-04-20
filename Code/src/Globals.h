@@ -14,8 +14,11 @@
 // ----------------------------------------
 // Datos del Problema (Regresión Simbólica)
 // ----------------------------------------
-//const std::vector<double> TARGETS = {92, 352, 724};
-//const std::vector<double> X_VALUES = {8, 9, 10};
+// Asegúrate de que estos sean los datos correctos para la fórmula que quieres probar
+
+//const std::vector<double> TARGETS = {92, 352, 724}; // O los que correspondan
+//const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
+
 const std::vector<double> TARGETS = {380, 336, 324, 308, 301, 313, 271, 268, 251, 231};
 const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51.7, 50.6, 46.4};
 
@@ -25,86 +28,79 @@ const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
-const int TOTAL_POPULATION_SIZE = 50000; // Tamaño total de la población
-const int GENERATIONS = 100000;          // Número máximo de generaciones
-const int NUM_ISLANDS = 7;               // Número de islas
-const int MIN_POP_PER_ISLAND = 20;       // Población mínima requerida por isla
+const int TOTAL_POPULATION_SIZE = 50000;
+const int GENERATIONS = 100000;
+const int NUM_ISLANDS = 7;
+const int MIN_POP_PER_ISLAND = 20;
+
+// --- Fórmula Inicial ---
+const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
+const std::string INITIAL_FORMULA_STRING = "(-8+((((((x-6.68861905)*x)*(x*1.89582873))+x)-1.39026047)+((x*((x-9.14452574)*((10*(((((x/(9.14452574-(((((x*((x-9.14452574)*x))+1)+9.14452574)*7.79521437)+7)))+x)+(-10+((9.01799313*(((x+(-10+x))^-4)*7.03007877))+x)))^-4)*7.03007877))+x)))+((x/(9.14452574-((((x*((x-9.14452574)*((x-9.14452574)+x)))+1)+x)^x)))+((10*(((((x/(x-(((((x*((x-9.14452574)*x))+1)+x)*7.75684605)+6.20527701)))+x)+((x-x)+((10*(((x+(-10+x))^-4)*7.02926604))+x)))^-4)*7.03007877))+x)))))";
+// ---------------------------------------------------------
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
 // ----------------------------------------
-const int MIGRATION_INTERVAL = 50; // Generaciones entre migraciones
-const int MIGRATION_SIZE = 30;     // Número de individuos que migran
+const int MIGRATION_INTERVAL = 50;
+const int MIGRATION_SIZE = 30;
 
 // ----------------------------------------
 // Parámetros de Generación Inicial de Árboles
 // ----------------------------------------
-const int MAX_TREE_DEPTH_INITIAL = 7;           // Profundidad máxima inicial
-const double TERMINAL_VS_VARIABLE_PROB = 0.75;  // Probabilidad de que un nodo terminal sea 'x'
-const double CONSTANT_MIN_VALUE = -10.0;        // Valor mínimo para constantes aleatorias (flotantes)
-const double CONSTANT_MAX_VALUE = 10.0;         // Valor máximo para constantes aleatorias (flotantes)
-const int CONSTANT_INT_MIN_VALUE = -10;         // Valor mínimo para constantes aleatorias (enteras)
-const int CONSTANT_INT_MAX_VALUE = 10;          // Valor máximo para constantes aleatorias (enteras)
-const std::vector<double> OPERATOR_WEIGHTS = {0.3, 0.3, 0.25, 0.1, 0.05}; // Pesos para +, -, *, /, ^
-// Ya no hay POWER_EXPONENT_MIN/MAX porque se quitaron las restricciones
+const int MAX_TREE_DEPTH_INITIAL = 7;
+const double TERMINAL_VS_VARIABLE_PROB = 0.75;
+const double CONSTANT_MIN_VALUE = -10.0;
+const double CONSTANT_MAX_VALUE = 10.0;
+const int CONSTANT_INT_MIN_VALUE = -10;
+const int CONSTANT_INT_MAX_VALUE = 10;
+const std::vector<double> OPERATOR_WEIGHTS = {0.3, 0.3, 0.25, 0.1, 0.05};
 
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
 // ----------------------------------------
-const double BASE_MUTATION_RATE = 0.20;         // Tasa de mutación base
-const double BASE_ELITE_PERCENTAGE = 0.10;      // Porcentaje de élite base
-const double DEFAULT_CROSSOVER_RATE = 0.8;      // Tasa de cruce por defecto
-const int DEFAULT_TOURNAMENT_SIZE = 25;         // Tamaño de torneo por defecto (más presión)
-const int MAX_TREE_DEPTH_MUTATION = 5;          // Profundidad máx. para subárboles de mutación
-const double MUTATE_INSERT_CONST_PROB = 0.6;    // Prob. de insertar constante en NodeInsertion
-const int MUTATE_INSERT_CONST_INT_MIN = 1;      // Rango para constante entera insertada
+const double BASE_MUTATION_RATE = 0.20;
+const double BASE_ELITE_PERCENTAGE = 0.10;
+const double DEFAULT_CROSSOVER_RATE = 0.8;
+const int DEFAULT_TOURNAMENT_SIZE = 25;
+const int MAX_TREE_DEPTH_MUTATION = 5;
+const double MUTATE_INSERT_CONST_PROB = 0.6;
+const int MUTATE_INSERT_CONST_INT_MIN = 1;
 const int MUTATE_INSERT_CONST_INT_MAX = 5;
-const double MUTATE_INSERT_CONST_FLOAT_MIN = 0.5;// Rango para constante flotante insertada
+const double MUTATE_INSERT_CONST_FLOAT_MIN = 0.5;
 const double MUTATE_INSERT_CONST_FLOAT_MAX = 5.0;
 
 // ----------------------------------------
 // Parámetros de Fitness y Evaluación
 // ----------------------------------------
-// Reducir mucho la penalización para priorizar fitness=0
-const double COMPLEXITY_PENALTY_FACTOR = 0.01; // <-- MUY BAJO (era 1.0)
-// Usar RMSE para un gradiente más claro hacia cero
-const bool USE_RMSE_FITNESS = true;             // <-- CAMBIADO a true (era false)
-const double FITNESS_ORIGINAL_POWER = 1.3;      // Exponente si USE_RMSE_FITNESS = false
-const double FITNESS_PRECISION_THRESHOLD = 0.001; // Umbral para bonus
-const double FITNESS_PRECISION_BONUS = 0.0001;    // Factor de bonus
-const double FITNESS_EQUALITY_TOLERANCE = 1e-9;   // Tolerancia para empate en torneo/mejora
-const double EXACT_SOLUTION_THRESHOLD = 1e-6;     // Umbral para considerar fitness "perfecto"
+const double COMPLEXITY_PENALTY_FACTOR = 0.01;
+const bool USE_RMSE_FITNESS = true;
+const double FITNESS_ORIGINAL_POWER = 1.3;
+const double FITNESS_PRECISION_THRESHOLD = 0.001;
+const double FITNESS_PRECISION_BONUS = 0.0001;
+const double FITNESS_EQUALITY_TOLERANCE = 1e-9;
+const double EXACT_SOLUTION_THRESHOLD = 1e-8;
 
 // ----------------------------------------
 // Parámetros de Características Avanzadas
 // ----------------------------------------
-// --- Estancamiento ---
-// Aumentar límites para dar más tiempo
-const int STAGNATION_LIMIT_ISLAND = 50;         // <-- AUMENTADO (era 30)
-const int GLOBAL_STAGNATION_LIMIT = 5000;       // <-- AUMENTADO (era 2000)
-const double STAGNATION_RANDOM_INJECT_PERCENT = 0.1; // % inyección aleatoria
-// --- Adaptación de Parámetros ---
-const int PARAM_MUTATE_INTERVAL = 50;           // Frecuencia adaptación
-// --- Memoria de Patrones ---
-const double PATTERN_RECORD_FITNESS_THRESHOLD = 10.0; // Umbral registro
-const int PATTERN_MEM_MIN_USES = 3;             // Usos mínimos para sugerir
-const int PATTERN_INJECT_INTERVAL = 10;         // Frecuencia inyección patrón
-const double PATTERN_INJECT_PERCENT = 0.05;     // % inyección patrón
-// --- Optimización Pareto ---
-const size_t PARETO_MAX_FRONT_SIZE = 50;        // Tamaño máx frente Pareto
-// --- Simplificación y Restricciones ---
-const double SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9; // Tolerancia cero
-const double SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9;  // Tolerancia uno
-// Ya no hay SIMPLIFY_EXPONENT_CLAMP porque se quitaron restricciones
-// --- Búsqueda Local ---
-// Aumentar intentos para refinar más
-const int LOCAL_SEARCH_ATTEMPTS = 30;           // <-- AUMENTADO (era 10)
+const int STAGNATION_LIMIT_ISLAND = 50;
+const int GLOBAL_STAGNATION_LIMIT = 5000;
+const double STAGNATION_RANDOM_INJECT_PERCENT = 0.1;
+const int PARAM_MUTATE_INTERVAL = 50;
+const double PATTERN_RECORD_FITNESS_THRESHOLD = 10.0;
+const int PATTERN_MEM_MIN_USES = 3;
+const int PATTERN_INJECT_INTERVAL = 10;
+const double PATTERN_INJECT_PERCENT = 0.05;
+const size_t PARETO_MAX_FRONT_SIZE = 50;
+const double SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9;
+const double SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9;
+const int LOCAL_SEARCH_ATTEMPTS = 30;
 
 // ----------------------------------------
 // Otros Parámetros
 // ----------------------------------------
-const int PROGRESS_REPORT_INTERVAL = 100;       // Frecuencia informe progreso
-const bool FORCE_INTEGER_CONSTANTS = true;     // Forzar constantes enteras
+const int PROGRESS_REPORT_INTERVAL = 100;
+const bool FORCE_INTEGER_CONSTANTS = false;
 
 // ============================================================
 //                  UTILIDADES GLOBALES
