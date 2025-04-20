@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <stdexcept> // Para std::runtime_error
 
 // Forward declaration
 struct Node;
@@ -32,6 +33,11 @@ NodePtr clone_tree(const NodePtr& node);
 
 // Helper for mutation/crossover
 void collect_node_ptrs(NodePtr& node, std::vector<NodePtr*>& vec);
+
+// --- NUEVO: Función para parsear una fórmula desde string ---
+// Parsea una fórmula en notación infija simple (con paréntesis).
+// Lanza std::runtime_error si hay error de sintaxis.
+NodePtr parse_formula_string(const std::string& formula);
 
 
 #endif // EXPRESSIONTREE_H
