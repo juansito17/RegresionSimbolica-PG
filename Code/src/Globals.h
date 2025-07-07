@@ -69,28 +69,24 @@ const int MIGRATION_SIZE = 50;      // Incrementado para una migración más sus
 // lo que se traduce en más operaciones a evaluar por la GPU, maximizando su uso.
 // Aumentamos aún más la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas.
 // Esto garantiza que la GPU tenga más cálculos por individuo durante la evaluación de fitness.
-const int MAX_TREE_DEPTH_INITIAL = 15; // Mayor profundidad para fórmulas iniciales más complejas
+// Reducimos la profundidad inicial y de mutación para generar fórmulas más simples al principio.
+// Esto acelera la evaluación inicial y permite que el algoritmo construya la complejidad de forma más eficiente.
+const int MAX_TREE_DEPTH_INITIAL = 8; // Reducido para fórmulas iniciales más simples y rápidas
 const double TERMINAL_VS_VARIABLE_PROB = 0.75;
 const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
-// Ajustamos los pesos de los operadores para favorecer operaciones más complejas,
-// lo que aumenta la carga de trabajo computacional en la GPU por cada evaluación.
-const std::vector<double> OPERATOR_WEIGHTS = {0.25, 0.3, 0.25, 0.1, 0.10}; // Mayor peso a operadores complejos
+const std::vector<double> OPERATOR_WEIGHTS = {0.25, 0.3, 0.25, 0.1, 0.10};
 
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
 // ----------------------------------------
-// Ajustamos las tasas de mutación y cruce para fomentar una mayor diversidad y complejidad,
-// lo que beneficia la exploración del espacio de búsqueda en la GPU.
-const double BASE_MUTATION_RATE = 0.25; // Ligeramente aumentado para mayor diversidad
+const double BASE_MUTATION_RATE = 0.25;
 const double BASE_ELITE_PERCENTAGE = 0.10;
-const double DEFAULT_CROSSOVER_RATE = 0.85; // Ligeramente aumentado para mayor mezcla de genes
-// Aumentamos el tamaño del torneo para una selección más fuerte, lo que puede acelerar la convergencia
-// al seleccionar individuos más aptos más rápidamente, aprovechando la velocidad de la GPU.
-const int DEFAULT_TOURNAMENT_SIZE = 30; // Aumentado para una selección más fuerte
-const int MAX_TREE_DEPTH_MUTATION = 10; // Mayor profundidad en mutaciones para más complejidad
+const double DEFAULT_CROSSOVER_RATE = 0.85;
+const int DEFAULT_TOURNAMENT_SIZE = 30;
+const int MAX_TREE_DEPTH_MUTATION = 6; // Reducido para mutaciones que no generen árboles excesivamente grandes
 const double MUTATE_INSERT_CONST_PROB = 0.6;
 const int MUTATE_INSERT_CONST_INT_MIN = 1;
 const int MUTATE_INSERT_CONST_INT_MAX = 5;

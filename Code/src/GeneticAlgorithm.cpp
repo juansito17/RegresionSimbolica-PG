@@ -75,6 +75,13 @@ NodePtr GeneticAlgorithm::run() {
             migrate();
         }
 
+        // Reporte de progreso
+        if ((gen + 1) % PROGRESS_REPORT_INTERVAL == 0 || gen == 0) {
+            std::cout << "\n--- Generation " << gen + 1 << "/" << generations
+                      << " | Current Best Fitness: " << std::scientific << overall_best_fitness
+                      << " | Formula Size: " << tree_size(overall_best_tree) << " ---" << std::endl;
+        }
+
         // Condición de parada si se encuentra una solución suficientemente buena
         if (overall_best_fitness < EXACT_SOLUTION_THRESHOLD) {
             std::cout << "\n========================================" << std::endl;

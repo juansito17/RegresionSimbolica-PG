@@ -2,6 +2,7 @@
 #include "Globals.h"
 #include "GeneticOperators.h"
 #include "Fitness.h"
+#include "ExpressionTree.h" // Necesario para tree_to_string en la simplificación
 #include <cmath>
 #include <numeric>
 #include <algorithm>
@@ -228,6 +229,28 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
      if (node->op == '^' && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) { auto o = std::make_shared<Node>(NodeType::Constant); o->value = 1.0; return o; } // A^0 -> 1
     // Fix div by zero (constante)
     if (node->op == '/' && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) node->right->value = 1.0;
+
+    // --- NUEVAS REGLAS DE SIMPLIFICACIÓN ---
+    // X / X = 1 (si X no es cero)
+    if (node->op == '/' && node->left && node->right) {
+        if (tree_to_string(node->left) == tree_to_string(node->right)) {
+            // Verificar que el divisor no sea cero para evitar 0/0
+            if (node->right->type != NodeType::Constant || std::fabs(node->right->value) >= SIMPLIFY_NEAR_ZERO_TOLERANCE) {
+                auto one = std::make_shared<Node>(NodeType::Constant);
+                one->value = 1.0;
+                return one;
+            }
+        }
+    }
+
+    // X - X = 0
+    if (node->op == '-' && node->left && node->right) {
+        if (tree_to_string(node->left) == tree_to_string(node->right)) {
+            auto zero = std::make_shared<Node>(NodeType::Constant);
+            zero->value = 0.0;
+            return zero;
+        }
+    }
     // Ya no se hace clamp de exponente constante aquí, se quitó la restricción
 
     return node;
