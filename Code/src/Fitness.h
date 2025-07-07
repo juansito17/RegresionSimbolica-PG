@@ -6,13 +6,27 @@
 
 // Calculates raw fitness based on target matching
 // Lower is better. Returns INF if evaluation results in NaN/Inf.
+#ifdef GPU_ACCELERATION
+double calculate_raw_fitness(const NodePtr& tree,
+                             const std::vector<double>& targets,
+                             const std::vector<double>& x_values,
+                             double* d_targets, double* d_x_values);
+#else
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values);
+#endif
 
 // Calculates final fitness including complexity penalty
+#ifdef GPU_ACCELERATION
+double evaluate_fitness(const NodePtr& tree,
+                        const std::vector<double>& targets,
+                        const std::vector<double>& x_values,
+                        double* d_targets, double* d_x_values);
+#else
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
                         const std::vector<double>& x_values);
+#endif
 
 #endif // FITNESS_H

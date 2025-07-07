@@ -42,7 +42,16 @@ NodePtr generate_random_tree(int max_depth, int current_depth = 0);
 std::vector<Individual> create_initial_population(int population_size);
 
 // Selecciona un individuo usando selección por torneo con presión de parsimonia.
-const Individual& tournament_selection(const std::vector<Individual>& population, int tournament_size);
+Individual tournament_selection(const std::vector<Individual>& population, int tournament_size);
+
+// Realiza el cruce (crossover) entre dos individuos y devuelve un nuevo individuo.
+Individual crossover(const Individual& parent1, const Individual& parent2);
+
+// Mutata un individuo in-place.
+void mutate(Individual& individual, double mutation_rate);
+
+// Simplifica un árbol in-place.
+void simplify_tree(NodePtr& tree);
 
 // Tipos de mutación posibles.
 enum class MutationType {

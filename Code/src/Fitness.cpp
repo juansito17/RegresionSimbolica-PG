@@ -11,12 +11,16 @@
 
 // Calculates the raw fitness using global parameters.
 // This function will now dispatch to GPU if GPU_ACCELERATION is enabled.
+#ifdef GPU_ACCELERATION
+double calculate_raw_fitness(const NodePtr& tree,
+                             const std::vector<double>& targets,
+                             const std::vector<double>& x_values,
+                             double* d_targets, double* d_x_values) {
+    return evaluate_fitness_gpu(tree, targets, x_values, d_targets, d_x_values);
+#else
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values) {
-#ifdef GPU_ACCELERATION
-    return evaluate_fitness_gpu(tree, targets, x_values);
-#else
     if (x_values.size() != targets.size() || x_values.empty()) return INF;
 
     double error_sum_pow13 = 0.0; // Solo si USE_RMSE_FITNESS = false
@@ -90,14 +94,18 @@ double calculate_raw_fitness(const NodePtr& tree,
 }
 
 // Calcula el fitness final usando parámetros globales.
+#ifdef GPU_ACCELERATION
+double evaluate_fitness(const NodePtr& tree,
+                        const std::vector<double>& targets,
+                        const std::vector<double>& x_values,
+                        double* d_targets, double* d_x_values) {
+    double raw_fitness = calculate_raw_fitness(tree, targets, x_values, d_targets, d_x_values);
+#else
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
                         const std::vector<double>& x_values) {
-
-    // The logic to select between CPU and GPU should be handled in calculate_raw_fitness
-    // or by a global flag that determines which version of evaluate_fitness is called.
-    // For now, if GPU_ACCELERATION is defined, calculate_raw_fitness will use the GPU path.
     double raw_fitness = calculate_raw_fitness(tree, targets, x_values);
+#endif
 
     if (raw_fitness >= INF / 10.0) {
          return INF; // Si el error crudo es infinito, el fitness final es infinito

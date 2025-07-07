@@ -243,6 +243,24 @@ NodePtr DomainConstraints::fix_or_simplify(NodePtr tree) {
 //---------------------------------
 // Local Improvement
 //---------------------------------
+#ifdef GPU_ACCELERATION
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts, double* d_targets, double* d_x_values) {
+    NodePtr best_neighbor = tree;
+    double best_neighbor_fitness = current_fitness;
+    if (current_fitness >= INF) return {best_neighbor, best_neighbor_fitness};
+    for (int i = 0; i < attempts; ++i) {
+        NodePtr neighbor = mutate_tree(tree, 1.0, 2);
+        neighbor = DomainConstraints::fix_or_simplify(neighbor);
+        if (!neighbor) continue;
+        double neighbor_fitness = evaluate_fitness(neighbor, targets, x_values, d_targets, d_x_values);
+        if (neighbor_fitness < best_neighbor_fitness) {
+            best_neighbor = neighbor;
+            best_neighbor_fitness = neighbor_fitness;
+        }
+    }
+    return {best_neighbor, best_neighbor_fitness};
+}
+#else
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts) {
     NodePtr best_neighbor = tree;
     double best_neighbor_fitness = current_fitness;
@@ -259,6 +277,7 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double cur
     }
     return {best_neighbor, best_neighbor_fitness};
 }
+#endif
 
 //---------------------------------
 // Target Pattern Detection

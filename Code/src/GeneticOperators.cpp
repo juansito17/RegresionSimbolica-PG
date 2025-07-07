@@ -1,6 +1,7 @@
 #include "GeneticOperators.h"
 #include "Globals.h"
 #include "Fitness.h"
+#include "AdvancedFeatures.h"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -104,53 +105,58 @@ std::vector<Individual> create_initial_population(int population_size) {
     return population; // <-- Return
 }
 
-// --- Selección por torneo con parsimonia (CUERPO COMPLETO) ---
-const Individual& tournament_selection(const std::vector<Individual>& population, int tournament_size) {
+// --- Selección por torneo con parsimonia ---
+Individual tournament_selection(const std::vector<Individual>& population, int tournament_size) {
     if (population.empty()) throw std::runtime_error("Cannot perform tournament selection on empty population.");
     if (tournament_size <= 0) tournament_size = 1;
-    tournament_size = std::min(tournament_size, (int)population.size()); // Ajustar tamaño
+    tournament_size = std::min(tournament_size, (int)population.size());
 
     std::uniform_int_distribution<int> dist(0, population.size() - 1);
     auto& rng = get_rng();
     const Individual* best_in_tournament = nullptr;
 
-    // Encontrar el primer contendiente válido
     int attempts = 0; const int max_attempts = std::min((int)population.size() * 2, 100);
     do {
         best_in_tournament = &population[dist(rng)];
         attempts++;
-    } while ((!best_in_tournament || !best_in_tournament->tree || !best_in_tournament->fitness_valid) && attempts < max_attempts); // Asegurar que el árbol exista y el fitness sea válido
+    } while ((!best_in_tournament || !best_in_tournament->tree || !best_in_tournament->fitness_valid) && attempts < max_attempts);
 
-    // Si no se encontró un individuo válido inicial, lanzar error o devolver el primero (aunque sea inválido)
     if (!best_in_tournament || !best_in_tournament->tree || !best_in_tournament->fitness_valid) {
-         // Devolver el primer individuo como fallback si no se encontró ninguno válido
          if (!population.empty()) return population[0];
          else throw std::runtime_error("Tournament selection couldn't find any valid individual in a non-empty population.");
     }
 
-
-    // Rondas restantes
     for (int i = 1; i < tournament_size; ++i) {
         const Individual& contender = population[dist(rng)];
-        // Saltar inválidos (sin árbol o fitness inválido)
         if (!contender.tree || !contender.fitness_valid) continue;
 
-        // Comparar fitness
         if (contender.fitness < best_in_tournament->fitness) {
             best_in_tournament = &contender;
         }
-        // Desempate por tamaño (parsimonia)
         else if (std::fabs(contender.fitness - best_in_tournament->fitness) < FITNESS_EQUALITY_TOLERANCE) {
             int contender_size = tree_size(contender.tree);
             int best_size = tree_size(best_in_tournament->tree);
             if (contender_size < best_size) best_in_tournament = &contender;
         }
     }
-    return *best_in_tournament; // <-- Return
+    return *best_in_tournament;
 }
 
+// Implementación de crossover
+Individual crossover(const Individual& parent1, const Individual& parent2) {
+    NodePtr tree1_clone = clone_tree(parent1.tree);
+    NodePtr tree2_clone = clone_tree(parent2.tree);
+    crossover_trees(tree1_clone, tree2_clone);
+    return Individual(tree1_clone); // Devolver uno de los hijos, el otro se descarta
+}
 
-// Aplica una mutación al árbol (EXPONENTES SIN RESTRICCIÓN en OperatorChange)
+// Implementación de mutate
+void mutate(Individual& individual, double mutation_rate) {
+    individual.tree = mutate_tree(individual.tree, mutation_rate, MAX_TREE_DEPTH_MUTATION);
+    individual.fitness_valid = false; // El fitness se invalida al mutar el árbol
+}
+
+// Mutata un árbol (EXPONENTES SIN RESTRICCIÓN en OperatorChange)
 NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
     auto& rng = get_rng();
     std::uniform_real_distribution<double> prob(0.0, 1.0);
@@ -306,4 +312,9 @@ void crossover_trees(NodePtr& tree1, NodePtr& tree2) {
 
     // Intercambiar los subárboles (los NodePtr)
     std::swap(*crossover_point1, *crossover_point2);
+}
+
+// Implementación de simplify_tree
+void simplify_tree(NodePtr& tree) {
+    tree = DomainConstraints::fix_or_simplify(tree);
 }

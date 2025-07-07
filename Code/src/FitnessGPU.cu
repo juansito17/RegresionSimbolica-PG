@@ -68,7 +68,8 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
 // Host-side wrapper function to launch the CUDA kernel
 double evaluate_fitness_gpu(NodePtr tree,
                             const std::vector<double>& targets,
-                            const std::vector<double>& x_values) {
+                            const std::vector<double>& x_values,
+                            double* d_targets, double* d_x_values) {
     if (x_values.size() != targets.size() || x_values.empty()) return INF;
 
     // Linearize the tree
@@ -82,18 +83,12 @@ double evaluate_fitness_gpu(NodePtr tree,
 
     size_t num_points = x_values.size();
     LinearGpuNode* d_linear_tree;
-    double* d_x_values;
-    double* d_targets;
     double* d_raw_fitness_results;
 
     cudaMalloc((void**)&d_linear_tree, tree_size * sizeof(LinearGpuNode));
-    cudaMalloc((void**)&d_x_values, num_points * sizeof(double));
-    cudaMalloc((void**)&d_targets, num_points * sizeof(double));
     cudaMalloc((void**)&d_raw_fitness_results, num_points * sizeof(double));
 
     cudaMemcpy(d_linear_tree, h_linear_tree.data(), tree_size * sizeof(LinearGpuNode), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_x_values, x_values.data(), num_points * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_targets, targets.data(), num_points * sizeof(double), cudaMemcpyHostToDevice);
 
     int threadsPerBlock = 256;
     int blocksPerGrid = (num_points + threadsPerBlock - 1) / threadsPerBlock;
@@ -115,8 +110,6 @@ double evaluate_fitness_gpu(NodePtr tree,
     }
 
     cudaFree(d_linear_tree);
-    cudaFree(d_x_values);
-    cudaFree(d_targets);
     cudaFree(d_raw_fitness_results);
 
     if (isinf(sum_sq_error)) {

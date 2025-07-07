@@ -101,11 +101,20 @@ private:
 };
 
 // Búsqueda Local: Intenta mejorar una solución dada explorando vecinos cercanos.
+#ifdef GPU_ACCELERATION
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
+                                                  double current_fitness,
+                                                  const std::vector<double>& targets,
+                                                  const std::vector<double>& x_values,
+                                                  int attempts,
+                                                  double* d_targets, double* d_x_values);
+#else
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
                                                   double current_fitness,
                                                   const std::vector<double>& targets,
                                                   const std::vector<double>& x_values,
                                                   int attempts = 10);
+#endif
 
 
 // Detección de Patrones en los Datos Objetivo.

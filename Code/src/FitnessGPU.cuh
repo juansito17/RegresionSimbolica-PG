@@ -23,6 +23,7 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
 // Host-side wrapper for launching CUDA kernel
 double evaluate_fitness_gpu(NodePtr tree,
                             const std::vector<double>& targets,
-                            const std::vector<double>& x_values);
+                            const std::vector<double>& x_values,
+                            double* d_targets, double* d_x_values);
 
 #endif // FITNESS_GPU_CUH

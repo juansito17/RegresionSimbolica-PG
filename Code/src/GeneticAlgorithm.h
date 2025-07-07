@@ -35,6 +35,10 @@ class GeneticAlgorithm {
     std::vector<std::unique_ptr<Island>> islands; // Vector de punteros únicos a las islas
     const std::vector<double>& targets;           // Referencia a los datos objetivo
     const std::vector<double>& x_values;          // Referencia a los valores de x
+#ifdef GPU_ACCELERATION
+    double* d_targets = nullptr;                  // Puntero a los datos objetivo en la GPU
+    double* d_x_values = nullptr;                 // Puntero a los valores de x en la GPU
+#endif
     int total_population_size;                    // Tamaño total de la población
     int generations;                              // Número máximo de generaciones
     int num_islands;                              // Número de islas
@@ -57,6 +61,7 @@ public:
                        int total_pop,
                        int gens,
                        int n_islands = NUM_ISLANDS); // Usar valor de Globals.h por defecto
+    ~GeneticAlgorithm(); // Destructor para liberar memoria de la GPU
 
     // Ejecuta el algoritmo genético
     NodePtr run();
