@@ -101,7 +101,7 @@ private:
 };
 
 // Búsqueda Local: Intenta mejorar una solución dada explorando vecinos cercanos.
-#ifdef GPU_ACCELERATION
+#if USE_GPU_ACCELERATION
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
                                                   double current_fitness,
                                                   const std::vector<double>& targets,

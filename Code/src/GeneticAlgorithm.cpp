@@ -9,7 +9,7 @@
 #include <vector>
 #include <memory>
 #include <iomanip> // Para std::fixed/scientific
-#ifdef GPU_ACCELERATION
+#if USE_GPU_ACCELERATION
 #include <cuda_runtime.h>
 #endif
 
@@ -27,7 +27,7 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
         islands.push_back(std::make_unique<Island>(i, pop_per_island));
     }
 
-#ifdef GPU_ACCELERATION
+#if USE_GPU_ACCELERATION
     size_t data_size = targets.size() * sizeof(double);
     cudaMalloc((void**)&d_targets, data_size);
     cudaMalloc((void**)&d_x_values, data_size);
@@ -38,7 +38,7 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
 
 // Destructor
 GeneticAlgorithm::~GeneticAlgorithm() {
-#ifdef GPU_ACCELERATION
+#if USE_GPU_ACCELERATION
     cudaFree(d_targets);
     cudaFree(d_x_values);
 #endif
@@ -92,7 +92,7 @@ NodePtr GeneticAlgorithm::run() {
 // Evalúa la población de una isla
 void GeneticAlgorithm::evaluate_population(Island& island) {
     for (auto& individual : island.population) {
-#ifdef GPU_ACCELERATION
+#if USE_GPU_ACCELERATION
         individual.fitness = evaluate_fitness(individual.tree, targets, x_values, d_targets, d_x_values);
 #else
         individual.fitness = evaluate_fitness(individual.tree, targets, x_values);

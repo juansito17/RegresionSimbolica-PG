@@ -18,6 +18,12 @@ int main() {
         std::cout << "  f(" << X_VALUES[i] << ") = " << TARGETS[i] << std::endl;
     }
     std::cout << "----------------------------------------" << std::endl;
+#if USE_GPU_ACCELERATION
+    std::cout << "Info: Running with GPU acceleration." << std::endl;
+#else
+    std::cout << "Info: Running with CPU acceleration." << std::endl;
+#endif
+    std::cout << "----------------------------------------" << std::endl;
     std::cout << "Parameters:" << std::endl;
     // Imprimir los parámetros globales definidos en Globals.h
     std::cout << "  Total Population: " << TOTAL_POPULATION_SIZE << std::endl;

@@ -10,13 +10,14 @@
 #include <iomanip>  // Para std::fixed/scientific si se necesita en errores
 
 // Calculates the raw fitness using global parameters.
-// This function will now dispatch to GPU if GPU_ACCELERATION is enabled.
-#ifdef GPU_ACCELERATION
+// This function will now dispatch to GPU if USE_GPU_ACCELERATION is enabled.
+#if USE_GPU_ACCELERATION
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values,
                              double* d_targets, double* d_x_values) {
     return evaluate_fitness_gpu(tree, targets, x_values, d_targets, d_x_values);
+}
 #else
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
@@ -90,11 +91,11 @@ double calculate_raw_fitness(const NodePtr& tree,
     }
 
     return raw_error; // Devolver el error crudo (sin penalización por complejidad aún)
-#endif // GPU_ACCELERATION
 }
+#endif // USE_GPU_ACCELERATION
 
 // Calcula el fitness final usando parámetros globales.
-#ifdef GPU_ACCELERATION
+#if USE_GPU_ACCELERATION
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
                         const std::vector<double>& x_values,

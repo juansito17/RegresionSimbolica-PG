@@ -28,6 +28,7 @@ const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
+const bool USE_GPU_ACCELERATION = true; // Set to true to enable GPU acceleration
 const int TOTAL_POPULATION_SIZE = 100000;
 const int GENERATIONS = 100000;
 const int NUM_ISLANDS = 7;
@@ -100,7 +101,7 @@ const int LOCAL_SEARCH_ATTEMPTS = 30;
 // Otros Parámetros
 // ----------------------------------------
 const int PROGRESS_REPORT_INTERVAL = 100;
-const bool FORCE_INTEGER_CONSTANTS = false;
+const bool FORCE_INTEGER_CONSTANTS = true;
 
 // ============================================================
 //                  UTILIDADES GLOBALES

@@ -13,6 +13,7 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
     linear_tree.push_back({node->type, node->value, node->op});
 }
 
+#if USE_GPU_ACCELERATION
 // CUDA kernel to evaluate a linearized tree
 __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                                              int tree_size,
@@ -135,3 +136,4 @@ double evaluate_fitness_gpu(NodePtr tree,
 
     return final_fitness;
 }
+#endif
