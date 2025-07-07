@@ -16,11 +16,11 @@
 // ----------------------------------------
 // Asegúrate de que estos sean los datos correctos para la fórmula que quieres probar
 
-//const std::vector<double> TARGETS = {92, 352, 724}; // O los que correspondan
-//const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
+const std::vector<double> TARGETS = {92, 352, 724}; // O los que correspondan
+const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
 
-const std::vector<double> TARGETS = {380, 336, 324, 308, 301, 313, 271, 268, 251, 231};
-const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51.7, 50.6, 46.4};
+//const std::vector<double> TARGETS = {380, 336, 324, 308, 301, 313, 271, 268, 251, 231};
+//const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51.7, 50.6, 46.4};
 
 //const std::vector<double> TARGETS = {1, 1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884, 314666222712, 2691008701644, 24233937684440, 227514171973736, 2207893435808352, 22317699616364044, 234907967154122528};
 //const std::vector<double> X_VALUES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
@@ -29,7 +29,7 @@ const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
 const bool USE_GPU_ACCELERATION = true; // Set to true to enable GPU acceleration
-const int TOTAL_POPULATION_SIZE = 100000;
+const int TOTAL_POPULATION_SIZE = 1000000;
 const int GENERATIONS = 100000;
 const int NUM_ISLANDS = 7;
 const int MIN_POP_PER_ISLAND = 20;
