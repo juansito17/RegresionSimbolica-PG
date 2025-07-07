@@ -1,36 +1,53 @@
-cmake_minimum_required(VERSION 3.10)
-project(SymbolicRegressionGP CXX)
+# Usar una versión más moderna de CMake para un mejor soporte de CUDA
+cmake_minimum_required(VERSION 3.18)
 
+# Habilitar los lenguajes CXX (C++) y CUDA.
+project(SymbolicRegressionGP LANGUAGES CXX CUDA)
+
+# Establecer el estándar de C++
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# Find OpenMP
-find_package(OpenMP REQUIRED)
+# Encontrar OpenMP para C++ y CUDA explícitamente
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+find_package(CUDA REQUIRED) # Fuerza a CMake a definir las variables de CUDA
 
-# Add source files
-set(SOURCES
+# AÑADIDO: Incluir directorios de CUDA explícitamente (método de compatibilidad)
+# La variable ${CUDA_LIBRARIES} no añade los directorios de inclusión, así que lo hacemos manualmente.
+include_directories(${CUDA_INCLUDE_DIRS})
+
+# Usar el comando estándar add_executable. CMake sabe cómo manejar los archivos .cu
+# porque CUDA fue habilitado como lenguaje en project().
+add_executable(SymbolicRegressionGP
     src/main.cpp
     src/ExpressionTree.cpp
     src/Fitness.cpp
     src/GeneticOperators.cpp
     src/AdvancedFeatures.cpp
     src/GeneticAlgorithm.cpp
+    src/FitnessGPU.cu
 )
 
-# Include directory
-include_directories(src)
+# Especificar los directorios de inclusión para nuestro ejecutable.
+target_include_directories(SymbolicRegressionGP PUBLIC src)
 
-# Create executable
-add_executable(SymbolicRegressionGP ${SOURCES})
+# Enlazar las librerías necesarias.
+# Se usa la variable legacy ${CUDA_LIBRARIES} como método de compatibilidad
+# ya que el target moderno CUDA::cudart no se está encontrando en este sistema.
+target_link_libraries(SymbolicRegressionGP PUBLIC
+    # Enlazar con OpenMP para C++
+    OpenMP::OpenMP_CXX
 
-# Link libraries
-target_link_libraries(SymbolicRegressionGP
-    PUBLIC # OpenMP necesita ser PUBLIC si afecta cabeceras o flags
-        OpenMP::OpenMP_CXX
-    PRIVATE # La librería matemática 'm' usualmente solo es necesaria internamente
-        m
+    # Enlazar con las librerías de CUDA (método de compatibilidad)
+    ${CUDA_LIBRARIES}
 )
 
-# Optional: Add optimization flags for release builds
-# target_compile_options(SymbolicRegressionGP PRIVATE $<$<CONFIG:Release>:-O3 -DNDEBUG>)
-# target_compile_options(SymbolicRegressionGP PRIVATE $<$<CONFIG:Debug>:-g>)
+# Asegura que los flags del compilador de C++ (como /std:c++17) se pasen a nvcc.
+set(CMAKE_CUDA_PROPAGATE_HOST_FLAGS ON)
+
+# Definir macros de preprocesador
+target_compile_definitions(SymbolicRegressionGP PRIVATE "GPU_ACCELERATION")
+
+# SECCIÓN ELIMINADA: La sección target_compile_options fue removida.
+# CMake y Visual Studio manejarán los flags de Debug/Release automáticamente.
+

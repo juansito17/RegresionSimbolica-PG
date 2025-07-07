@@ -1,3 +1,0 @@
-C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/SymbolicRegressionGP.dir
-C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/edit_cache.dir
-C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/rebuild_cache.dir
