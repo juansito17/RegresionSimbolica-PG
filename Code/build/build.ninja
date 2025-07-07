@@ -12,7 +12,7 @@
 
 # =============================================================================
 # Project: SymbolicRegressionGP
-# Configurations: 
+# Configurations: Release
 # =============================================================================
 
 #############################################
@@ -20,6 +20,11 @@
 
 ninja_required_version = 1.5
 
+
+#############################################
+# Set configuration variable for custom commands.
+
+CONFIGURATION = Release
 # =============================================================================
 # Include auxiliary files.
 
@@ -44,54 +49,90 @@ cmake_ninja_workdir = C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico
 
 build cmake_object_order_depends_target_SymbolicRegressionGP: phony || .
 
+<<<<<<< HEAD
 build CMakeFiles/SymbolicRegressionGP.dir/src/main.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_ C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/main.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
   DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\main.cpp.obj.d
   FLAGS = -std=gnu++17 -fopenmp
+=======
+build CMakeFiles/SymbolicRegressionGP.dir/src/main.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_Release C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/main.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
+  DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\main.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -fopenmp
+>>>>>>> a947c1ea5a92ffa7b28fa3bd93bf0ebb9153bf33
   INCLUDES = -IC:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   OBJECT_FILE_DIR = CMakeFiles\SymbolicRegressionGP.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\SymbolicRegressionGP.dir\
   TARGET_PDB = SymbolicRegressionGP.pdb
 
+<<<<<<< HEAD
 build CMakeFiles/SymbolicRegressionGP.dir/src/ExpressionTree.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_ C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/ExpressionTree.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
   DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\ExpressionTree.cpp.obj.d
   FLAGS = -std=gnu++17 -fopenmp
+=======
+build CMakeFiles/SymbolicRegressionGP.dir/src/ExpressionTree.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_Release C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/ExpressionTree.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
+  DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\ExpressionTree.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -fopenmp
+>>>>>>> a947c1ea5a92ffa7b28fa3bd93bf0ebb9153bf33
   INCLUDES = -IC:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   OBJECT_FILE_DIR = CMakeFiles\SymbolicRegressionGP.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\SymbolicRegressionGP.dir\
   TARGET_PDB = SymbolicRegressionGP.pdb
 
+<<<<<<< HEAD
 build CMakeFiles/SymbolicRegressionGP.dir/src/Fitness.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_ C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/Fitness.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
   DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\Fitness.cpp.obj.d
   FLAGS = -std=gnu++17 -fopenmp
+=======
+build CMakeFiles/SymbolicRegressionGP.dir/src/Fitness.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_Release C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/Fitness.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
+  DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\Fitness.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -fopenmp
+>>>>>>> a947c1ea5a92ffa7b28fa3bd93bf0ebb9153bf33
   INCLUDES = -IC:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   OBJECT_FILE_DIR = CMakeFiles\SymbolicRegressionGP.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\SymbolicRegressionGP.dir\
   TARGET_PDB = SymbolicRegressionGP.pdb
 
+<<<<<<< HEAD
 build CMakeFiles/SymbolicRegressionGP.dir/src/GeneticOperators.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_ C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/GeneticOperators.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
   DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\GeneticOperators.cpp.obj.d
   FLAGS = -std=gnu++17 -fopenmp
+=======
+build CMakeFiles/SymbolicRegressionGP.dir/src/GeneticOperators.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_Release C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/GeneticOperators.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
+  DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\GeneticOperators.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -fopenmp
+>>>>>>> a947c1ea5a92ffa7b28fa3bd93bf0ebb9153bf33
   INCLUDES = -IC:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   OBJECT_FILE_DIR = CMakeFiles\SymbolicRegressionGP.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\SymbolicRegressionGP.dir\
   TARGET_PDB = SymbolicRegressionGP.pdb
 
+<<<<<<< HEAD
 build CMakeFiles/SymbolicRegressionGP.dir/src/AdvancedFeatures.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_ C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/AdvancedFeatures.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
   DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\AdvancedFeatures.cpp.obj.d
   FLAGS = -std=gnu++17 -fopenmp
+=======
+build CMakeFiles/SymbolicRegressionGP.dir/src/AdvancedFeatures.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_Release C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/AdvancedFeatures.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
+  DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\AdvancedFeatures.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -fopenmp
+>>>>>>> a947c1ea5a92ffa7b28fa3bd93bf0ebb9153bf33
   INCLUDES = -IC:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   OBJECT_FILE_DIR = CMakeFiles\SymbolicRegressionGP.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\SymbolicRegressionGP.dir\
   TARGET_PDB = SymbolicRegressionGP.pdb
 
+<<<<<<< HEAD
 build CMakeFiles/SymbolicRegressionGP.dir/src/GeneticAlgorithm.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_ C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/GeneticAlgorithm.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
   DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\GeneticAlgorithm.cpp.obj.d
   FLAGS = -std=gnu++17 -fopenmp
+=======
+build CMakeFiles/SymbolicRegressionGP.dir/src/GeneticAlgorithm.cpp.obj: CXX_COMPILER__SymbolicRegressionGP_unscanned_Release C$:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src/GeneticAlgorithm.cpp || cmake_object_order_depends_target_SymbolicRegressionGP
+  DEP_FILE = CMakeFiles\SymbolicRegressionGP.dir\src\GeneticAlgorithm.cpp.obj.d
+  FLAGS = -O3 -DNDEBUG -std=gnu++17 -fopenmp
+>>>>>>> a947c1ea5a92ffa7b28fa3bd93bf0ebb9153bf33
   INCLUDES = -IC:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/src
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   OBJECT_FILE_DIR = CMakeFiles\SymbolicRegressionGP.dir\src
@@ -106,7 +147,8 @@ build CMakeFiles/SymbolicRegressionGP.dir/src/GeneticAlgorithm.cpp.obj: CXX_COMP
 #############################################
 # Link the executable SymbolicRegressionGP.exe
 
-build SymbolicRegressionGP.exe: CXX_EXECUTABLE_LINKER__SymbolicRegressionGP_ CMakeFiles/SymbolicRegressionGP.dir/src/main.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/ExpressionTree.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/Fitness.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/GeneticOperators.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/AdvancedFeatures.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/GeneticAlgorithm.cpp.obj | C$:/msys64/mingw64/lib/libgomp.dll.a C$:/msys64/mingw64/lib/libmingwthrd.a
+build SymbolicRegressionGP.exe: CXX_EXECUTABLE_LINKER__SymbolicRegressionGP_Release CMakeFiles/SymbolicRegressionGP.dir/src/main.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/ExpressionTree.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/Fitness.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/GeneticOperators.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/AdvancedFeatures.cpp.obj CMakeFiles/SymbolicRegressionGP.dir/src/GeneticAlgorithm.cpp.obj | C$:/msys64/mingw64/lib/libgomp.dll.a C$:/msys64/mingw64/lib/libmingwthrd.a
+  FLAGS = -O3 -DNDEBUG
   LINK_LIBRARIES = -lm  C:/msys64/mingw64/lib/libgomp.dll.a  C:/msys64/mingw64/lib/libmingwthrd.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   OBJECT_DIR = CMakeFiles\SymbolicRegressionGP.dir
   POST_BUILD = cd .
