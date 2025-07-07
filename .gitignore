@@ -4,6 +4,10 @@ Code/build/
 
 # Executables
 *.exe
+SymbolicRegressionGP.exe
+a.exe
+CMakeDetermineCompilerABI_CXX.bin
+ompver_CXX.bin
 
 # Object files
 *.obj
@@ -14,3 +18,11 @@ CMakeFiles/
 Makefile
 cmake_install.cmake
 compile_commands.json
+CMakeConfigureLog.yaml
+rules.ninja
+TargetDirectories.txt
+
+# Ninja build files
+.ninja_deps
+.ninja_log
+build.ninja
