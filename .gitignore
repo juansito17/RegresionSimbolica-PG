@@ -1,0 +1,16 @@
+# Build directories
+build/
+Code/build/
+
+# Executables
+*.exe
+
+# Object files
+*.obj
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+compile_commands.json
