@@ -43,7 +43,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                     case '-': result = left - right; break;
                     case '*': result = left * right; break;
                     case '/':
-                        if (fabs(right) < 1e-9) {
+                        if (fabs(right) < 1e-9) { // Avoid division by zero
                             result = HUGE_VAL;
                         } else {
                             result = left / right;
@@ -58,11 +58,35 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
         double predicted_val = (stack_top == 0) ? stack[0] : NAN;
 
         if (isnan(predicted_val) || isinf(predicted_val)) {
-            d_raw_fitness_results[idx] = HUGE_VAL;
+            d_raw_fitness_results[idx] = HUGE_VAL; // Assign a large error for invalid results
         } else {
             double diff = predicted_val - d_targets[idx];
             d_raw_fitness_results[idx] = diff * diff;
         }
+    }
+}
+
+// CUDA kernel for parallel reduction (summation)
+__global__ void reduce_sum_kernel(double* d_data, int N) {
+    extern __shared__ double sdata[]; // Shared memory for reduction
+
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    sdata[tid] = (i < N) ? d_data[i] : 0.0; // Load data into shared memory
+
+    __syncthreads(); // Synchronize threads in block
+
+    // Perform reduction in shared memory
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) { // Write result back to global memory (first element of block)
+        d_data[blockIdx.x] = sdata[0];
     }
 }
 
@@ -84,7 +108,7 @@ double evaluate_fitness_gpu(NodePtr tree,
 
     size_t num_points = x_values.size();
     LinearGpuNode* d_linear_tree;
-    double* d_raw_fitness_results;
+    double* d_raw_fitness_results; // This will hold individual errors and then the final sum
 
     cudaMalloc((void**)&d_linear_tree, tree_size * sizeof(LinearGpuNode));
     cudaMalloc((void**)&d_raw_fitness_results, num_points * sizeof(double));
@@ -94,36 +118,42 @@ double evaluate_fitness_gpu(NodePtr tree,
     int threadsPerBlock = 256;
     int blocksPerGrid = (num_points + threadsPerBlock - 1) / threadsPerBlock;
 
+    // Launch kernel to calculate individual squared errors
     calculate_raw_fitness_kernel<<<blocksPerGrid, threadsPerBlock>>>(
         d_linear_tree, tree_size, d_targets, d_x_values, num_points, d_raw_fitness_results
     );
+    cudaDeviceSynchronize(); // Ensure kernel completes before reduction
 
-    std::vector<double> h_raw_fitness_results(num_points);
-    cudaMemcpy(h_raw_fitness_results.data(), d_raw_fitness_results, num_points * sizeof(double), cudaMemcpyDeviceToHost);
-
-    double sum_sq_error = 0.0;
-    for (double val : h_raw_fitness_results) {
-        if (isinf(val) || isnan(val)) {
-            sum_sq_error = INF;
-            break;
-        }
-        sum_sq_error += val;
+    // --- Perform reduction on the GPU ---
+    int current_size = num_points;
+    while (current_size > 1) {
+        int next_blocks_per_grid = (current_size + threadsPerBlock - 1) / threadsPerBlock;
+        // Use shared memory for reduction, size is threadsPerBlock * sizeof(double)
+        reduce_sum_kernel<<<next_blocks_per_grid, threadsPerBlock, threadsPerBlock * sizeof(double)>>>(
+            d_raw_fitness_results, current_size
+        );
+        cudaDeviceSynchronize(); // Ensure reduction step completes
+        current_size = next_blocks_per_grid; // The result is in the first `next_blocks_per_grid` elements
     }
+
+    double sum_sq_error_gpu = 0.0;
+    cudaMemcpy(&sum_sq_error_gpu, d_raw_fitness_results, sizeof(double), cudaMemcpyDeviceToHost);
 
     cudaFree(d_linear_tree);
     cudaFree(d_raw_fitness_results);
 
-    if (isinf(sum_sq_error)) {
+    // Check for invalid results (propagated from kernel)
+    if (isinf(sum_sq_error_gpu) || isnan(sum_sq_error_gpu)) {
         return INF;
     }
 
     double raw_fitness;
     if (USE_RMSE_FITNESS) {
         if (num_points == 0) return INF;
-        double mse = sum_sq_error / num_points;
+        double mse = sum_sq_error_gpu / num_points;
         raw_fitness = sqrt(mse);
     } else {
-        raw_fitness = sum_sq_error;
+        raw_fitness = sum_sq_error_gpu;
     }
 
     double complexity = static_cast<double>(::tree_size(tree));

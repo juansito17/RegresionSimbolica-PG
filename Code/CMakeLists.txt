@@ -46,8 +46,7 @@ target_link_libraries(SymbolicRegressionGP PUBLIC
 set(CMAKE_CUDA_PROPAGATE_HOST_FLAGS ON)
 
 # Definir macros de preprocesador
-target_compile_definitions(SymbolicRegressionGP PRIVATE "GPU_ACCELERATION")
+target_compile_definitions(SymbolicRegressionGP PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
 
 # SECCIÓN ELIMINADA: La sección target_compile_options fue removida.
 # CMake y Visual Studio manejarán los flags de Debug/Release automáticamente.
-

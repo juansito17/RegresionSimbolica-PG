@@ -28,7 +28,13 @@ const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
-const bool USE_GPU_ACCELERATION = true; // Set to true to enable GPU acceleration
+// Controla si se utiliza la aceleración por GPU.
+// Se recomienda que esta constante sea controlada por la definición de compilación de CMake.
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE // Usamos un nuevo nombre para evitar conflictos
+const bool USE_GPU_ACCELERATION = true;
+#else
+const bool USE_GPU_ACCELERATION = false;
+#endif
 // Aumentamos el tamaño de la población y el número de generaciones para maximizar la utilización de la GPU,
 // ya que la GPU puede procesar un gran número de individuos en paralelo.
 // Ajustamos el tamaño de la población para una GPU con 4GB de VRAM (RTX 3050),
@@ -61,13 +67,17 @@ const int MIGRATION_SIZE = 50;      // Incrementado para una migración más sus
 // lo que puede aprovechar mejor la capacidad de cálculo de la GPU.
 // Aumentamos la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas,
 // lo que se traduce en más operaciones a evaluar por la GPU, maximizando su uso.
-const int MAX_TREE_DEPTH_INITIAL = 12; // Mayor profundidad inicial para fórmulas más complejas
+// Aumentamos aún más la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas.
+// Esto garantiza que la GPU tenga más cálculos por individuo durante la evaluación de fitness.
+const int MAX_TREE_DEPTH_INITIAL = 15; // Mayor profundidad para fórmulas iniciales más complejas
 const double TERMINAL_VS_VARIABLE_PROB = 0.75;
 const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
-const std::vector<double> OPERATOR_WEIGHTS = {0.3, 0.3, 0.25, 0.1, 0.05};
+// Ajustamos los pesos de los operadores para favorecer operaciones más complejas,
+// lo que aumenta la carga de trabajo computacional en la GPU por cada evaluación.
+const std::vector<double> OPERATOR_WEIGHTS = {0.25, 0.3, 0.25, 0.1, 0.10}; // Mayor peso a operadores complejos
 
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
@@ -80,7 +90,7 @@ const double DEFAULT_CROSSOVER_RATE = 0.85; // Ligeramente aumentado para mayor 
 // Aumentamos el tamaño del torneo para una selección más fuerte, lo que puede acelerar la convergencia
 // al seleccionar individuos más aptos más rápidamente, aprovechando la velocidad de la GPU.
 const int DEFAULT_TOURNAMENT_SIZE = 30; // Aumentado para una selección más fuerte
-const int MAX_TREE_DEPTH_MUTATION = 8; // Mayor profundidad en mutaciones para más complejidad
+const int MAX_TREE_DEPTH_MUTATION = 10; // Mayor profundidad en mutaciones para más complejidad
 const double MUTATE_INSERT_CONST_PROB = 0.6;
 const int MUTATE_INSERT_CONST_INT_MIN = 1;
 const int MUTATE_INSERT_CONST_INT_MAX = 5;
@@ -120,7 +130,11 @@ const int LOCAL_SEARCH_ATTEMPTS = 30;
 // Otros Parámetros
 // ----------------------------------------
 const int PROGRESS_REPORT_INTERVAL = 100;
-const bool FORCE_INTEGER_CONSTANTS = false;
+// Optimizaciones adicionales:
+// Deshabilitamos las constantes enteras forzadas para permitir una mayor flexibilidad
+// en las constantes generadas y mutadas, lo que podría conducir a mejores soluciones
+// y mantener la GPU ocupada con un rango más amplio de valores.
+const bool FORCE_INTEGER_CONSTANTS = false; // Mantenemos false para mayor flexibilidad
 
 // ============================================================
 //                  UTILIDADES GLOBALES

@@ -18,7 +18,7 @@ int main() {
         std::cout << "  f(" << X_VALUES[i] << ") = " << TARGETS[i] << std::endl;
     }
     std::cout << "----------------------------------------" << std::endl;
-#if USE_GPU_ACCELERATION
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     std::cout << "Info: Running with GPU acceleration." << std::endl;
 #else
     std::cout << "Info: Running with CPU acceleration." << std::endl;
