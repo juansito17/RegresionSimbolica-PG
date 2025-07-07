@@ -29,10 +29,17 @@ const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
 const bool USE_GPU_ACCELERATION = true; // Set to true to enable GPU acceleration
-const int TOTAL_POPULATION_SIZE = 1000000;
-const int GENERATIONS = 100000;
-const int NUM_ISLANDS = 7;
-const int MIN_POP_PER_ISLAND = 20;
+// Aumentamos el tamaño de la población y el número de generaciones para maximizar la utilización de la GPU,
+// ya que la GPU puede procesar un gran número de individuos en paralelo.
+// Ajustamos el tamaño de la población para una GPU con 4GB de VRAM (RTX 3050),
+// buscando un equilibrio entre el aprovechamiento de la GPU y el uso de memoria.
+// Para hacer un uso aún más intensivo de la GPU y acelerar el algoritmo,
+// aumentamos el número de islas para fomentar más paralelismo, manteniendo la población total.
+// Esto distribuye la carga de trabajo de evaluación de fitness en más unidades de procesamiento concurrentes.
+const int TOTAL_POPULATION_SIZE = 2000000; // Mantenemos este tamaño, ajustado para 4GB VRAM
+const int GENERATIONS = 500000;           // Mantenemos las generaciones altas
+const int NUM_ISLANDS = 10;               // Aumentado para mayor paralelismo
+const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas con población mínima
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
@@ -42,13 +49,19 @@ const std::string INITIAL_FORMULA_STRING = "(((0.62358531/(((x+(0.62358531/(((-(
 // ----------------------------------------
 // Parámetros del Modelo de Islas
 // ----------------------------------------
-const int MIGRATION_INTERVAL = 50;
-const int MIGRATION_SIZE = 30;
+// Aumentamos el intervalo y tamaño de migración para permitir que las islas realicen más trabajo en paralelo
+// antes de intercambiar individuos, reduciendo la sobrecarga de comunicación y maximizando el procesamiento GPU.
+const int MIGRATION_INTERVAL = 100; // Incrementado para permitir más trabajo por isla entre migraciones
+const int MIGRATION_SIZE = 50;      // Incrementado para una migración más sustancial
 
 // ----------------------------------------
 // Parámetros de Generación Inicial de Árboles
 // ----------------------------------------
-const int MAX_TREE_DEPTH_INITIAL = 7;
+// Aumentamos la profundidad inicial del árbol para generar fórmulas más complejas desde el principio,
+// lo que puede aprovechar mejor la capacidad de cálculo de la GPU.
+// Aumentamos la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas,
+// lo que se traduce en más operaciones a evaluar por la GPU, maximizando su uso.
+const int MAX_TREE_DEPTH_INITIAL = 12; // Mayor profundidad inicial para fórmulas más complejas
 const double TERMINAL_VS_VARIABLE_PROB = 0.75;
 const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
@@ -59,11 +72,15 @@ const std::vector<double> OPERATOR_WEIGHTS = {0.3, 0.3, 0.25, 0.1, 0.05};
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
 // ----------------------------------------
-const double BASE_MUTATION_RATE = 0.20;
+// Ajustamos las tasas de mutación y cruce para fomentar una mayor diversidad y complejidad,
+// lo que beneficia la exploración del espacio de búsqueda en la GPU.
+const double BASE_MUTATION_RATE = 0.25; // Ligeramente aumentado para mayor diversidad
 const double BASE_ELITE_PERCENTAGE = 0.10;
-const double DEFAULT_CROSSOVER_RATE = 0.8;
-const int DEFAULT_TOURNAMENT_SIZE = 25;
-const int MAX_TREE_DEPTH_MUTATION = 5;
+const double DEFAULT_CROSSOVER_RATE = 0.85; // Ligeramente aumentado para mayor mezcla de genes
+// Aumentamos el tamaño del torneo para una selección más fuerte, lo que puede acelerar la convergencia
+// al seleccionar individuos más aptos más rápidamente, aprovechando la velocidad de la GPU.
+const int DEFAULT_TOURNAMENT_SIZE = 30; // Aumentado para una selección más fuerte
+const int MAX_TREE_DEPTH_MUTATION = 8; // Mayor profundidad en mutaciones para más complejidad
 const double MUTATE_INSERT_CONST_PROB = 0.6;
 const int MUTATE_INSERT_CONST_INT_MIN = 1;
 const int MUTATE_INSERT_CONST_INT_MAX = 5;
@@ -73,7 +90,9 @@ const double MUTATE_INSERT_CONST_FLOAT_MAX = 5.0;
 // ----------------------------------------
 // Parámetros de Fitness y Evaluación
 // ----------------------------------------
-const double COMPLEXITY_PENALTY_FACTOR = 0.01;
+// Reducimos ligeramente la penalización por complejidad para permitir que fórmulas más complejas
+// (y computacionalmente más intensivas para la GPU) sean favorecidas por el algoritmo.
+const double COMPLEXITY_PENALTY_FACTOR = 0.008; // Reducido para favorecer fórmulas más complejas
 const bool USE_RMSE_FITNESS = true;
 const double FITNESS_ORIGINAL_POWER = 1.3;
 const double FITNESS_PRECISION_THRESHOLD = 0.001;
@@ -101,7 +120,7 @@ const int LOCAL_SEARCH_ATTEMPTS = 30;
 // Otros Parámetros
 // ----------------------------------------
 const int PROGRESS_REPORT_INTERVAL = 100;
-const bool FORCE_INTEGER_CONSTANTS = true;
+const bool FORCE_INTEGER_CONSTANTS = false;
 
 // ============================================================
 //                  UTILIDADES GLOBALES
