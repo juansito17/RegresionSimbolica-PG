@@ -20,23 +20,48 @@ EvolutionParameters EvolutionParameters::create_default() {
 void EvolutionParameters::mutate(int stagnation_counter) {
     auto& rng = get_rng();
     double aggression_factor = 1.0;
-    // Usar STAGNATION_LIMIT_ISLAND para el chequeo local
+    // Ajuste del factor de agresión basado en el estancamiento
     if (stagnation_counter > STAGNATION_LIMIT_ISLAND / 2) {
-        aggression_factor = 1.5 + (static_cast<double>(stagnation_counter) / STAGNATION_LIMIT_ISLAND);
+        // Aumenta la agresión si hay estancamiento significativo
+        aggression_factor = 1.0 + (static_cast<double>(stagnation_counter - STAGNATION_LIMIT_ISLAND / 2) / (STAGNATION_LIMIT_ISLAND / 2.0)) * 0.5; // Escala de 1.0 a 1.5
+        aggression_factor = std::min(aggression_factor, 2.0); // Limitar la agresión máxima
+    } else if (stagnation_counter < STAGNATION_LIMIT_ISLAND / 4 && stagnation_counter > 0) {
+        // Reduce la agresión si no hay mucho estancamiento, pero no es 0
+        aggression_factor = 1.0 - (static_cast<double>(STAGNATION_LIMIT_ISLAND / 4 - stagnation_counter) / (STAGNATION_LIMIT_ISLAND / 4.0)) * 0.5; // Escala de 0.5 a 1.0
+        aggression_factor = std::max(aggression_factor, 0.5); // Limitar la agresión mínima
+    } else if (stagnation_counter == 0) {
+        // Muy poco estancamiento, cambios muy pequeños
+        aggression_factor = 0.2; // Cambios muy conservadores
     }
+
     std::uniform_real_distribution<double> base_rate_change(-0.05, 0.05);
     std::uniform_int_distribution<int> base_tourney_change(-2, 2);
+
     double rate_change_val = base_rate_change(rng) * aggression_factor;
     int tourney_change_val = static_cast<int>(std::round(base_tourney_change(rng) * aggression_factor));
+    
+    // Asegurar que haya algún cambio si la agresión es alta y el cambio base es 0
     if (aggression_factor > 1.0 && tourney_change_val == 0 && base_tourney_change(rng) != 0) {
          tourney_change_val = (base_tourney_change(rng) > 0) ? 1 : -1;
     }
-    double max_mutation = (aggression_factor > 1.0) ? 0.7 : 0.5;
-    double max_elite = (aggression_factor > 1.0) ? 0.30 : 0.25;
-    int max_tournament = (aggression_factor > 1.0) ? 40 : 30;
-    mutation_rate = std::clamp(mutation_rate + rate_change_val, 0.05, max_mutation);
-    elite_percentage = std::clamp(elite_percentage + rate_change_val, 0.02, max_elite);
-    tournament_size = std::clamp(tournament_size + tourney_change_val, 3, max_tournament);
+
+    // Definir límites dinámicos para los parámetros
+    double min_mutation = 0.05;
+    double max_mutation_base = 0.5;
+    double max_mutation = min_mutation + (max_mutation_base - min_mutation) * (1.0 + aggression_factor / 2.0);
+
+    double min_elite = 0.02;
+    double max_elite_base = 0.25;
+    double max_elite = min_elite + (max_elite_base - min_elite) * (1.0 + aggression_factor / 2.0);
+
+    int min_tournament = 3;
+    int max_tournament_base = 30;
+    int max_tournament = min_tournament + static_cast<int>((max_tournament_base - min_tournament) * (1.0 + aggression_factor / 2.0));
+
+    // Aplicar los cambios y asegurar que estén dentro de los límites
+    mutation_rate = std::clamp(mutation_rate + rate_change_val, min_mutation, max_mutation);
+    elite_percentage = std::clamp(elite_percentage + rate_change_val, min_elite, max_elite);
+    tournament_size = std::clamp(tournament_size + tourney_change_val, min_tournament, max_tournament);
     crossover_rate = std::clamp(crossover_rate + rate_change_val, 0.5, 0.95);
 }
 
@@ -286,4 +311,3 @@ NodePtr generate_pattern_based_tree(const std::string& pattern_type, double patt
      }
     return nullptr; // No pattern tree generated
 }
-

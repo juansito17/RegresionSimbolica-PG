@@ -348,10 +348,29 @@ NodePtr GeneticAlgorithm::run() {
         } else {
              if (overall_best_fitness < INF && (gen - generation_last_improvement) >= GLOBAL_STAGNATION_LIMIT) {
                   std::cout << "\n========================================" << std::endl;
-                  std::cout << "TERMINATION: Global best fitness hasn't improved for " << GLOBAL_STAGNATION_LIMIT << " generations." << std::endl;
-                  std::cout << "Stopping at Generation " << gen + 1 << "." << std::endl;
+                  std::cout << "GLOBAL STAGNATION DETECTED: No improvement for " << GLOBAL_STAGNATION_LIMIT << " generations." << std::endl;
+                  std::cout << "Initiating revitalization (re-initializing half of the islands)..." << std::endl;
+                  // Revitalización: Re-inicializar la mitad de las islas
+                  int islands_to_reset = num_islands / 2;
+                  if (islands_to_reset == 0 && num_islands > 0) islands_to_reset = 1; // Reset at least one if num_islands is 1
+                  
+                  for (int i = 0; i < islands_to_reset; ++i) {
+                      // Elegir una isla al azar para re-inicializar
+                      // Podríamos hacer una selección más sofisticada, pero por ahora, simple es mejor
+                      int island_idx_to_reset = i; // Resetear las primeras 'islands_to_reset' islas
+                      
+                      std::cout << "  - Re-initializing Island " << island_idx_to_reset << std::endl;
+                      islands[island_idx_to_reset] = std::make_unique<Island>(island_idx_to_reset, pop_per_island);
+                      // Evaluar la nueva población de la isla
+                      evaluate_population(*islands[island_idx_to_reset]);
+                  }
+                  
+                  // Resetear el contador de estancamiento global para dar otra oportunidad
+                  generation_last_improvement = gen;
+                  last_overall_best_fitness = overall_best_fitness; // Mantener el mejor fitness actual
+                  
+                  std::cout << "Revitalization complete. Continuing evolution." << std::endl;
                   std::cout << "========================================" << std::endl;
-                  break;
              }
         }
 
@@ -411,4 +430,3 @@ NodePtr GeneticAlgorithm::run() {
       std::cout << "========================================" << std::endl;
     return overall_best_tree;
 }
-
