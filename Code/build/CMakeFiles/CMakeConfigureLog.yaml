@@ -24,7 +24,7 @@ events:
       The output was:
       0
       Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
-      Compilaci├│n iniciada a las 7/07/2025 3:44:03 p.┬ám..
+      Compilaci├│n iniciada a las 7/07/2025 3:53:57 p.┬ám..
       
       Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCXX\\CompilerIdCXX.vcxproj" en nodo 1 (destinos predeterminados).
       PrepareForBuild:
@@ -53,7 +53,7 @@ events:
           0 Advertencia(s)
           0 Errores
       
-      Tiempo transcurrido 00:00:01.49
+      Tiempo transcurrido 00:00:01.36
       
       
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CompilerIdCXX.exe"
@@ -79,7 +79,7 @@ events:
       The output was:
       0
       Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
-      Compilaci├│n iniciada a las 7/07/2025 3:44:05 p.┬ám..
+      Compilaci├│n iniciada a las 7/07/2025 3:53:59 p.┬ám..
       
       Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj" en nodo 1 (destinos predeterminados).
       PrepareForBuild:
@@ -95,7 +95,7 @@ events:
       CudaBuildCore:
         Compiling CUDA source file CMakeCUDACompilerId.cu...
         Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug".
-        cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmp2d222b9e8be6473291b7d174e8fa911e.cmd"
+        cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpc04f8aa0f9264ebaacb9337341444461.cmd"
         "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe" -gencode=arch=compute_52,code=\\"sm_52,compute_52\\" --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu   -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"  -G   --keep-dir CompilerIdCUDA\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -v -allow-unsupported-compiler -g  -D_MBCS -Xcompiler "/EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/FdDebug\\vc143.pdb" -o C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu"
         
         C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA>"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe" -gencode=arch=compute_52,code=\\"sm_52,compute_52\\" --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu   -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"  -G   --keep-dir CompilerIdCUDA\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -v -allow-unsupported-compiler -g  -D_MBCS -Xcompiler "/EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/FdDebug\\vc143.pdb" -o C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" 
@@ -117,23 +117,23 @@ events:
         #$ CUDAFE_FLAGS=--sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"
         #$ PTXAS_FLAGS=
         CMakeCUDACompilerId.cu
-        #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res: [-D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]
-        #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-6_CMakeCUDACompilerId.cpp4.ii" 
+        #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res: [-D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]
+        #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-6_CMakeCUDACompilerId.cpp4.ii" 
         CMakeCUDACompilerId.cu
-        #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res
-        #$ cudafe++ --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10" --m64 --parse_templates --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-5_CMakeCUDACompilerId.module_id" "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-6_CMakeCUDACompilerId.cpp4.ii" 
-        #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]
-        #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-9_CMakeCUDACompilerId.cpp1.ii" 
+        #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res
+        #$ cudafe++ --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10" --m64 --parse_templates --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-5_CMakeCUDACompilerId.module_id" "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-6_CMakeCUDACompilerId.cpp4.ii" 
+        #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]
+        #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-9_CMakeCUDACompilerId.cpp1.ii" 
         CMakeCUDACompilerId.cu
-        #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res
-        #$ ""%CICC_PATH%\\cicc" --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin.c" -g -O0 -tused --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-5_CMakeCUDACompilerId.module_id" --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.c" --stub_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.gpu"  "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-9_CMakeCUDACompilerId.cpp1.ii" -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx""
-        #$ ptxas -arch=sm_52 -m64 -g --dont-merge-basicblocks --return-at-end "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx"  -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" 
-        #$ fatbinary -64 --ident="C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --cmdline="-g --dont-merge-basicblocks --return-at-end " --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -g "--image3=kind=elf,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx" --embedded-fatbin="C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin.c" 
-        #$ erase C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin
-        #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -c -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"   -Zi "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" ]
-        #$ cl.exe @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res" -Fo"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CompilerIdCUDA/x64/Debug/CMakeCUDACompilerId.cu.obj" 
-        tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp
-        #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res
+        #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res
+        #$ ""%CICC_PATH%\\cicc" --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin.c" -g -O0 -tused --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-5_CMakeCUDACompilerId.module_id" --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.c" --stub_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.gpu"  "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-9_CMakeCUDACompilerId.cpp1.ii" -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx""
+        #$ ptxas -arch=sm_52 -m64 -g --dont-merge-basicblocks --return-at-end "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx"  -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" 
+        #$ fatbinary -64 --ident="C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --cmdline="-g --dont-merge-basicblocks --return-at-end " --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -g "--image3=kind=elf,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx" --embedded-fatbin="C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin.c" 
+        #$ erase C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin
+        #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -c -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"   -Zi "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" ]
+        #$ cl.exe @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res" -Fo"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CompilerIdCUDA/x64/Debug/CMakeCUDACompilerId.cu.obj" 
+        tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp
+        #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res
       Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj" (CudaBuildCore destinos).
       Link:
         C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:".\\CompilerIdCUDA.exe" /INCREMENTAL:NO /NOLOGO /LIBPATH:"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64" cudart_static.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /PDB:".\\CompilerIdCUDA.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:".\\CompilerIdCUDA.lib" /MACHINE:X64 "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj"
@@ -158,7 +158,7 @@ events:
           1 Advertencia(s)
           0 Errores
       
-      Tiempo transcurrido 00:00:03.09
+      Tiempo transcurrido 00:00:02.98
       
       
       Compilation of the CUDA compiler identification source "CMakeCUDACompilerId.cu" produced "CompilerIdCUDA.exe"
@@ -185,7 +185,7 @@ events:
         found 'LIBRARIES=' string: ["/LIBPATH:C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../lib/x64"]
         found 'INCLUDES=' string: ["-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"  ]
         considering line: [Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework]
-        considering line: [Compilaci├│n iniciada a las 7/07/2025 3:44:05 p.┬ám..]
+        considering line: [Compilaci├│n iniciada a las 7/07/2025 3:53:59 p.┬ám..]
         considering line: [Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj" en nodo 1 (destinos predeterminados).]
         considering line: [PrepareForBuild:]
         considering line: [  Creando directorio "Debug\\".]
@@ -200,28 +200,28 @@ events:
         considering line: [CudaBuildCore:]
         considering line: [  Compiling CUDA source file CMakeCUDACompilerId.cu...]
         considering line: [  Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug".]
-        considering line: [  cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmp2d222b9e8be6473291b7d174e8fa911e.cmd"]
+        considering line: [  cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpc04f8aa0f9264ebaacb9337341444461.cmd"]
         considering line: [  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe" -gencode=arch=compute_52,code=\\"sm_52,compute_52\\" --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu   -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"  -G   --keep-dir CompilerIdCUDA\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -v -allow-unsupported-compiler -g  -D_MBCS -Xcompiler "/EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/FdDebug\\vc143.pdb" -o C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu"]
         considering line: [  ]
         considering line: [  C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA>"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe" -gencode=arch=compute_52,code=\\"sm_52,compute_52\\" --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu   -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"  -G   --keep-dir CompilerIdCUDA\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -v -allow-unsupported-compiler -g  -D_MBCS -Xcompiler "/EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/FdDebug\\vc143.pdb" -o C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]
         considering line: [                                    CMakeCUDACompilerId.cu]
-        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res: [-D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
-        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res: [-D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
+        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
         considering line: [  CMakeCUDACompilerId.cu]
-        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res]
-        considering line: [  #$ cudafe++ --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10" --m64 --parse_templates --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-5_CMakeCUDACompilerId.module_id" "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
-        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
-        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-9_CMakeCUDACompilerId.cpp1.ii" ]
+        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res]
+        considering line: [  #$ cudafe++ --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10" --m64 --parse_templates --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-5_CMakeCUDACompilerId.module_id" "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
+        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-9_CMakeCUDACompilerId.cpp1.ii" ]
         considering line: [  CMakeCUDACompilerId.cu]
-        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res]
-        considering line: [  #$ ""%CICC_PATH%\\cicc" --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin.c" -g -O0 -tused --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-5_CMakeCUDACompilerId.module_id" --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.c" --stub_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.gpu"  "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-9_CMakeCUDACompilerId.cpp1.ii" -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx""]
-        considering line: [  #$ ptxas -arch=sm_52 -m64 -g --dont-merge-basicblocks --return-at-end "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx"  -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" ]
-        considering line: [  #$ fatbinary -64 --ident="C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --cmdline="-g --dont-merge-basicblocks --return-at-end " --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -g "--image3=kind=elf,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx" --embedded-fatbin="C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin.c" ]
-        considering line: [  #$ erase C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin]
-        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -c -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"   -Zi "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" ]]
-        considering line: [  #$ cl.exe @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res" -Fo"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CompilerIdCUDA/x64/Debug/CMakeCUDACompilerId.cu.obj" ]
-        considering line: [  tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp]
-        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res]
+        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res]
+        considering line: [  #$ ""%CICC_PATH%\\cicc" --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin.c" -g -O0 -tused --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-5_CMakeCUDACompilerId.module_id" --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.c" --stub_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.gpu"  "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-9_CMakeCUDACompilerId.cpp1.ii" -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx""]
+        considering line: [  #$ ptxas -arch=sm_52 -m64 -g --dont-merge-basicblocks --return-at-end "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx"  -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" ]
+        considering line: [  #$ fatbinary -64 --ident="C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --cmdline="-g --dont-merge-basicblocks --return-at-end " --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -g "--image3=kind=elf,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx" --embedded-fatbin="C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin.c" ]
+        considering line: [  #$ erase C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin]
+        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -c -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"   -Zi "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" ]]
+        considering line: [  #$ cl.exe @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res" -Fo"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CompilerIdCUDA/x64/Debug/CMakeCUDACompilerId.cu.obj" ]
+        considering line: [  tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp]
+        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res]
         considering line: [Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj" (CudaBuildCore destinos).]
         considering line: [Link:]
         considering line: [  C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:".\\CompilerIdCUDA.exe" /INCREMENTAL:NO /NOLOGO /LIBPATH:"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64" cudart_static.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /PDB:".\\CompilerIdCUDA.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:".\\CompilerIdCUDA.lib" /MACHINE:X64 "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj"]
@@ -245,7 +245,7 @@ events:
         considering line: [ use la biblioteca /NODEFAULTLIB:biblioteca [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj]]
         considering line: [    1 Advertencia(s)]
         considering line: [    0 Errores]
-        considering line: [Tiempo transcurrido 00:00:03.09]
+        considering line: [Tiempo transcurrido 00:00:02.98]
         considering line: []
       
         link line regex: [^( *|.*[/\\])(ld[0-9]*(\\.[a-z]+)?|link\\.exe|lld-link(\\.exe)?|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
@@ -288,7 +288,7 @@ events:
         found 'LIBRARIES=' string: ["/LIBPATH:C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../lib/x64"]
         found 'INCLUDES=' string: ["-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"  ]
         considering line: [Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework]
-        considering line: [Compilaci├│n iniciada a las 7/07/2025 3:44:05 p.┬ám..]
+        considering line: [Compilaci├│n iniciada a las 7/07/2025 3:53:59 p.┬ám..]
         considering line: [Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj" en nodo 1 (destinos predeterminados).]
         considering line: [PrepareForBuild:]
         considering line: [  Creando directorio "Debug\\".]
@@ -303,28 +303,28 @@ events:
         considering line: [CudaBuildCore:]
         considering line: [  Compiling CUDA source file CMakeCUDACompilerId.cu...]
         considering line: [  Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug".]
-        considering line: [  cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmp2d222b9e8be6473291b7d174e8fa911e.cmd"]
+        considering line: [  cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpc04f8aa0f9264ebaacb9337341444461.cmd"]
         considering line: [  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe" -gencode=arch=compute_52,code=\\"sm_52,compute_52\\" --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu   -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"  -G   --keep-dir CompilerIdCUDA\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -v -allow-unsupported-compiler -g  -D_MBCS -Xcompiler "/EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/FdDebug\\vc143.pdb" -o C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu"]
         considering line: [  ]
         considering line: [  C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA>"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe" -gencode=arch=compute_52,code=\\"sm_52,compute_52\\" --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu   -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"  -G   --keep-dir CompilerIdCUDA\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -v -allow-unsupported-compiler -g  -D_MBCS -Xcompiler "/EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd " -Xcompiler "/FdDebug\\vc143.pdb" -o C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]
         considering line: [                                    CMakeCUDACompilerId.cu]
-        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res: [-D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
-        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res: [-D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
+        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
         considering line: [  CMakeCUDACompilerId.cu]
-        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-8.res]
-        considering line: [  #$ cudafe++ --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10" --m64 --parse_templates --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-5_CMakeCUDACompilerId.module_id" "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
-        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
-        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-9_CMakeCUDACompilerId.cpp1.ii" ]
+        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-8.res]
+        considering line: [  #$ cudafe++ --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10" --m64 --parse_templates --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" --stub_file_name "tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_module_id_file --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-5_CMakeCUDACompilerId.module_id" "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-6_CMakeCUDACompilerId.cpp4.ii" ]
+        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -E -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc -D__CUDACC__ -D__NVCC__ -D__CUDACC_DEBUG__  /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"    -D "_MBCS" -D__CUDACC_VER_MAJOR__=12 -D__CUDACC_VER_MINOR__=6 -D__CUDACC_VER_BUILD__=20 -D__CUDA_API_VER_MAJOR__=12 -D__CUDA_API_VER_MINOR__=6 -D__NVCC_DIAG_PRAGMA_SUPPORT__=1 -FI "cuda_runtime.h" -Zi "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" ]]
+        considering line: [  #$ cl.exe -D__NV_NO_HOST_COMPILER_CHECK=1 @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res" > "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-9_CMakeCUDACompilerId.cpp1.ii" ]
         considering line: [  CMakeCUDACompilerId.cu]
-        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-10.res]
-        considering line: [  #$ ""%CICC_PATH%\\cicc" --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin.c" -g -O0 -tused --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-5_CMakeCUDACompilerId.module_id" --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.c" --stub_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.gpu"  "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-9_CMakeCUDACompilerId.cpp1.ii" -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx""]
-        considering line: [  #$ ptxas -arch=sm_52 -m64 -g --dont-merge-basicblocks --return-at-end "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx"  -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" ]
-        considering line: [  #$ fatbinary -64 --ident="C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --cmdline="-g --dont-merge-basicblocks --return-at-end " --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -g "--image3=kind=elf,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.ptx" --embedded-fatbin="C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin.c" ]
-        considering line: [  #$ erase C:/Users/juanu/AppData/Local/Temp/tmpxft_00003a4c_00000000-4_CMakeCUDACompilerId.fatbin]
-        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -c -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"   -Zi "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" ]]
-        considering line: [  #$ cl.exe @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res" -Fo"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CompilerIdCUDA/x64/Debug/CMakeCUDACompilerId.cu.obj" ]
-        considering line: [  tmpxft_00003a4c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp]
-        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00003a4c_00000000-12.res]
+        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-10.res]
+        considering line: [  #$ ""%CICC_PATH%\\cicc" --ms_c++14 --microsoft_version=1944 --msvc_target_version=1944 --compiler_bindir "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/../../../../../../.." --sdk_dir "C:/Program Files (x86)/Windows Kits/10/" --display_error_number --orig_src_file_name "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --orig_src_path_name "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CMakeCUDACompilerId.cu" --allow_managed --debug_mode --sdk_dir "C:\\Program Files (x86)\\Windows Kits\\10"  -arch compute_52 -m64 --no-version-ident -ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 --include_file_name "tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin.c" -g -O0 -tused --module_id_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-5_CMakeCUDACompilerId.module_id" --gen_c_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.c" --stub_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.stub.c" --gen_device_file_name "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.gpu"  "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-9_CMakeCUDACompilerId.cpp1.ii" -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx""]
+        considering line: [  #$ ptxas -arch=sm_52 -m64 -g --dont-merge-basicblocks --return-at-end "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx"  -o "C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" ]
+        considering line: [  #$ fatbinary -64 --ident="C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CMakeCUDACompilerId.cu" --cmdline="-g --dont-merge-basicblocks --return-at-end " --cicc-cmdline="-ftz=0 -prec_div=1 -prec_sqrt=1 -fmad=1 " -g "--image3=kind=elf,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-11_CMakeCUDACompilerId.sm_52.cubin" "--image3=kind=ptx,sm=52,file=C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.ptx" --embedded-fatbin="C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin.c" ]
+        considering line: [  #$ erase C:/Users/juanu/AppData/Local/Temp/tmpxft_00005a7c_00000000-4_CMakeCUDACompilerId.fatbin]
+        considering line: [  #$ resource file C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res: [-D__CUDA_ARCH__=520 -D__CUDA_ARCH_LIST__=520 -D__NV_LEGACY_LAUNCH -nologo -c -TP  -DCUDA_DOUBLE_MATH_FUNCTIONS -EHsc /EHsc /W0 /nologo /Od /FS /Zi /RTC1 /MDd /FdDebug\\vc143.pdb -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" -I"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/include" "-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin/../include"   -Zi "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp" ]]
+        considering line: [  #$ cl.exe @"C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res" -Fo"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/3.31.6-msvc6/CompilerIdCUDA/CompilerIdCUDA/x64/Debug/CMakeCUDACompilerId.cu.obj" ]
+        considering line: [  tmpxft_00005a7c_00000000-7_CMakeCUDACompilerId.cudafe1.cpp]
+        considering line: [  #$ erase C:\\Users\\juanu\\AppData\\Local\\Temp/tmpxft_00005a7c_00000000-12.res]
         considering line: [Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj" (CudaBuildCore destinos).]
         considering line: [Link:]
         considering line: [  C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:".\\CompilerIdCUDA.exe" /INCREMENTAL:NO /NOLOGO /LIBPATH:"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64" cudart_static.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /PDB:".\\CompilerIdCUDA.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:".\\CompilerIdCUDA.lib" /MACHINE:X64 "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA\\x64\\Debug\\CMakeCUDACompilerId.cu.obj"]
@@ -348,7 +348,7 @@ events:
         considering line: [ use la biblioteca /NODEFAULTLIB:biblioteca [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\3.31.6-msvc6\\CompilerIdCUDA\\CompilerIdCUDA.vcxproj]]
         considering line: [    1 Advertencia(s)]
         considering line: [    0 Errores]
-        considering line: [Tiempo transcurrido 00:00:03.09]
+        considering line: [Tiempo transcurrido 00:00:02.98]
         considering line: []
       
         link line regex: [^( *|.*[/\\])(ld[0-9]*(\\.[a-z]+)?|link\\.exe|lld-link(\\.exe)?|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
@@ -388,8 +388,8 @@ events:
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-yqe6eh"
-      binary: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-yqe6eh"
+      source: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-7nli0g"
+      binary: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-7nli0g"
     cmakeVariables:
       CMAKE_CUDA_ARCHITECTURES: "52"
       CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /GR /EHsc"
@@ -400,40 +400,40 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-yqe6eh'
+        Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-7nli0g'
         
-        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_38259.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_4fdd1.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
         Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
-        Compilaci├│n iniciada a las 7/07/2025 3:44:10 p.┬ám..
+        Compilaci├│n iniciada a las 7/07/2025 3:54:03 p.┬ám..
         
-        Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-yqe6eh\\cmTC_38259.vcxproj" en nodo 1 (destinos predeterminados).
+        Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-7nli0g\\cmTC_4fdd1.vcxproj" en nodo 1 (destinos predeterminados).
         PrepareForBuild:
-          Creando directorio "cmTC_38259.dir\\Debug\\".
+          Creando directorio "cmTC_4fdd1.dir\\Debug\\".
           La salida estructurada est├í habilitada. El formato del diagn├│stico del compilador reflejar├í la jerarqu├¡a de errores. Consulte https://aka.ms/cpp/structured-output para obtener m├ís detalles.
-          Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-yqe6eh\\Debug\\".
-          Creando directorio "cmTC_38259.dir\\Debug\\cmTC_38259.tlog\\".
+          Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-7nli0g\\Debug\\".
+          Creando directorio "cmTC_4fdd1.dir\\Debug\\cmTC_4fdd1.tlog\\".
         InitializeBuildStatus:
-          Se crear├í "cmTC_38259.dir\\Debug\\cmTC_38259.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".
-          Aplicando tarea Touch a "cmTC_38259.dir\\Debug\\cmTC_38259.tlog\\unsuccessfulbuild".
+          Se crear├í "cmTC_4fdd1.dir\\Debug\\cmTC_4fdd1.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".
+          Aplicando tarea Touch a "cmTC_4fdd1.dir\\Debug\\cmTC_4fdd1.tlog\\unsuccessfulbuild".
         ClCompile:
-          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_38259.dir\\Debug\\\\" /Fd"cmTC_38259.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_4fdd1.dir\\Debug\\\\" /Fd"cmTC_4fdd1.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
           Compilador de optimizaci├│n de C/C++ de Microsoft (R) versi├│n 19.44.35211 para x64
           (C) Microsoft Corporation. Todos los derechos reservados.
-          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_38259.dir\\Debug\\\\" /Fd"cmTC_38259.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /Fo"cmTC_4fdd1.dir\\Debug\\\\" /Fd"cmTC_4fdd1.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCXXCompilerABI.cpp"
           CMakeCXXCompilerABI.cpp
         Link:
-          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-yqe6eh\\Debug\\cmTC_38259.exe" /INCREMENTAL /ILK:"cmTC_38259.dir\\Debug\\cmTC_38259.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-yqe6eh/Debug/cmTC_38259.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-yqe6eh/Debug/cmTC_38259.lib" /MACHINE:X64  /machine:x64 cmTC_38259.dir\\Debug\\CMakeCXXCompilerABI.obj
-          cmTC_38259.vcxproj -> C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-yqe6eh\\Debug\\cmTC_38259.exe
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-7nli0g\\Debug\\cmTC_4fdd1.exe" /INCREMENTAL /ILK:"cmTC_4fdd1.dir\\Debug\\cmTC_4fdd1.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-7nli0g/Debug/cmTC_4fdd1.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-7nli0g/Debug/cmTC_4fdd1.lib" /MACHINE:X64  /machine:x64 cmTC_4fdd1.dir\\Debug\\CMakeCXXCompilerABI.obj
+          cmTC_4fdd1.vcxproj -> C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-7nli0g\\Debug\\cmTC_4fdd1.exe
         FinalizeBuildStatus:
-          Se eliminar├í el archivo "cmTC_38259.dir\\Debug\\cmTC_38259.tlog\\unsuccessfulbuild".
-          Aplicando tarea Touch a "cmTC_38259.dir\\Debug\\cmTC_38259.tlog\\cmTC_38259.lastbuildstate".
-        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-yqe6eh\\cmTC_38259.vcxproj" (destinos predeterminados).
+          Se eliminar├í el archivo "cmTC_4fdd1.dir\\Debug\\cmTC_4fdd1.tlog\\unsuccessfulbuild".
+          Aplicando tarea Touch a "cmTC_4fdd1.dir\\Debug\\cmTC_4fdd1.tlog\\cmTC_4fdd1.lastbuildstate".
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-7nli0g\\cmTC_4fdd1.vcxproj" (destinos predeterminados).
         
         Compilaci├│n correcta.
             0 Advertencia(s)
             0 Errores
         
-        Tiempo transcurrido 00:00:01.37
+        Tiempo transcurrido 00:00:01.34
         
       exitCode: 0
   -
@@ -464,3 +464,371 @@ events:
       Running the CXX compiler's linker: "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/link.exe" "-v"
       Microsoft (R) Incremental Linker Version 14.44.35211.0
       Copyright (C) Microsoft Corporation.  All rights reserved.
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:74 (try_compile)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCUDACompiler.cmake:19 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:5 (project)"
+    checks:
+      - "Detecting CUDA compiler ABI info"
+    directories:
+      source: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l"
+      binary: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CUDA_FLAGS: "-D_WINDOWS -Xcompiler=\" /GR /EHsc\""
+      CMAKE_CUDA_FLAGS_DEBUG: "-Xcompiler=\" -Zi -Ob0 -Od /RTC1\""
+      CMAKE_CUDA_RUNTIME_LIBRARY: "Static"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+    buildResult:
+      variable: "CMAKE_CUDA_ABI_COMPILED"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l'
+        
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_a69b7.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
+        Compilaci├│n iniciada a las 7/07/2025 3:54:05 p.┬ám..
+        
+        Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" en nodo 1 (destinos predeterminados).
+        PrepareForBuild:
+          Creando directorio "cmTC_a69b7.dir\\Debug\\".
+          La salida estructurada est├í habilitada. El formato del diagn├│stico del compilador reflejar├í la jerarqu├¡a de errores. Consulte https://aka.ms/cpp/structured-output para obtener m├ís detalles.
+          Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\Debug\\".
+          Creando directorio "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\".
+        InitializeBuildStatus:
+          Se crear├í "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".
+          Aplicando tarea Touch a "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\unsuccessfulbuild".
+        AddCudaCompileDeps:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe /E /nologo /showIncludes /TP /D__CUDACC__ /D__CUDACC_VER_MAJOR__=12 /D__CUDACC_VER_MINOR__=6 /D_WINDOWS /DCMAKE_INTDIR="Debug" /D_MBCS /DCMAKE_INTDIR="Debug" /I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin" /I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" /I. /FIcuda_runtime.h /c "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu" 
+        El proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (1) est├í compilando "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (1:2) en el nodo 1 (CudaBuildCore destinos).
+        CudaBuildCore:
+          Compiling CUDA source file ..\\..\\..\\..\\..\\..\\..\\..\\..\\..\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu...
+          cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmp2f725936a17049eea361aa49be75a79a.cmd"
+          "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_a69b7\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static --generate-code=arch=compute_52,code=[compute_52,sm_52] -Xcompiler="/EHsc -Zi -Ob0 -v" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_a69b7.dir\\Debug\\vc143.pdb" -o cmTC_a69b7.dir\\Debug\\CMakeCUDACompilerABI.obj "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu"
+          
+          C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l>"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_a69b7\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static --generate-code=arch=compute_52,code=[compute_52,sm_52] -Xcompiler="/EHsc -Zi -Ob0 -v" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_a69b7.dir\\Debug\\vc143.pdb" -o cmTC_a69b7.dir\\Debug\\CMakeCUDACompilerABI.obj "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu" 
+        cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          CMakeCUDACompilerABI.cu
+        cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          CMakeCUDACompilerABI.cu
+          CMakeCUDACompilerABI.cu
+        cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          tmpxft_00003900_00000000-7_CMakeCUDACompilerABI.cudafe1.cpp
+        C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCompilerCUDAArch.h(10): warning C4305: 'return': truncamiento de 'int' a 'bool' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (CudaBuildCore destinos).
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\Debug\\cmTC_a69b7.exe" /INCREMENTAL /ILK:"cmTC_a69b7.dir\\Debug\\cmTC_a69b7.ilk" /NOLOGO /LIBPATH:"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64" cudadevrt.lib cudart_static.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.lib" /MACHINE:X64  /machine:x64 -v cmTC_a69b7.dir\\Debug\\CMakeCUDACompilerABI.obj
+        LINK : warning LNK4044: opci├│n '/v' no reconocida; omitida [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+             Creando biblioteca C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.lib y objeto C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.exp
+        LINK : warning LNK4098: la biblioteca predeterminada'LIBCMT' entra en conflicto con otras bibliotecas; use la biblioteca /NODEFAULTLIB:biblioteca [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          cmTC_a69b7.vcxproj -> C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\Debug\\cmTC_a69b7.exe
+        FinalizeBuildStatus:
+          Se eliminar├í el archivo "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\unsuccessfulbuild".
+          Aplicando tarea Touch a "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\cmTC_a69b7.lastbuildstate".
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (destinos predeterminados).
+        
+        Compilaci├│n correcta.
+        
+        "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (destino predeterminado) (1) ->
+        "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (CudaBuildCore destino) (1:2) ->
+        (CudaBuildCore destino) -> 
+          cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCompilerCUDAArch.h(10): warning C4305: 'return': truncamiento de 'int' a 'bool' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+        
+        
+        "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (destino predeterminado) (1) ->
+        (Link destino) -> 
+          LINK : warning LNK4044: opci├│n '/v' no reconocida; omitida [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+          LINK : warning LNK4098: la biblioteca predeterminada'LIBCMT' entra en conflicto con otras bibliotecas; use la biblioteca /NODEFAULTLIB:biblioteca [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]
+        
+            6 Advertencia(s)
+            0 Errores
+        
+        Tiempo transcurrido 00:00:03.03
+        
+      exitCode: 0
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:182 (message)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCUDACompiler.cmake:19 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:5 (project)"
+    message: |
+      Parsed CUDA implicit include dir info: rv=start
+        warn: unable to parse implicit include dirs!
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:218 (message)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCUDACompiler.cmake:19 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:5 (project)"
+    message: |
+      Parsed CUDA implicit link information:
+        link line regex: [^( *|.*[/\\])(ld[0-9]*(\\.[a-z]+)?|link\\.exe|lld-link(\\.exe)?|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
+        linker tool regex: [^[ 	]*(->|")?[ 	]*(([^"]*[/\\])?(ld[0-9]*(\\.[a-z]+)?|link\\.exe|lld-link(\\.exe)?))("|,| |$)]
+        ignore line: [Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l']
+        ignore line: []
+        ignore line: [Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_a69b7.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n]
+        ignore line: [Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework]
+        ignore line: [Compilaci├│n iniciada a las 7/07/2025 3:54:05 p.┬ám..]
+        ignore line: []
+        ignore line: [Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" en nodo 1 (destinos predeterminados).]
+        ignore line: [PrepareForBuild:]
+        ignore line: [  Creando directorio "cmTC_a69b7.dir\\Debug\\".]
+        ignore line: [  La salida estructurada est├í habilitada. El formato del diagn├│stico del compilador reflejar├í la jerarqu├¡a de errores. Consulte https://aka.ms/cpp/structured-output para obtener m├ís detalles.]
+        ignore line: [  Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\Debug\\".]
+        ignore line: [  Creando directorio "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\".]
+        ignore line: [InitializeBuildStatus:]
+        ignore line: [  Se crear├í "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".]
+        ignore line: [  Aplicando tarea Touch a "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\unsuccessfulbuild".]
+        ignore line: [AddCudaCompileDeps:]
+        ignore line: [  C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe /E /nologo /showIncludes /TP /D__CUDACC__ /D__CUDACC_VER_MAJOR__=12 /D__CUDACC_VER_MINOR__=6 /D_WINDOWS /DCMAKE_INTDIR="Debug" /D_MBCS /DCMAKE_INTDIR="Debug" /I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin" /I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" /I. /FIcuda_runtime.h /c "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu" ]
+        ignore line: [El proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (1) est├í compilando "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (1:2) en el nodo 1 (CudaBuildCore destinos).]
+        ignore line: [CudaBuildCore:]
+        ignore line: [  Compiling CUDA source file ..\\..\\..\\..\\..\\..\\..\\..\\..\\..\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu...]
+        ignore line: [  cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmp2f725936a17049eea361aa49be75a79a.cmd"]
+        ignore line: [  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_a69b7\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static --generate-code=arch=compute_52 code=[compute_52 sm_52] -Xcompiler="/EHsc -Zi -Ob0 -v" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_a69b7.dir\\Debug\\vc143.pdb" -o cmTC_a69b7.dir\\Debug\\CMakeCUDACompilerABI.obj "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu"]
+        ignore line: [  ]
+        ignore line: [  C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l>"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_a69b7\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static --generate-code=arch=compute_52 code=[compute_52 sm_52] -Xcompiler="/EHsc -Zi -Ob0 -v" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_a69b7.dir\\Debug\\vc143.pdb" -o cmTC_a69b7.dir\\Debug\\CMakeCUDACompilerABI.obj "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCUDACompilerABI.cu" ]
+        ignore line: [cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  CMakeCUDACompilerABI.cu]
+        ignore line: [cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  CMakeCUDACompilerABI.cu]
+        ignore line: [  CMakeCUDACompilerABI.cu]
+        ignore line: [cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  tmpxft_00003900_00000000-7_CMakeCUDACompilerABI.cudafe1.cpp]
+        ignore line: [C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCompilerCUDAArch.h(10): warning C4305: 'return': truncamiento de 'int' a 'bool' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (CudaBuildCore destinos).]
+        ignore line: [Link:]
+        ignore line: [  C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\Debug\\cmTC_a69b7.exe" /INCREMENTAL /ILK:"cmTC_a69b7.dir\\Debug\\cmTC_a69b7.ilk" /NOLOGO /LIBPATH:"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64" cudadevrt.lib cudart_static.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.lib" /MACHINE:X64  /machine:x64 -v cmTC_a69b7.dir\\Debug\\CMakeCUDACompilerABI.obj]
+        ignore line: [LINK : warning LNK4044: opci├│n '/v' no reconocida]
+        ignore line: [ omitida [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [     Creando biblioteca C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.lib y objeto C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-k1e62l/Debug/cmTC_a69b7.exp]
+        ignore line: [LINK : warning LNK4098: la biblioteca predeterminada'LIBCMT' entra en conflicto con otras bibliotecas]
+        ignore line: [ use la biblioteca /NODEFAULTLIB:biblioteca [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  cmTC_a69b7.vcxproj -> C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\Debug\\cmTC_a69b7.exe]
+        ignore line: [FinalizeBuildStatus:]
+        ignore line: [  Se eliminar├í el archivo "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\unsuccessfulbuild".]
+        ignore line: [  Aplicando tarea Touch a "cmTC_a69b7.dir\\Debug\\cmTC_a69b7.tlog\\cmTC_a69b7.lastbuildstate".]
+        ignore line: [Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (destinos predeterminados).]
+        ignore line: []
+        ignore line: [Compilaci├│n correcta.]
+        ignore line: []
+        ignore line: ["C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (destino predeterminado) (1) ->]
+        ignore line: ["C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (CudaBuildCore destino) (1:2) ->]
+        ignore line: [(CudaBuildCore destino) -> ]
+        ignore line: [  cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  cl : L├¡nea de comandos warning D9002: se omite la opci├│n desconocida '-v' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\share\\cmake-3.31\\Modules\\CMakeCompilerCUDAArch.h(10): warning C4305: 'return': truncamiento de 'int' a 'bool' [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: []
+        ignore line: []
+        ignore line: ["C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj" (destino predeterminado) (1) ->]
+        ignore line: [(Link destino) -> ]
+        ignore line: [  LINK : warning LNK4044: opci├│n '/v' no reconocida]
+        ignore line: [ omitida [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: [  LINK : warning LNK4098: la biblioteca predeterminada'LIBCMT' entra en conflicto con otras bibliotecas]
+        ignore line: [ use la biblioteca /NODEFAULTLIB:biblioteca [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-k1e62l\\cmTC_a69b7.vcxproj]]
+        ignore line: []
+        ignore line: [    6 Advertencia(s)]
+        ignore line: [    0 Errores]
+        ignore line: []
+        ignore line: [Tiempo transcurrido 00:00:03.03]
+        ignore line: []
+        ignore line: []
+        linker tool for 'CUDA': C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/link.exe
+        implicit libs: []
+        implicit objs: []
+        implicit dirs: []
+        implicit fwks: []
+      
+      
+  -
+    kind: "message-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/Internal/CMakeDetermineLinkerId.cmake:40 (message)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeDetermineCompilerABI.cmake:255 (cmake_determine_linker_id)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCUDACompiler.cmake:19 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "CMakeLists.txt:5 (project)"
+    message: |
+      Running the CUDA compiler's linker: "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/HostX64/x64/link.exe" "-v"
+      Microsoft (R) Incremental Linker Version 14.44.35211.0
+      Copyright (C) Microsoft Corporation.  All rights reserved.
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindOpenMP.cmake:252 (try_compile)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindOpenMP.cmake:522 (_OPENMP_GET_FLAGS)"
+      - "CMakeLists.txt:12 (find_package)"
+    description: "Detecting CXX OpenMP compiler info"
+    directories:
+      source: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-91xrm0"
+      binary: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-91xrm0"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /GR /EHsc"
+      CMAKE_CXX_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+    buildResult:
+      variable: "OpenMP_COMPILE_RESULT_CXX_openmp"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-91xrm0'
+        
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_58d01.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
+        Compilaci├│n iniciada a las 7/07/2025 3:54:09 p.┬ám..
+        
+        Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\cmTC_58d01.vcxproj" en nodo 1 (destinos predeterminados).
+        PrepareForBuild:
+          Creando directorio "cmTC_58d01.dir\\Debug\\".
+          La salida estructurada est├í habilitada. El formato del diagn├│stico del compilador reflejar├í la jerarqu├¡a de errores. Consulte https://aka.ms/cpp/structured-output para obtener m├ís detalles.
+          Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\Debug\\".
+          Creando directorio "cmTC_58d01.dir\\Debug\\cmTC_58d01.tlog\\".
+        InitializeBuildStatus:
+          Se crear├í "cmTC_58d01.dir\\Debug\\cmTC_58d01.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".
+          Aplicando tarea Touch a "cmTC_58d01.dir\\Debug\\cmTC_58d01.tlog\\unsuccessfulbuild".
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /openmp /std:c++17 /Fo"cmTC_58d01.dir\\Debug\\\\" /Fd"cmTC_58d01.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\OpenMPTryFlag.cpp"
+          Compilador de optimizaci├│n de C/C++ de Microsoft (R) versi├│n 19.44.35211 para x64
+          (C) Microsoft Corporation. Todos los derechos reservados.
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /openmp /std:c++17 /Fo"cmTC_58d01.dir\\Debug\\\\" /Fd"cmTC_58d01.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\OpenMPTryFlag.cpp"
+          OpenMPTryFlag.cpp
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\Debug\\cmTC_58d01.exe" /INCREMENTAL /ILK:"cmTC_58d01.dir\\Debug\\cmTC_58d01.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-91xrm0/Debug/cmTC_58d01.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-91xrm0/Debug/cmTC_58d01.lib" /MACHINE:X64  /machine:x64 cmTC_58d01.dir\\Debug\\OpenMPTryFlag.obj
+          cmTC_58d01.vcxproj -> C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\Debug\\cmTC_58d01.exe
+        FinalizeBuildStatus:
+          Se eliminar├í el archivo "cmTC_58d01.dir\\Debug\\cmTC_58d01.tlog\\unsuccessfulbuild".
+          Aplicando tarea Touch a "cmTC_58d01.dir\\Debug\\cmTC_58d01.tlog\\cmTC_58d01.lastbuildstate".
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-91xrm0\\cmTC_58d01.vcxproj" (destinos predeterminados).
+        
+        Compilaci├│n correcta.
+            0 Advertencia(s)
+            0 Errores
+        
+        Tiempo transcurrido 00:00:01.33
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindOpenMP.cmake:252 (try_compile)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindOpenMP.cmake:522 (_OPENMP_GET_FLAGS)"
+      - "CMakeLists.txt:12 (find_package)"
+    description: "Detecting CUDA OpenMP compiler info"
+    directories:
+      source: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-99m2hh"
+      binary: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-99m2hh"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CUDA_FLAGS: "-D_WINDOWS -Xcompiler=\" /GR /EHsc\""
+      CMAKE_CUDA_FLAGS_DEBUG: "-Xcompiler=\" -Zi -Ob0 -Od /RTC1\""
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+    buildResult:
+      variable: "OpenMP_COMPILE_RESULT_CUDA_openmp"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-99m2hh'
+        
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_e4700.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
+        Compilaci├│n iniciada a las 7/07/2025 3:54:11 p.┬ám..
+        
+        Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" en nodo 1 (destinos predeterminados).
+        PrepareForBuild:
+          Creando directorio "cmTC_e4700.dir\\Debug\\".
+          La salida estructurada est├í habilitada. El formato del diagn├│stico del compilador reflejar├í la jerarqu├¡a de errores. Consulte https://aka.ms/cpp/structured-output para obtener m├ís detalles.
+          Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\Debug\\".
+          Creando directorio "cmTC_e4700.dir\\Debug\\cmTC_e4700.tlog\\".
+        InitializeBuildStatus:
+          Se crear├í "cmTC_e4700.dir\\Debug\\cmTC_e4700.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".
+          Aplicando tarea Touch a "cmTC_e4700.dir\\Debug\\cmTC_e4700.tlog\\unsuccessfulbuild".
+        AddCudaCompileDeps:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\cl.exe /E /nologo /showIncludes /TP /D__CUDACC__ /D__CUDACC_VER_MAJOR__=12 /D__CUDACC_VER_MINOR__=6 /D_WINDOWS /DCMAKE_INTDIR="Debug" /D_MBCS /DCMAKE_INTDIR="Debug" /I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin" /I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include" /I. /FIcuda_runtime.h /c C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\OpenMPTryFlag.cu 
+        El proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" (1) est├í compilando "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" (1:2) en el nodo 1 (CudaBuildCore destinos).
+        CudaBuildCore:
+          Compiling CUDA source file OpenMPTryFlag.cu...
+          cmd.exe /C "C:\\Users\\juanu\\AppData\\Local\\Temp\\tmpd3bafcdcae534eabaebeff35aa173722.cmd"
+          "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_e4700\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -openmp --generate-code=arch=compute_52,code=[compute_52,sm_52] -Xcompiler="/EHsc -Zi -Ob0" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_e4700.dir\\Debug\\vc143.pdb" -o cmTC_e4700.dir\\Debug\\OpenMPTryFlag.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\OpenMPTryFlag.cu"
+          
+          C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh>"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_e4700\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -openmp --generate-code=arch=compute_52,code=[compute_52,sm_52] -Xcompiler="/EHsc -Zi -Ob0" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_e4700.dir\\Debug\\vc143.pdb" -o cmTC_e4700.dir\\Debug\\OpenMPTryFlag.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\OpenMPTryFlag.cu" 
+          nvcc fatal   : Unknown option '-openmp'
+        C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Microsoft\\VC\\v170\\BuildCustomizations\\CUDA 12.6.targets(799,9): error MSB3721: El comando ""C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_e4700\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -openmp --generate-code=arch=compute_52,code=[compute_52,sm_52] -Xcompiler="/EHsc -Zi -Ob0" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_e4700.dir\\Debug\\vc143.pdb" -o cmTC_e4700.dir\\Debug\\OpenMPTryFlag.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\OpenMPTryFlag.cu"" sali├│ con el c├│digo 1. [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj]
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" (CudaBuildCore destinos) -- ERROR.
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" (destinos predeterminados) -- ERROR.
+        
+        ERROR al compilar.
+        
+        "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" (destino predeterminado) (1) ->
+        "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj" (CudaBuildCore destino) (1:2) ->
+        (CudaBuildCore destino) -> 
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Microsoft\\VC\\v170\\BuildCustomizations\\CUDA 12.6.targets(799,9): error MSB3721: El comando ""C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\bin\\nvcc.exe"  --use-local-env -ccbin "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64" -x cu    -I"C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include"     --keep-dir cmTC_e4700\\x64\\Debug  -maxrregcount=0   --machine 64 --compile -cudart static -openmp --generate-code=arch=compute_52,code=[compute_52,sm_52] -Xcompiler="/EHsc -Zi -Ob0" -g  -D_WINDOWS -D"CMAKE_INTDIR=\\"Debug\\"" -D_MBCS -D"CMAKE_INTDIR=\\"Debug\\"" -Xcompiler "/EHsc /W1 /nologo /Od /FS /Zi /RTC1 /MDd /GR" -Xcompiler "/FdcmTC_e4700.dir\\Debug\\vc143.pdb" -o cmTC_e4700.dir\\Debug\\OpenMPTryFlag.obj "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\OpenMPTryFlag.cu"" sali├│ con el c├│digo 1. [C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-99m2hh\\cmTC_e4700.vcxproj]
+        
+            0 Advertencia(s)
+            1 Errores
+        
+        Tiempo transcurrido 00:00:01.64
+        
+      exitCode: 1
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindOpenMP.cmake:456 (try_compile)"
+      - "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/FindOpenMP.cmake:596 (_OPENMP_GET_SPEC_DATE)"
+      - "CMakeLists.txt:12 (find_package)"
+    description: "Detecting CXX OpenMP version"
+    directories:
+      source: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-8xbnj8"
+      binary: "C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-8xbnj8"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "52"
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /GR /EHsc"
+      CMAKE_CXX_FLAGS_DEBUG: "/Zi /Ob0 /Od /RTC1"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+    buildResult:
+      variable: "OpenMP_SPECTEST_CXX_"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-8xbnj8'
+        
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_54ce5.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        Versi├│n de MSBuild 17.14.14+a129329f1 para .NET Framework
+        Compilaci├│n iniciada a las 7/07/2025 3:54:13 p.┬ám..
+        
+        Proyecto "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\cmTC_54ce5.vcxproj" en nodo 1 (destinos predeterminados).
+        PrepareForBuild:
+          Creando directorio "cmTC_54ce5.dir\\Debug\\".
+          La salida estructurada est├í habilitada. El formato del diagn├│stico del compilador reflejar├í la jerarqu├¡a de errores. Consulte https://aka.ms/cpp/structured-output para obtener m├ís detalles.
+          Creando directorio "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\Debug\\".
+          Creando directorio "cmTC_54ce5.dir\\Debug\\cmTC_54ce5.tlog\\".
+        InitializeBuildStatus:
+          Se crear├í "cmTC_54ce5.dir\\Debug\\cmTC_54ce5.tlog\\unsuccessfulbuild" porque se especific├│ "AlwaysCreate".
+          Aplicando tarea Touch a "cmTC_54ce5.dir\\Debug\\cmTC_54ce5.tlog\\unsuccessfulbuild".
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /openmp /std:c++17 /Fo"cmTC_54ce5.dir\\Debug\\\\" /Fd"cmTC_54ce5.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\OpenMPCheckVersion.cpp"
+          Compilador de optimizaci├│n de C/C++ de Microsoft (R) versi├│n 19.44.35211 para x64
+          (C) Microsoft Corporation. Todos los derechos reservados.
+          cl /c /Zi /W1 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /GR /openmp /std:c++17 /Fo"cmTC_54ce5.dir\\Debug\\\\" /Fd"cmTC_54ce5.dir\\Debug\\vc143.pdb" /external:W1 /Gd /TP /errorReport:queue "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\OpenMPCheckVersion.cpp"
+          OpenMPCheckVersion.cpp
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /ERRORREPORT:QUEUE /OUT:"C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\Debug\\cmTC_54ce5.exe" /INCREMENTAL /ILK:"cmTC_54ce5.dir\\Debug\\cmTC_54ce5.ilk" /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-8xbnj8/Debug/cmTC_54ce5.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:/Users/juanu/Documentos/Repositorios/Algoritmo-Genetico-de-Formulas/Code/build/CMakeFiles/CMakeScratch/TryCompile-8xbnj8/Debug/cmTC_54ce5.lib" /MACHINE:X64  /machine:x64 cmTC_54ce5.dir\\Debug\\OpenMPCheckVersion.obj
+          cmTC_54ce5.vcxproj -> C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\Debug\\cmTC_54ce5.exe
+        FinalizeBuildStatus:
+          Se eliminar├í el archivo "cmTC_54ce5.dir\\Debug\\cmTC_54ce5.tlog\\unsuccessfulbuild".
+          Aplicando tarea Touch a "cmTC_54ce5.dir\\Debug\\cmTC_54ce5.tlog\\cmTC_54ce5.lastbuildstate".
+        Compilaci├│n del proyecto terminada "C:\\Users\\juanu\\Documentos\\Repositorios\\Algoritmo-Genetico-de-Formulas\\Code\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8xbnj8\\cmTC_54ce5.vcxproj" (destinos predeterminados).
+        
+        Compilaci├│n correcta.
+            0 Advertencia(s)
+            0 Errores
+        
+        Tiempo transcurrido 00:00:01.35
+        
+      exitCode: 0
+...
