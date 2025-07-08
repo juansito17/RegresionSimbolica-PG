@@ -14,15 +14,30 @@
 #include <cctype>    // Para isdigit, isspace
 
 // --- Función auxiliar para formatear constantes ---
+// --- Función auxiliar para formatear constantes ---
 std::string format_constant(double val) {
+    // Si es un entero o muy cercano a un entero, formatarlo como tal.
     if (std::fabs(val - std::round(val)) < SIMPLIFY_NEAR_ZERO_TOLERANCE) {
         return std::to_string(static_cast<long long>(std::round(val)));
     } else {
         std::ostringstream oss;
-        oss << std::fixed << std::setprecision(8) << val;
+        // Usar notación científica para valores muy grandes o muy pequeños,
+        // o notación fija para el resto, con precisión adecuada.
+        // Esto evita cadenas muy largas o pérdida de información.
+        if (std::fabs(val) >= 1e6 || std::fabs(val) <= 1e-6) { // Umbrales ajustables
+            oss << std::scientific << std::setprecision(8) << val;
+        } else {
+            oss << std::fixed << std::setprecision(8) << val;
+        }
+        
         std::string s = oss.str();
-        s.erase(s.find_last_not_of('0') + 1, std::string::npos);
-        if (!s.empty() && s.back() == '.') s.pop_back();
+        // Eliminar ceros finales y el punto decimal si no hay parte fraccionaria
+        // Esto puede ser delicado con std::scientific, así que hay que ser cuidadosos.
+        // Para std::fixed:
+        if (s.find('.') != std::string::npos) {
+            s.erase(s.find_last_not_of('0') + 1, std::string::npos);
+            if (!s.empty() && s.back() == '.') s.pop_back();
+        }
         return s.empty() ? "0" : s;
     }
 }
@@ -167,16 +182,25 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
     std::stack<NodePtr> operand_stack;
     std::stack<char> operator_stack;
 
-    // Función interna para procesar operadores según precedencia
-    auto process_operators_by_precedence = [&](int current_precedence) {
-        while (!operator_stack.empty() && operator_stack.top() != '(' &&
-               get_precedence(operator_stack.top()) >= current_precedence) {
-            if (operator_stack.top() == '^' && current_precedence == get_precedence('^')) break;
-            char op = operator_stack.top(); operator_stack.pop();
-            if (operand_stack.size() < 2) throw std::runtime_error("Operandos insuficientes para operador '" + std::string(1, op) + "'.");
-            NodePtr right = operand_stack.top(); operand_stack.pop();
-            NodePtr left = operand_stack.top(); operand_stack.pop();
-            operand_stack.push(apply_binary_operation(right, left, op));
+    // Función interna para procesar operadores según precedencia y asociatividad
+    auto process_operators_by_precedence = [&](int current_precedence, char current_op_char = 0) {
+        // La asociatividad derecha para '^' significa que se procesa si el operador en la pila
+        // tiene MAYOR precedencia, no MAYOR O IGUAL.
+        bool is_right_associative = (current_op_char == '^');
+
+        while (!operator_stack.empty() && operator_stack.top() != '(') {
+            char top_op = operator_stack.top();
+            int top_precedence = get_precedence(top_op);
+
+            if (is_right_associative ? (top_precedence > current_precedence) : (top_precedence >= current_precedence)) {
+                operator_stack.pop(); // Sacar operador de la pila
+                if (operand_stack.size() < 2) throw std::runtime_error("Operandos insuficientes para operador '" + std::string(1, top_op) + "'.");
+                NodePtr right = operand_stack.top(); operand_stack.pop();
+                NodePtr left = operand_stack.top(); operand_stack.pop();
+                operand_stack.push(apply_binary_operation(right, left, top_op));
+            } else {
+                break; // Parar si la precedencia es menor o si es asociativo a la derecha y es igual
+            }
         }
     };
 
@@ -206,7 +230,11 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
                 auto node = std::make_shared<Node>(NodeType::Constant); node->value = value;
                 operand_stack.push(node);
                 last_token_was_operand = true;
-            } catch (...) { throw std::runtime_error("Número inválido: '" + num_str + "'"); }
+            } catch (const std::invalid_argument& e) {
+                throw std::runtime_error("Número inválido (formato): '" + num_str + "' - " + e.what());
+            } catch (const std::out_of_range& e) {
+                throw std::runtime_error("Número inválido (rango): '" + num_str + "' - " + e.what());
+            }
             continue;
         }
 
@@ -257,32 +285,30 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
         if (std::string("+-*/^").find(token) != std::string::npos) {
             // Manejar '-' unario vs binario
             if (token == '-' && !last_token_was_operand) {
-                // Es un '-' unario. Insertar un 0 y tratar el '-' como binario.
-                 if (last_token_was_operand) { // Check redundante
-                     process_operators_by_precedence(get_precedence('*'));
-                     operator_stack.push('*');
-                 }
+                // Es un '-' unario. Insertar un 0 como operando izquierdo implícito.
+                // Esto permite tratar el '-' como un operador binario normal.
                 auto zero_node = std::make_shared<Node>(NodeType::Constant); zero_node->value = 0.0;
                 operand_stack.push(zero_node);
-                last_token_was_operand = true; // 0 es el operando izquierdo para '-'
-
-                // *** CORRECCIÓN: No procesar precedencia aquí ***
-                // process_operators_by_precedence(get_precedence('-')); // <-- QUITAR ESTA LÍNEA
-                operator_stack.push('-'); // Empujar '-' directamente
-                last_token_was_operand = false; // Esperamos el operando derecho
+                // No cambiar last_token_was_operand a true, ya que el 0 implícito
+                // es solo para el operador unario y no un operando "real" previo.
+                // Si hubiera una multiplicación implícita (ej. "2-x"), ya se habría manejado.
             }
-            // Ignorar '+' unario
+            // Ignorar '+' unario (no afecta el valor, no necesita un 0 implícito)
             else if (token == '+' && !last_token_was_operand) {
-                 last_token_was_operand = false; // Simplemente ignorar, esperando operando
+                // No hacer nada, simplemente avanzar al siguiente token
+                i++;
+                continue;
             }
+            
             // Operador binario normal
-            else {
-                 if (!last_token_was_operand) throw std::runtime_error("Operador binario '" + std::string(1, token) + "' inesperado. Se esperaba operando.");
-                 // Procesar operadores con precedencia >= antes de empujar el actual
-                 process_operators_by_precedence(get_precedence(token));
-                 operator_stack.push(token);
-                 last_token_was_operand = false;
+            if (!last_token_was_operand && (token == '*' || token == '/' || token == '^')) {
+                throw std::runtime_error("Operador binario '" + std::string(1, token) + "' inesperado. Se esperaba operando.");
             }
+
+            // Procesar operadores en la pila con mayor o igual precedencia (o solo mayor para asociativos a derecha)
+            process_operators_by_precedence(get_precedence(token), token);
+            operator_stack.push(token);
+            last_token_was_operand = false; // Después de un operador, se espera un operando
             i++;
             continue;
         }
@@ -295,7 +321,8 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
     // --- G. Procesamiento Final después del bucle ---
     while (!operator_stack.empty()) {
         if (operator_stack.top() == '(') throw std::runtime_error("Paréntesis '(' sin cerrar al final.");
-        process_operators_by_precedence(0);
+        // Procesar todos los operadores restantes en la pila
+        process_operators_by_precedence(0); // 0 como precedencia mínima para forzar el procesamiento
     }
 
     // Verificación final de la pila de operandos

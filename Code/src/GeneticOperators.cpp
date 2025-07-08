@@ -33,22 +33,46 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
         std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
         node->op = ops[op_dist(rng)];
 
-        // Generar hijos recursivamente (sin caso especial para '^')
+        // Generar hijos recursivamente
         node->left = generate_random_tree(max_depth, current_depth + 1);
         node->right = generate_random_tree(max_depth, current_depth + 1);
 
-        // Fallback simple: si un hijo es nulo, reemplazarlo por una constante 1.0
-        // Esto evita errores en evaluación si la generación falla, aunque puede
-        // no ser lo ideal genéticamente. Una mejor opción sería reintentar la generación.
-        if (!node->left) {
-            node->left = std::make_shared<Node>(NodeType::Constant);
-            node->left->value = 1.0;
-             // std::cerr << "Warning: Null left child generated, replaced with 1.0" << std::endl;
-        }
-        if (!node->right) {
-             node->right = std::make_shared<Node>(NodeType::Constant);
-             node->right->value = 1.0;
-             // std::cerr << "Warning: Null right child generated, replaced with 1.0" << std::endl;
+        // Fallback para hijos nulos: generar un terminal aleatorio
+        auto generate_random_terminal = [&]() -> NodePtr {
+            if (prob_dist(rng) < TERMINAL_VS_VARIABLE_PROB) { return std::make_shared<Node>(NodeType::Variable); }
+            else {
+                auto const_node = std::make_shared<Node>(NodeType::Constant);
+                if (FORCE_INTEGER_CONSTANTS) { std::uniform_int_distribution<int> cd(CONSTANT_INT_MIN_VALUE, CONSTANT_INT_MAX_VALUE); const_node->value = static_cast<double>(cd(rng)); }
+                else { std::uniform_real_distribution<double> cd(CONSTANT_MIN_VALUE, CONSTANT_MAX_VALUE); const_node->value = cd(rng); }
+                if (std::fabs(const_node->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) const_node->value = 0.0;
+                return const_node;
+            }
+        };
+
+        if (!node->left) node->left = generate_random_terminal();
+        if (!node->right) node->right = generate_random_terminal();
+
+        // --- Manejo especial para el operador de potencia '^' ---
+        if (node->op == '^') {
+            // Regla 1: Evitar 0^0 o 0^negativo
+            if (node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) {
+                if (node->right->type == NodeType::Constant && node->right->value <= SIMPLIFY_NEAR_ZERO_TOLERANCE) {
+                    // Si es 0^0 o 0^negativo, cambiar el operador a algo seguro o el exponente
+                    // Opción: Cambiar el operador a '*' o '+'
+                    const std::vector<char> safe_ops = {'+', '-', '*'};
+                    std::uniform_int_distribution<int> safe_op_dist(0, safe_ops.size() - 1);
+                    node->op = safe_ops[safe_op_dist(rng)];
+                }
+            }
+            // Regla 2: Evitar base negativa con exponente no entero
+            else if (node->left->type == NodeType::Constant && node->left->value < 0.0) {
+                if (node->right->type == NodeType::Constant && std::fabs(node->right->value - std::round(node->right->value)) > SIMPLIFY_NEAR_ZERO_TOLERANCE) {
+                    // Si base es negativa y exponente no es entero, cambiar el exponente a un entero aleatorio
+                    std::uniform_int_distribution<int> int_exp_dist(-3, 3); // Rango de enteros para exponente
+                    node->right = std::make_shared<Node>(NodeType::Constant);
+                    node->right->value = static_cast<double>(int_exp_dist(rng));
+                }
+            }
         }
         return node;
     }
