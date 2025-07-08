@@ -42,7 +42,7 @@ const bool USE_GPU_ACCELERATION = false;
 // Para hacer un uso aún más intensivo de la GPU y acelerar el algoritmo,
 // aumentamos el número de islas para fomentar más paralelismo, manteniendo la población total.
 // Esto distribuye la carga de trabajo de evaluación de fitness en más unidades de procesamiento concurrentes.
-const int TOTAL_POPULATION_SIZE = 2000000; // Mantenemos este tamaño, ajustado para 4GB VRAM
+const int TOTAL_POPULATION_SIZE = 50000; // Mantenemos este tamaño, ajustado para 4GB VRAM
 const int GENERATIONS = 500000;           // Mantenemos las generaciones altas
 const int NUM_ISLANDS = 10;               // Aumentado para mayor paralelismo
 const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas con población mínima

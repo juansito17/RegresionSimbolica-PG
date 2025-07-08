@@ -6,7 +6,7 @@
 
 // Calculates raw fitness based on target matching
 // Lower is better. Returns INF if evaluation results in NaN/Inf.
-#if USE_GPU_ACCELERATION
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values,
@@ -18,7 +18,7 @@ double calculate_raw_fitness(const NodePtr& tree,
 #endif
 
 // Calculates final fitness including complexity penalty
-#if USE_GPU_ACCELERATION
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
                         const std::vector<double>& x_values,

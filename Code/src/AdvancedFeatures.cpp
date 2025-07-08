@@ -266,7 +266,7 @@ NodePtr DomainConstraints::fix_or_simplify(NodePtr tree) {
 //---------------------------------
 // Local Improvement
 //---------------------------------
-#if USE_GPU_ACCELERATION
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts, double* d_targets, double* d_x_values) {
     NodePtr best_neighbor = tree;
     double best_neighbor_fitness = current_fitness;

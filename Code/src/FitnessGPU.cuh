@@ -21,7 +21,7 @@ struct LinearGpuNode {
 void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree);
 
 // Host-side wrapper for launching CUDA kernel
-#if USE_GPU_ACCELERATION
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double evaluate_fitness_gpu(NodePtr tree,
                             const std::vector<double>& targets,
                             const std::vector<double>& x_values,

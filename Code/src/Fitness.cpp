@@ -11,7 +11,7 @@
 
 // Calculates the raw fitness using global parameters.
 // This function will now dispatch to GPU if USE_GPU_ACCELERATION is enabled.
-#if USE_GPU_ACCELERATION
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values,
@@ -92,10 +92,10 @@ double calculate_raw_fitness(const NodePtr& tree,
 
     return raw_error; // Devolver el error crudo (sin penalización por complejidad aún)
 }
-#endif // USE_GPU_ACCELERATION
+#endif // USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 
 // Calcula el fitness final usando parámetros globales.
-#if USE_GPU_ACCELERATION
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
                         const std::vector<double>& x_values,
