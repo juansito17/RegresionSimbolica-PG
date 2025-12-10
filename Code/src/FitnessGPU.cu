@@ -2,6 +2,8 @@
 #include "Globals.h"
 #include <cuda_runtime.h>
 #include <math.h>
+#include <vector>
+#include <iostream>
 
 // Helper function to linearize the tree into a post-order array
 void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree) {
@@ -14,7 +16,11 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
 }
 
 #if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-// CUDA kernel to evaluate a linearized tree
+
+// Constant for large finite value
+#define GPU_MAX_DOUBLE 1e308
+
+// Single Tree Evaluation Kernel (Legacy/Single Use)
 __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                                              int tree_size,
                                              const double* d_targets,
@@ -53,7 +59,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                     case '*': result = left * right; break;
                     case '/':
                         if (fabs(right) < 1e-9) { // Avoid division by zero
-                            result = 1e308; // Use large finite double instead of HUGE_VAL
+                            result = GPU_MAX_DOUBLE; 
                         } else {
                             result = left / right;
                         }
@@ -67,7 +73,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
         double predicted_val = (stack_top == 0) ? stack[0] : NAN;
 
         if (isnan(predicted_val) || isinf(predicted_val)) {
-            d_raw_fitness_results[idx] = 1e308; // Use large finite double
+            d_raw_fitness_results[idx] = GPU_MAX_DOUBLE; 
         } else {
             double diff = predicted_val - d_targets[idx];
             d_raw_fitness_results[idx] = diff * diff;
@@ -98,6 +104,81 @@ __global__ void reduce_sum_kernel(double* d_data, int N) {
         d_data[blockIdx.x] = sdata[0];
     }
 }
+
+
+// --- New Batch Kernel ---
+// Evaluates one tree per thread across all data points
+__global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
+                                           const int* d_offsets,
+                                           const int* d_sizes,
+                                           int pop_size,
+                                           const double* d_targets,
+                                           const double* d_x_values,
+                                           int num_points,
+                                           double* d_results) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < pop_size) {
+        int offset = d_offsets[idx];
+        int size = d_sizes[idx];
+        double sum_sq_error = 0.0;
+        bool valid = true;
+
+        for (int p = 0; p < num_points; ++p) {
+            double x_val = d_x_values[p];
+            double stack[64]; 
+            int stack_top = -1;
+
+            // Simple interpreter
+            for (int i = 0; i < size; ++i) {
+                LinearGpuNode node = d_all_nodes[offset + i];
+                if (node.type == NodeType::Constant) {
+                    stack[++stack_top] = node.value;
+                } else if (node.type == NodeType::Variable) {
+                    stack[++stack_top] = x_val;
+                } else if (node.type == NodeType::Operator) {
+                    // Safety check index
+                    if (stack_top < 1) { valid = false; break; }
+
+                    double right = stack[stack_top--];
+                    double left = stack[stack_top--];
+                    double result;
+                    switch (node.op) {
+                        case '+': result = left + right; break;
+                        case '-': result = left - right; break;
+                        case '*': result = left * right; break;
+                        case '/':
+                            if (fabs(right) < 1e-9) { 
+                                result = GPU_MAX_DOUBLE; 
+                            } else {
+                                result = left / right;
+                            }
+                            break;
+                        default: result = NAN; break;
+                    }
+                    stack[++stack_top] = result;
+                }
+            }
+
+            if (!valid || stack_top != 0) {
+                sum_sq_error = GPU_MAX_DOUBLE;
+                break;
+            }
+
+            double predicted_val = stack[0];
+            if (isnan(predicted_val) || isinf(predicted_val)) {
+                sum_sq_error = GPU_MAX_DOUBLE;
+                break;
+            }
+
+            double diff = predicted_val - d_targets[p];
+            sum_sq_error += diff * diff;
+        }
+
+        d_results[idx] = sum_sq_error;
+    }
+}
+
 
 // Host-side wrapper function to launch the CUDA kernel
 double evaluate_fitness_gpu(NodePtr tree,
@@ -176,4 +257,64 @@ double evaluate_fitness_gpu(NodePtr tree,
 
     return final_fitness;
 }
+
+void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
+                             const std::vector<int>& tree_offsets,
+                             const std::vector<int>& tree_sizes,
+                             const std::vector<double>& targets,
+                             const std::vector<double>& x_values,
+                             std::vector<double>& results,
+                             double* d_targets, double* d_x_values,
+                             void*& d_nodes_ptr, size_t& d_nodes_cap,
+                             void*& d_offsets_ptr, void*& d_sizes_ptr, void*& d_results_ptr, size_t& d_pop_cap) {
+    
+    int pop_size = tree_offsets.size();
+    if (pop_size == 0) return;
+
+    size_t total_nodes = all_nodes.size();
+    int num_points = x_values.size();
+
+    // Buffer Management for Nodes
+    if (total_nodes > d_nodes_cap) {
+        if (d_nodes_ptr) cudaFree(d_nodes_ptr);
+        size_t new_cap = total_nodes * 1.5; // Growth factor
+        cudaMalloc(&d_nodes_ptr, new_cap * sizeof(LinearGpuNode));
+        d_nodes_cap = new_cap;
+    }
+
+    // Buffer Management for Population Arrays
+    if (pop_size > d_pop_cap) {
+        if (d_offsets_ptr) cudaFree(d_offsets_ptr);
+        if (d_sizes_ptr) cudaFree(d_sizes_ptr);
+        if (d_results_ptr) cudaFree(d_results_ptr);
+        
+        size_t new_cap = pop_size * 1.5;
+        cudaMalloc(&d_offsets_ptr, new_cap * sizeof(int));
+        cudaMalloc(&d_sizes_ptr, new_cap * sizeof(int));
+        cudaMalloc(&d_results_ptr, new_cap * sizeof(double));
+        d_pop_cap = new_cap;
+    }
+
+    LinearGpuNode* d_all_nodes = (LinearGpuNode*)d_nodes_ptr;
+    int* d_offsets = (int*)d_offsets_ptr;
+    int* d_sizes = (int*)d_sizes_ptr;
+    double* d_results = (double*)d_results_ptr;
+
+    cudaMemcpy(d_all_nodes, all_nodes.data(), total_nodes * sizeof(LinearGpuNode), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_offsets, tree_offsets.data(), pop_size * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_sizes, tree_sizes.data(), pop_size * sizeof(int), cudaMemcpyHostToDevice);
+
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (pop_size + threadsPerBlock - 1) / threadsPerBlock;
+
+    evaluate_population_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+        d_all_nodes, d_offsets, d_sizes, pop_size, d_targets, d_x_values, num_points, d_results
+    );
+
+    // Synchronize and copy back
+    cudaDeviceSynchronize();
+    
+    cudaMemcpy(results.data(), d_results, pop_size * sizeof(double), cudaMemcpyDeviceToHost);
+}
+
 #endif // USE_GPU_ACCELERATION_DEFINED_BY_CMAKE

@@ -141,43 +141,108 @@ GeneticAlgorithm::~GeneticAlgorithm() {
     // Por ahora, se deja vacío, asumiendo manejo automático o externo.
 }
 
-// --- evaluate_population (Modificado para procesar TODOS los individuos) ---
 void GeneticAlgorithm::evaluate_population(Island& island) {
     int pop_size = island.population.size();
     if (pop_size == 0) return;
 
+    // 1. Simplify trees (CPU Parallel)
+    // We do this first so we only send simplified trees to GPU
     #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < pop_size; ++i) {
         Individual& ind = island.population[i];
-
-        // *** ELIMINADO: Ya no se salta individuos ***
-        // if (!ind.fitness_valid) { ... }
-
-        // Procesar siempre (simplificar y evaluar)
         if (ind.tree) {
-            // Simplificar ANTES de evaluar
             ind.tree = DomainConstraints::fix_or_simplify(ind.tree);
+        }
+    }
 
-            if (ind.tree) {
-                 // Calcular fitness del árbol (posiblemente simplificado)
 #if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-                 ind.fitness = evaluate_fitness(ind.tree, targets, x_values, d_targets, d_x_values);
-#else
-                 ind.fitness = evaluate_fitness(ind.tree, targets, x_values);
-#endif
-                 ind.fitness_valid = true;
+    // 2. Prepare for Batch GPU Evaluation
+    std::vector<LinearGpuNode> all_nodes;
+    std::vector<int> tree_offsets;
+    std::vector<int> tree_sizes;
+    
+    // Reserve memory to avoid reallocations (Optimization)
+    // Assuming average tree size is around 20-30 nodes. 
+    // This dramatically reduces CPU overhead during linearization.
+    all_nodes.reserve(pop_size * 30); 
+    tree_offsets.reserve(pop_size);
+    tree_sizes.reserve(pop_size);
+    
+    // We need map back to original index because some trees might be null
+    std::vector<int> valid_indices; 
+    valid_indices.reserve(pop_size);
+
+    for (int i = 0; i < pop_size; ++i) {
+        if (island.population[i].tree) {
+            int start_offset = all_nodes.size();
+            linearize_tree(island.population[i].tree, all_nodes);
+            int size = all_nodes.size() - start_offset;
+            
+            if (size > 0) {
+                tree_offsets.push_back(start_offset);
+                tree_sizes.push_back(size);
+                valid_indices.push_back(i);
             } else {
-                 // Simplificación resultó en árbol nulo
-                 ind.fitness = INF;
-                 ind.fitness_valid = true;
+                 island.population[i].fitness = INF;
+                 island.population[i].fitness_valid = true;
             }
         } else {
-             // Árbol era nulo inicialmente
+             island.population[i].fitness = INF;
+             island.population[i].fitness_valid = true;
+        }
+    }
+
+    if (valid_indices.empty()) return;
+
+    // 3. call GPU Batch (d_targets and d_x_values already exist)
+    std::vector<double> raw_results(valid_indices.size());
+    evaluate_population_gpu(all_nodes, tree_offsets, tree_sizes, targets, x_values, raw_results, d_targets, d_x_values,
+                            island.d_nodes, island.d_nodes_capacity,
+                            island.d_offsets, island.d_sizes, island.d_results, island.d_pop_capacity);
+
+    // 4. Process results
+    for (size_t k = 0; k < valid_indices.size(); ++k) {
+        int idx = valid_indices[k];
+        double sum_sq_error = raw_results[k];
+        double raw_fitness = INF;
+
+        // Check for validity
+        if (!std::isnan(sum_sq_error) && !std::isinf(sum_sq_error) && sum_sq_error < 1e300) { // 1e300 as safety threshold
+             if (USE_RMSE_FITNESS) {
+                 if (x_values.size() > 0) {
+                     double mse = sum_sq_error / x_values.size();
+                     raw_fitness = sqrt(mse);
+                 }
+             } else {
+                 raw_fitness = sum_sq_error;
+             }
+        }
+
+        if (raw_fitness >= INF/2) {
+             island.population[idx].fitness = INF;
+        } else {
+             // Complexity Penalty
+             double complexity = static_cast<double>(tree_sizes[k]); // We already have the linear size
+             double penalty = complexity * COMPLEXITY_PENALTY_FACTOR;
+             island.population[idx].fitness = raw_fitness * (1.0 + penalty);
+        }
+        island.population[idx].fitness_valid = true;
+    }
+
+#else
+    // CPU Fallback (Parallel)
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < pop_size; ++i) {
+        Individual& ind = island.population[i];
+        if (ind.tree) {
+             ind.fitness = evaluate_fitness(ind.tree, targets, x_values);
+             ind.fitness_valid = true;
+        } else {
              ind.fitness = INF;
              ind.fitness_valid = true;
         }
-        // --- Fin del procesamiento ---
-    } // --- Fin for loop ---
+    }
+#endif
 }
 
 
@@ -352,9 +417,17 @@ NodePtr GeneticAlgorithm::run() {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int gen = 0; gen < generations; ++gen) {
-        #pragma omp parallel for
+        // 1. Evaluate Population (Serial Island Loop)
+        // We use a serial loop here because evaluate_population internally uses OpenMP for simplification,
+        // and then dispatches a GPU kernel. Serializing islands prevents oversubscription and GPU context contention.
         for (int i = 0; i < islands.size(); ++i) {
              evaluate_population(*islands[i]);
+        }
+
+        // 2. Evolve Islands (Parallel Island Loop)
+        // Genetic operators (crossover, mutation) are CPU-bound and independent per island.
+        #pragma omp parallel for
+        for (int i = 0; i < islands.size(); ++i) {
              evolve_island(*islands[i], gen);
         }
 
@@ -396,7 +469,7 @@ NodePtr GeneticAlgorithm::run() {
                   std::cout << "========================================" << std::endl;
                   last_overall_best_fitness = overall_best_fitness;
                   generation_last_improvement = gen;
-             }
+              }
         } else {
              if (overall_best_fitness < INF && (gen - generation_last_improvement) >= GLOBAL_STAGNATION_LIMIT) {
                   std::cout << "\n========================================" << std::endl;
@@ -409,7 +482,7 @@ NodePtr GeneticAlgorithm::run() {
 
         if ((gen + 1) % MIGRATION_INTERVAL == 0 && num_islands > 1) {
              migrate();
-             #pragma omp parallel for
+             // Serial evaluation after migration
              for (int i = 0; i < islands.size(); ++i) { evaluate_population(*islands[i]); }
         }
 

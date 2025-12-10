@@ -29,6 +29,26 @@ class GeneticAlgorithm {
              population = create_initial_population(pop_size); // Crear población inicial
              params = EvolutionParameters::create_default();   // Usar parámetros por defecto
         }
+
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+        // Persistent GPU buffers
+        void* d_nodes = nullptr;
+        void* d_offsets = nullptr;
+        void* d_sizes = nullptr;
+        void* d_results = nullptr;
+        size_t d_nodes_capacity = 0;
+        size_t d_pop_capacity = 0;
+
+        ~Island() {
+            // We cannot easily call cudaFree here because this header might be included
+            // where cuda_runtime.h is not. However, we can trust the OS/driver to clean up
+            // or we should add a cleanup function.
+            // For now, we will rely on GeneticAlgorithm destructor or explict cleanup if possible.
+            // But since Island is unique_ptr, we can't easily add a destructor that calls cudaFree 
+            // without including cuda_runtime.
+            // Optimization: Let's rely on OS cleanup at exit, OR add a cleanup method called by GA.
+        }
+#endif
     };
 
     // Miembros principales de la clase GeneticAlgorithm
