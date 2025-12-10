@@ -1,5 +1,7 @@
 # 🧬 Fórmula Genética - Implementación CPU/GPU
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1O2iCFqhXckKg4XF1ZCvpXO_gqt4fmkEI?usp=sharing)
+
 > Módulo de ejecución con soporte para **CUDA** y **OpenMP**
 
 Esta carpeta contiene el código fuente y los archivos de compilación para el sistema de Regresión Simbólica.
