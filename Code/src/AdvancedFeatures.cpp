@@ -266,15 +266,90 @@ NodePtr DomainConstraints::fix_or_simplify(NodePtr tree) {
 //---------------------------------
 // Local Improvement
 //---------------------------------
+//---------------------------------
+// Local Improvement
+//---------------------------------
+void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const std::vector<double>& x_values, double* d_targets, double* d_x_values) {
+    if (!tree) return;
+    
+    // 1. Collect constant nodes
+    std::vector<Node*> constants;
+    std::vector<Node*> stack;
+    stack.push_back(tree.get());
+    while(!stack.empty()){
+        Node* n = stack.back(); stack.pop_back();
+        if(!n) continue;
+        if(n->type == NodeType::Constant) constants.push_back(n);
+        else if(n->type == NodeType::Operator){
+            stack.push_back(n->right.get());
+            stack.push_back(n->left.get());
+        }
+    }
+    
+    if (constants.empty()) return;
+
+    // 2. Hill Climbing (Numeric Optimization)
+    int max_iter = 20; // Fast local search
+    auto& rng = get_rng();
+    
+    // Evaluate initial fitness
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    double current_fitness = evaluate_fitness(tree, targets, x_values, d_targets, d_x_values);
+#else
+    double current_fitness = evaluate_fitness(tree, targets, x_values);
+#endif
+
+    std::normal_distribution<double> perturbation(0.0, 0.5); // Perturb standard deviation 0.5
+
+    for(int i=0; i<max_iter; ++i) {
+        // Select a random constant
+        int idx = std::uniform_int_distribution<int>(0, constants.size()-1)(rng);
+        double old_val = constants[idx]->value;
+        
+        // Perturb
+        double delta = perturbation(rng);
+        constants[idx]->value += delta;
+        if (FORCE_INTEGER_CONSTANTS) constants[idx]->value = std::round(constants[idx]->value);
+
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+        double new_fitness = evaluate_fitness(tree, targets, x_values, d_targets, d_x_values);
+#else
+        double new_fitness = evaluate_fitness(tree, targets, x_values);
+#endif
+
+        if (new_fitness < current_fitness) {
+            current_fitness = new_fitness; // Accept
+            // Adapt perturbation? Maybe reduce sigma?
+        } else {
+            constants[idx]->value = old_val; // Revert
+        }
+        
+        if (current_fitness < EXACT_SOLUTION_THRESHOLD) break;
+    }
+}
+
 #if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts, double* d_targets, double* d_x_values) {
-    NodePtr best_neighbor = tree;
-    double best_neighbor_fitness = current_fitness;
-    if (current_fitness >= INF) return {best_neighbor, best_neighbor_fitness};
+    // 1. First, try to optimize constants of the CURRENT tree
+    NodePtr optimized_tree = clone_tree(tree);
+    optimize_constants(optimized_tree, targets, x_values, d_targets, d_x_values);
+    double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values, d_targets, d_x_values);
+    
+    NodePtr best_neighbor = (optimized_fitness < current_fitness) ? optimized_tree : tree;
+    double best_neighbor_fitness = (optimized_fitness < current_fitness) ? optimized_fitness : current_fitness;
+
+    if (best_neighbor_fitness >= INF) return {best_neighbor, best_neighbor_fitness};
+
+    // 2. Structural Search (as before)
     for (int i = 0; i < attempts; ++i) {
-        NodePtr neighbor = mutate_tree(tree, 1.0, 2);
+        NodePtr neighbor = mutate_tree(best_neighbor, 1.0, 2); // Mutate the BEST so far
         neighbor = DomainConstraints::fix_or_simplify(neighbor);
         if (!neighbor) continue;
+        
+        // Also optimize constants of structural neighbor?
+        // Maybe too expensive. Let's do a quick random constant tweak.
+        // optimize_constants(neighbor, targets, x_values, d_targets, d_x_values); 
+        
         double neighbor_fitness = evaluate_fitness(neighbor, targets, x_values, d_targets, d_x_values);
         if (neighbor_fitness < best_neighbor_fitness) {
             best_neighbor = neighbor;
@@ -285,11 +360,18 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double cur
 }
 #else
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts) {
-    NodePtr best_neighbor = tree;
-    double best_neighbor_fitness = current_fitness;
-    if (current_fitness >= INF) return {best_neighbor, best_neighbor_fitness};
+    // 1. First, try to optimize constants of the CURRENT tree
+    NodePtr optimized_tree = clone_tree(tree);
+    optimize_constants(optimized_tree, targets, x_values, nullptr, nullptr);
+    double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values);
+    
+    NodePtr best_neighbor = (optimized_fitness < current_fitness) ? optimized_tree : tree;
+    double best_neighbor_fitness = (optimized_fitness < current_fitness) ? optimized_fitness : current_fitness;
+
+    if (best_neighbor_fitness >= INF) return {best_neighbor, best_neighbor_fitness};
+
     for (int i = 0; i < attempts; ++i) {
-        NodePtr neighbor = mutate_tree(tree, 1.0, 2);
+        NodePtr neighbor = mutate_tree(best_neighbor, 1.0, 2);
         neighbor = DomainConstraints::fix_or_simplify(neighbor);
         if (!neighbor) continue;
         double neighbor_fitness = evaluate_fitness(neighbor, targets, x_values);

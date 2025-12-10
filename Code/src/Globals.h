@@ -82,8 +82,8 @@ const std::vector<double> OPERATOR_WEIGHTS = {0.25, 0.3, 0.25, 0.1, 0.10};
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
 // ----------------------------------------
-const double BASE_MUTATION_RATE = 0.25;
-const double BASE_ELITE_PERCENTAGE = 0.10;
+const double BASE_MUTATION_RATE = 0.30;
+const double BASE_ELITE_PERCENTAGE = 0.15;
 const double DEFAULT_CROSSOVER_RATE = 0.85;
 const int DEFAULT_TOURNAMENT_SIZE = 30;
 const int MAX_TREE_DEPTH_MUTATION = 6; // Reducido para mutaciones que no generen árboles excesivamente grandes
@@ -98,7 +98,7 @@ const double MUTATE_INSERT_CONST_FLOAT_MAX = 5.0;
 // ----------------------------------------
 // Reducimos ligeramente la penalización por complejidad para permitir que fórmulas más complejas
 // (y computacionalmente más intensivas para la GPU) sean favorecidas por el algoritmo.
-const double COMPLEXITY_PENALTY_FACTOR = 0.008; // Reducido para favorecer fórmulas más complejas
+const double COMPLEXITY_PENALTY_FACTOR = 0.005; // Reducido para favorecer fórmulas más complejas
 const bool USE_RMSE_FITNESS = true;
 const double FITNESS_ORIGINAL_POWER = 1.3;
 const double FITNESS_PRECISION_THRESHOLD = 0.001;
