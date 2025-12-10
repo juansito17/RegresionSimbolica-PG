@@ -412,11 +412,12 @@ std::pair<std::string, double> detect_target_pattern(const std::vector<double>& 
 // Generate Pattern Based Tree
 //---------------------------------
 NodePtr generate_pattern_based_tree(const std::string& pattern_type, double pattern_value) {
-    if (X_VALUES.empty() || TARGETS.empty()) return nullptr;
-    double a = TARGETS[0]; double x0 = X_VALUES[0];
+    if (X_VALUES.empty() || RAW_TARGETS.empty()) return nullptr;
+    double a = RAW_TARGETS[0]; double x0 = X_VALUES[0];
     if (pattern_type == "arithmetic") {
         double d = pattern_value; auto root = std::make_shared<Node>(NodeType::Operator); root->op = '+';
-        auto cp = std::make_shared<Node>(NodeType::Constant); double cv = a - d * x0; if (FORCE_INTEGER_CONSTANTS) cv = std::round(cv); cp->value = (std::fabs(cv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : cv;
+        auto cp = std::make_shared<Node>(NodeType::Constant); double cv = a - d * x0; if (FORCE_INTEGER_CONSTANTS) cv = std::round(cv); cp->value = (std::fabs(cv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : cv; // Use RAW_TARGETS to avoid "TARGETS" not found
+
         auto vp = std::make_shared<Node>(NodeType::Operator); vp->op = '*';
         auto dc = std::make_shared<Node>(NodeType::Constant); double dv = d; if (FORCE_INTEGER_CONSTANTS) dv = std::round(dv); dc->value = (std::fabs(dv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : dv;
         auto xv = std::make_shared<Node>(NodeType::Variable); vp->left = dc; vp->right = xv;
