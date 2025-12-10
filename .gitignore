@@ -1,9 +1,16 @@
 # Build directories
 build/
 Code/build/
+bin/
+lib/
+out/
 
 # Executables
 *.exe
+*.dll
+*.so
+*.dylib
+*.bin
 SymbolicRegressionGP.exe
 a.exe
 CMakeDetermineCompilerABI_CXX.bin
@@ -11,6 +18,8 @@ ompver_CXX.bin
 
 # Object files
 *.obj
+*.o
+*.a
 
 # CMake generated files
 CMakeCache.txt
@@ -21,8 +30,35 @@ compile_commands.json
 CMakeConfigureLog.yaml
 rules.ninja
 TargetDirectories.txt
+*.cmake
 
 # Ninja build files
 .ninja_deps
 .ninja_log
 build.ninja
+
+# Visual Studio files
+.vs/
+*.user
+*.pdb
+*.ilk
+*.suo
+*.sln
+*.sdf
+*.opensdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+venv/
+env/
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
