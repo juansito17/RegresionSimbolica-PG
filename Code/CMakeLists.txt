@@ -10,7 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # Encontrar OpenMP para C++ y CUDA explícitamente
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+
+# Suppress warning about FindCUDA being deprecated (CMP0146)
+cmake_policy(SET CMP0146 OLD)
 find_package(CUDA REQUIRED) # Fuerza a CMake a definir las variables de CUDA
+
+# Use Static Runtime to match static CUDA runtime and avoid LNK4098
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # AÑADIDO: Incluir directorios de CUDA explícitamente (método de compatibilidad)
 # La variable ${CUDA_LIBRARIES} no añade los directorios de inclusión, así que lo hacemos manualmente.

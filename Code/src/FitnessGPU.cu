@@ -21,6 +21,15 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                                              const double* d_x_values,
                                              size_t num_points,
                                              double* d_raw_fitness_results) {
+    // Shared memory optimization: Load tree into shared memory
+    extern __shared__ LinearGpuNode s_linear_tree[];
+
+    // Cooperative load
+    for (int i = threadIdx.x; i < tree_size; i += blockDim.x) {
+        s_linear_tree[i] = d_linear_tree[i];
+    }
+    __syncthreads();
+
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < num_points) {
@@ -29,7 +38,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
         int stack_top = -1;
 
         for (int i = 0; i < tree_size; ++i) {
-            LinearGpuNode node = d_linear_tree[i];
+            LinearGpuNode node = s_linear_tree[i]; // Access from shared memory
             if (node.type == NodeType::Constant) {
                 stack[++stack_top] = node.value;
             } else if (node.type == NodeType::Variable) {
@@ -44,7 +53,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                     case '*': result = left * right; break;
                     case '/':
                         if (fabs(right) < 1e-9) { // Avoid division by zero
-                            result = HUGE_VAL;
+                            result = 1e308; // Use large finite double instead of HUGE_VAL
                         } else {
                             result = left / right;
                         }
@@ -58,7 +67,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
         double predicted_val = (stack_top == 0) ? stack[0] : NAN;
 
         if (isnan(predicted_val) || isinf(predicted_val)) {
-            d_raw_fitness_results[idx] = HUGE_VAL; // Assign a large error for invalid results
+            d_raw_fitness_results[idx] = 1e308; // Use large finite double
         } else {
             double diff = predicted_val - d_targets[idx];
             d_raw_fitness_results[idx] = diff * diff;
@@ -119,7 +128,8 @@ double evaluate_fitness_gpu(NodePtr tree,
     int blocksPerGrid = (num_points + threadsPerBlock - 1) / threadsPerBlock;
 
     // Launch kernel to calculate individual squared errors
-    calculate_raw_fitness_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+    size_t shared_mem_size = tree_size * sizeof(LinearGpuNode);
+    calculate_raw_fitness_kernel<<<blocksPerGrid, threadsPerBlock, shared_mem_size>>>(
         d_linear_tree, tree_size, d_targets, d_x_values, num_points, d_raw_fitness_results
     );
     cudaDeviceSynchronize(); // Ensure kernel completes before reduction
