@@ -62,3 +62,14 @@ env/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+# Output files
+outputs/
+
+# Temporary/test files
+hh.py
+
+# Pickle files
+*.pkl
+
+# Backup files
+*.bak

@@ -288,7 +288,65 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- B. Parsear Variable 'x' ---
+        // --- B. Parsear Funciones Unarias (l, g, sin, cos, exp, log, lgamma, floor, gamma) ---
+        // Map of function names to their operator characters
+        std::unordered_map<std::string, char> func_map = {
+            {"sin", 's'}, {"cos", 'c'}, {"log", 'l'}, {"exp", 'e'},
+            {"floor", '_'}, {"lgamma", 'g'}, {"gamma", '!'}, 
+            {"l", 'l'}, {"g", 'g'}, {"e", 'e'}, {"s", 's'}, {"c", 'c'}
+        };
+        
+        // Try to match function names (check longer names first)
+        bool matched_func = false;
+        for (const auto& [func_name, func_op] : func_map) {
+            if (i + func_name.length() <= formula.length() && 
+                formula.substr(i, func_name.length()) == func_name &&
+                (i + func_name.length() >= formula.length() || formula[i + func_name.length()] == '(')) {
+                
+                // Check if this is actually a function call (followed by '(')
+                size_t after_name = i + func_name.length();
+                if (after_name < formula.length() && formula[after_name] == '(') {
+                    if (last_token_was_operand) { // Implicit multiplication
+                        process_operators_by_precedence(get_precedence('*'));
+                        operator_stack.push('*');
+                        last_token_was_operand = false;
+                    }
+                    
+                    // Find the matching closing parenthesis
+                    int paren_count = 1;
+                    size_t arg_start = after_name + 1;
+                    size_t j = arg_start;
+                    while (j < formula.length() && paren_count > 0) {
+                        if (formula[j] == '(') paren_count++;
+                        else if (formula[j] == ')') paren_count--;
+                        j++;
+                    }
+                    if (paren_count != 0) {
+                        throw std::runtime_error("Paréntesis sin cerrar en función '" + func_name + "'.");
+                    }
+                    size_t arg_end = j - 1; // Position of closing ')'
+                    
+                    // Extract and recursively parse the argument
+                    std::string arg_str = formula.substr(arg_start, arg_end - arg_start);
+                    NodePtr arg_tree = parse_formula_string(arg_str);
+                    
+                    // Create unary operator node
+                    auto func_node = std::make_shared<Node>(NodeType::Operator);
+                    func_node->op = func_op;
+                    func_node->left = arg_tree;
+                    func_node->right = nullptr;
+                    
+                    operand_stack.push(func_node);
+                    last_token_was_operand = true;
+                    i = j; // Skip past the closing ')'
+                    matched_func = true;
+                    break;
+                }
+            }
+        }
+        if (matched_func) continue;
+
+        // --- C. Parsear Variable 'x' ---
         if (token == 'x') {
             if (last_token_was_operand) { // Implicit multiplication
                  process_operators_by_precedence(get_precedence('*'));
@@ -302,7 +360,7 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- C. Parsear Paréntesis de Apertura '(' ---
+        // --- D. Parsear Paréntesis de Apertura '(' ---
         if (token == '(') {
             if (last_token_was_operand) { // Implicit multiplication
                  process_operators_by_precedence(get_precedence('*'));
@@ -315,7 +373,7 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- D. Parsear Paréntesis de Cierre ')' ---
+        // --- E. Parsear Paréntesis de Cierre ')' ---
         if (token == ')') {
              if (!last_token_was_operand) {
                   if (!operator_stack.empty() && operator_stack.top() == '(') throw std::runtime_error("Paréntesis vacíos '()' encontrados.");
@@ -331,7 +389,7 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- E. Parsear Operadores (+ - * / ^ %) ---
+        // --- F. Parsear Operadores (+ - * / ^ %) ---
         if (std::string("+-*/^%").find(token) != std::string::npos) {
             // Manejar '-' unario vs binario
             if (token == '-' && !last_token_was_operand) {
@@ -363,12 +421,12 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- F. Token Desconocido ---
+        // --- G. Token Desconocido ---
         throw std::runtime_error("Token desconocido en la fórmula: '" + std::string(1, token) + "'");
 
     } // Fin del bucle for
 
-    // --- G. Procesamiento Final después del bucle ---
+    // --- H. Procesamiento Final después del bucle ---
     while (!operator_stack.empty()) {
         if (operator_stack.top() == '(') throw std::runtime_error("Paréntesis '(' sin cerrar al final.");
         // Procesar todos los operadores restantes en la pila
