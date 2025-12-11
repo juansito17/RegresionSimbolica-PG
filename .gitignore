@@ -26,3 +26,15 @@ TargetDirectories.txt
 .ninja_deps
 .ninja_log
 build.ninja
+
+# Output files
+outputs/
+
+# Temporary/test files
+hh.py
+
+# Pickle files
+*.pkl
+
+# Backup files
+*.bak

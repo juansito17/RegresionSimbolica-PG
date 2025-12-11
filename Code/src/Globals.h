@@ -48,8 +48,8 @@ const int NUM_ISLANDS = 10;               // Aumentado para mayor paralelismo
 const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas con población mínima
 
 // --- Fórmula Inicial ---
-const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "((((x+(x%(7.14937743-(-1.53627077^x))))+(4.98708598%x))*x)*0.0274748)";
+const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
+const std::string INITIAL_FORMULA_STRING = "l(g(x+1))-(x*0.92)";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
