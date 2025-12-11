@@ -50,7 +50,7 @@ double evaluate_tree(const NodePtr& node, double x) {
         case NodeType::Variable: return x;
         case NodeType::Operator: {
             // Determine arity
-            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_');
+            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
 
             double leftVal = evaluate_tree(node->left, x);
             double rightVal = 0.0;
@@ -97,6 +97,10 @@ double evaluate_tree(const NodePtr& node, double x) {
                         result = std::tgamma(leftVal + 1.0); 
                         break;
                     case '_': result = std::floor(leftVal); break;
+                    case 'g':
+                        if (leftVal <= -1.0) return INF; // Check for Gamma domain (approx)
+                        result = std::lgamma(leftVal + 1.0); 
+                        break;
                     default: return std::nan("");
                 }
             } catch (const std::exception& e) { return INF; }
@@ -119,7 +123,7 @@ std::string tree_to_string(const NodePtr& node) {
             std::string left_str = tree_to_string(left_node);
             
             // Check arity
-            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_');
+            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
 
             if (is_unary) {
                 switch(node->op) {
@@ -129,6 +133,7 @@ std::string tree_to_string(const NodePtr& node) {
                     case 'e': return "exp(" + left_str + ")";
                     case '!': return "(" + left_str + ")!"; // Postfix for factorial
                     case '_': return "floor(" + left_str + ")";
+                    case 'g': return "lgamma(" + left_str + ")";
                     default: return "op(" + left_str + ")";
                 }
             }
@@ -200,7 +205,7 @@ std::mt19937& get_rng() {
 int get_precedence(char op) {
     switch (op) {
         case '+': case '-': return 1;
-        case '*': case '/': return 2;
+        case '*': case '/': case '%': return 2;
         case '^': return 3;
         default: return 0;
     }
@@ -326,8 +331,8 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- E. Parsear Operadores (+ - * / ^) ---
-        if (std::string("+-*/^").find(token) != std::string::npos) {
+        // --- E. Parsear Operadores (+ - * / ^ %) ---
+        if (std::string("+-*/^%").find(token) != std::string::npos) {
             // Manejar '-' unario vs binario
             if (token == '-' && !last_token_was_operand) {
                 // Es un '-' unario. Insertar un 0 como operando izquierdo implícito.
@@ -346,7 +351,7 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             }
             
             // Operador binario normal
-            if (!last_token_was_operand && (token == '*' || token == '/' || token == '^')) {
+            if (!last_token_was_operand && (token == '*' || token == '/' || token == '^' || token == '%')) {
                 throw std::runtime_error("Operador binario '" + std::string(1, token) + "' inesperado. Se esperaba operando.");
             }
 

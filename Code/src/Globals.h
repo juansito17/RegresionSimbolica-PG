@@ -19,8 +19,8 @@
 // Se han filtrado valores N<4 donde Q(N) es 0 o pequeño irrelevante.
 
 // MODIFICADO: RAW_TARGETS contiene los datos crudos. TARGETS se generará en runtime.
-const std::vector<double> RAW_TARGETS = {1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884};
-const std::vector<double> X_VALUES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+const std::vector<double> RAW_TARGETS = {2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884};
+const std::vector<double> X_VALUES = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
 
 // Flag para activar la transformación logarítmica automática
 const bool USE_LOG_TRANSFORMATION = true;
@@ -49,7 +49,7 @@ const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas c
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "x"; // Placeholder
+const std::string INITIAL_FORMULA_STRING = "((((x+(x%(7.14937743-(-1.53627077^x))))+(4.98708598%x))*x)*0.0274748)";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -68,8 +68,22 @@ const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
-// Order: +, -, *, /, ^, %, s, c, l, e, !, _
-const std::vector<double> OPERATOR_WEIGHTS = {0.12, 0.12, 0.12, 0.12, 0.1, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.07};
+// Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
+const std::vector<double> OPERATOR_WEIGHTS = {
+    0.10, // + (Suma)
+    0.15, // - (Resta: CRUCIAL para log(n!) - n)
+    0.10, // * (Mult)
+    0.10, // / (Div)
+    0.05, // ^ (Potencia: Ya probamos x^2, bajémosla un poco)
+    0.01, // % (Módulo: BAJAR AL MÍNIMO para evitar trucos sucios)
+    0.01, // s (Seno: Ruido innecesario)
+    0.01, // c (Coseno: Ruido innecesario)
+    0.15, // l (Log: MUY NECESARIO para envolver al factorial)
+    0.02, // e (Exp)
+    0.05, // ! (Factorial: Mantener o subir si g no funciona)
+    0.05, // _ (Floor/Neg)
+    0.20  // g (Gamma: LA ESTRELLA. Dale prioridad máxima)
+};
 
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)

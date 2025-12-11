@@ -50,7 +50,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
             } else if (node.type == NodeType::Variable) {
                 stack[++stack_top] = x_val;
             } else if (node.type == NodeType::Operator) {
-                bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_');
+                bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
                 double result = 0.0;
                 
                 if (is_unary) {
@@ -65,6 +65,7 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                             case 'e': result = (val > 700.0) ? GPU_MAX_DOUBLE : exp(val); break;
                             case '!': result = (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0); break;
                             case '_': result = floor(val); break;
+                            case 'g': result = (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); break;
                             default: result = NAN; break;
                          }
                      }
@@ -167,7 +168,7 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                 } else if (node.type == NodeType::Variable) {
                     stack[++stack_top] = x_val;
                 } else if (node.type == NodeType::Operator) {
-                    bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_');
+                    bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
                     
                     if (is_unary) {
                         if (stack_top < 0) { valid = false; break; }
@@ -180,6 +181,7 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                             case 'e': result = (val > 700.0) ? GPU_MAX_DOUBLE : exp(val); break;
                             case '!': result = (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0); break;
                             case '_': result = floor(val); break;
+                            case 'g': result = (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); break;
                              default: result = NAN; break;
                         }
                         stack[++stack_top] = result;

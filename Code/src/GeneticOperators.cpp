@@ -30,12 +30,12 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
 
         // Crear operador
         auto node = std::make_shared<Node>(NodeType::Operator);
-        // Match the weights in Globals.h: +, -, *, /, ^, %, s, c, l, e, !, _
-        const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_'};
+        // Match the weights in Globals.h: +, -, *, /, ^, %, s, c, l, e, !, _, g
+        const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
         std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
         node->op = ops[op_dist(rng)];
 
-        bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_');
+        bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
 
         // Generar hijos recursivamente
         node->left = generate_random_tree(max_depth, current_depth + 1);
@@ -241,7 +241,7 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
             break;
         case MutationType::OperatorChange:
              if (current_node.type == NodeType::Operator) {
-                 const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_'};
+                 const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
                  std::vector<char> possible_ops;
                  for (char op : ops) if (op != current_node.op) possible_ops.push_back(op);
                  if (!possible_ops.empty()) {
@@ -249,8 +249,8 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                      char old_op = current_node.op;
                      char new_op = possible_ops[op_choice(rng)];
                      
-                     bool was_unary = (old_op == 's' || old_op == 'c' || old_op == 'l' || old_op == 'e' || old_op == '!' || old_op == '_');
-                     bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_');
+                     bool was_unary = (old_op == 's' || old_op == 'c' || old_op == 'l' || old_op == 'e' || old_op == '!' || old_op == '_' || old_op == 'g');
+                     bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_' || new_op == 'g');
 
                      if (was_unary && !is_unary) {
                          // Unary -> Binary: Arity increase, need new child
@@ -273,10 +273,10 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
             {
                 auto new_op_node = std::make_shared<Node>(NodeType::Operator);
                 // Inserting binary or unary op
-                const std::vector<char> insert_ops = {'+', '-', '*', '%', 's', 'c', 'l', 'e', '!', '_'};
+                const std::vector<char> insert_ops = {'+', '-', '*', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
                 std::uniform_int_distribution<int> op_dist(0, insert_ops.size() - 1);
                 new_op_node->op = insert_ops[op_dist(rng)];
-                bool is_unary = (new_op_node->op == 's' || new_op_node->op == 'c' || new_op_node->op == 'l' || new_op_node->op == 'e' || new_op_node->op == '!' || new_op_node->op == '_');
+                bool is_unary = (new_op_node->op == 's' || new_op_node->op == 'c' || new_op_node->op == 'l' || new_op_node->op == 'e' || new_op_node->op == '!' || new_op_node->op == '_' || new_op_node->op == 'g');
 
                 // El nodo original se convierte en el hijo izquierdo
                 new_op_node->left = current_node_ptr_ref;
