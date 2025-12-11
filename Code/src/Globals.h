@@ -114,6 +114,16 @@ const double FITNESS_EQUALITY_TOLERANCE = 1e-9;
 const double EXACT_SOLUTION_THRESHOLD = 1e-8;
 
 // ----------------------------------------
+// Fitness Ponderado (Weighted Fitness)
+// ----------------------------------------
+// Activa el fitness ponderado para penalizar fuertemente errores en valores altos de N.
+// Esto destruye a las parábolas que fallan en N=20 pero dan buen promedio general.
+const bool USE_WEIGHTED_FITNESS = true;
+// Tipo de peso: "quadratic" usa i*i, "exponential" usa exp(i*WEIGHTED_FITNESS_EXPONENT)
+// Exponente para peso exponencial (más agresivo). Usar 0.2-0.3 para datasets pequeños.
+const double WEIGHTED_FITNESS_EXPONENT = 0.25;
+
+// ----------------------------------------
 // Parámetros de Características Avanzadas
 // ----------------------------------------
 const int STAGNATION_LIMIT_ISLAND = 50;

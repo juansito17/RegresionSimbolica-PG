@@ -26,6 +26,7 @@ double calculate_raw_fitness(const NodePtr& tree,
 
     double error_sum_pow13 = 0.0; // Solo si USE_RMSE_FITNESS = false
     double sum_sq_error = 0.0;
+    double total_weight = 0.0; // Para normalizar el fitness ponderado
     bool all_precise = true;
     size_t num_points = x_values.size();
     bool calculation_failed = false; // Flag para detectar INF/NaN
@@ -45,14 +46,24 @@ double calculate_raw_fitness(const NodePtr& tree,
 
         if (abs_diff >= FITNESS_PRECISION_THRESHOLD) all_precise = false;
 
+        // --- PESO PARA FITNESS PONDERADO ---
+        // Hace que los últimos puntos (N altos) valgan muchísimo más.
+        // Esto destruye a los polinomios porque fallan al final.
+        double weight = 1.0;
+        if (USE_WEIGHTED_FITNESS) {
+            // Peso exponencial: más agresivo para penalizar errores en N altos
+            weight = std::exp(static_cast<double>(i) * WEIGHTED_FITNESS_EXPONENT);
+        }
+        total_weight += weight;
+
         // Acumular error para ambas métricas (si aplica)
         if (!USE_RMSE_FITNESS) {
-             error_sum_pow13 += std::pow(abs_diff, FITNESS_ORIGINAL_POWER);
+             error_sum_pow13 += std::pow(abs_diff, FITNESS_ORIGINAL_POWER) * weight;
         }
 
-        // Calcular y acumular error cuadrático
+        // Calcular y acumular error cuadrático PONDERADO
         double sq_diff = diff * diff;
-        sum_sq_error += sq_diff;
+        sum_sq_error += sq_diff * weight;
 
         // Control de desbordamiento/Infinito en la suma
         if (std::isinf(sum_sq_error) || (error_sum_pow13 >= INF / 10.0 && !USE_RMSE_FITNESS)) {
@@ -69,12 +80,13 @@ double calculate_raw_fitness(const NodePtr& tree,
     // Seleccionar métrica de error crudo
     double raw_error;
     if (USE_RMSE_FITNESS) {
-        if (num_points == 0) return INF;
-        double mse = sum_sq_error / num_points;
+        if (num_points == 0 || total_weight == 0.0) return INF;
+        // MSE ponderado: normalizar por suma de pesos, no por num_points
+        double mse = sum_sq_error / total_weight;
         if (std::isinf(mse) || std::isnan(mse) || mse < 0) {
              raw_error = INF;
         } else {
-             raw_error = std::sqrt(mse); // Calcular RMSE
+             raw_error = std::sqrt(mse); // Calcular RMSE ponderado
         }
     } else {
         raw_error = error_sum_pow13;
