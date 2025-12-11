@@ -25,7 +25,7 @@ set "VS_ENV_SCRIPT=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Au
 if not exist "%VS_ENV_SCRIPT%" (
     echo ERROR: No se pudo encontrar vcvarsall.bat en la ruta esperada.
     echo Por favor, ajusta la variable VS_ENV_SCRIPT en este script.
-    pause
+    rem pause
     exit /b 1
 )
 
@@ -57,7 +57,7 @@ if %errorlevel% neq 0 (
     echo ***********************************************
     echo ** ERROR: La configuracion con CMake fallo. **
     echo ***********************************************
-    pause
+    rem pause
     exit /b 1
 )
 echo Configuracion completada con exito.
@@ -75,7 +75,7 @@ if %errorlevel% neq 0 (
     echo **************************************
     echo ** ERROR: La compilacion fallo. **
     echo **************************************
-    pause
+    rem pause
     exit /b 1
 )
 echo Compilacion completada con exito.
@@ -99,4 +99,4 @@ echo La ejecucion ha finalizado.
 echo.
 
 rem --- Final ---
-pause
+rem exit /b 0

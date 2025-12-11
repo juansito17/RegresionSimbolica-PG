@@ -12,10 +12,27 @@ int main() {
 
     std::cout << "Symbolic Regression using Genetic Programming (Island Model)" << std::endl;
     std::cout << "==========================================================" << std::endl;
-    std::cout << "Target Function Points:" << std::endl;
-    // Imprimir los puntos objetivo definidos en Globals.h
-    for (size_t i = 0; i < TARGETS.size(); ++i) {
-        std::cout << "  f(" << X_VALUES[i] << ") = " << TARGETS[i] << std::endl;
+    std::vector<double> targets;
+    std::vector<double> final_x_values;
+
+    if (USE_LOG_TRANSFORMATION) {
+        std::cout << "Info: Log Transformation is ON (Target = ln(Q(N)))." << std::endl;
+        for (size_t i = 0; i < RAW_TARGETS.size(); ++i) {
+            if (RAW_TARGETS[i] > 0) {
+                targets.push_back(std::log(RAW_TARGETS[i]));
+                final_x_values.push_back(X_VALUES[i]);
+            }
+        }
+    } else {
+        std::cout << "Info: Log Transformation is OFF." << std::endl;
+        targets = RAW_TARGETS;
+        final_x_values = X_VALUES;
+    }
+
+    std::cout << "Target Function Points (Effective):" << std::endl;
+    // Imprimir los puntos objetivo
+    for (size_t i = 0; i < targets.size(); ++i) {
+        std::cout << "  f(" << final_x_values[i] << ") = " << targets[i] << std::endl;
     }
     std::cout << "----------------------------------------" << std::endl;
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
@@ -40,7 +57,7 @@ int main() {
 
     // Crear la instancia del Algoritmo Genético
     // Pasa las referencias a los vectores de datos y los parámetros principales
-    GeneticAlgorithm ga(TARGETS, X_VALUES, TOTAL_POPULATION_SIZE, GENERATIONS, NUM_ISLANDS);
+    GeneticAlgorithm ga(targets, final_x_values, TOTAL_POPULATION_SIZE, GENERATIONS, NUM_ISLANDS);
 
     // Ejecutar el algoritmo
     // La función run() contiene el bucle principal de generaciones y devuelve el mejor árbol encontrado

@@ -50,23 +50,54 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
             } else if (node.type == NodeType::Variable) {
                 stack[++stack_top] = x_val;
             } else if (node.type == NodeType::Operator) {
-                double right = stack[stack_top--];
-                double left = stack[stack_top--];
-                double result;
-                switch (node.op) {
-                    case '+': result = left + right; break;
-                    case '-': result = left - right; break;
-                    case '*': result = left * right; break;
-                    case '/':
-                        if (fabs(right) < 1e-9) { // Avoid division by zero
-                            result = GPU_MAX_DOUBLE; 
-                        } else {
-                            result = left / right;
+                bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
+                double result = 0.0;
+                
+                if (is_unary) {
+                     if (stack_top < 0) {
+                         result = GPU_MAX_DOUBLE;
+                     } else {
+                         double val = stack[stack_top--];
+                         switch (node.op) {
+                            case 's': result = sin(val); break;
+                            case 'c': result = cos(val); break;
+                            case 'l': result = (val <= 1e-9) ? GPU_MAX_DOUBLE : log(val); break;
+                            case 'e': result = (val > 700.0) ? GPU_MAX_DOUBLE : exp(val); break;
+                            case '!': result = (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0); break;
+                            case '_': result = floor(val); break;
+                            case 'g': result = (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); break;
+                            default: result = NAN; break;
+                         }
+                     }
+                     stack[++stack_top] = result;
+                } else {
+                    if (stack_top < 1) { 
+                        result = GPU_MAX_DOUBLE;
+                        stack[++stack_top] = result; // Push error
+                    } else {
+                        double right = stack[stack_top--];
+                        double left = stack[stack_top--];
+                        switch (node.op) {
+                            case '+': result = left + right; break;
+                            case '-': result = left - right; break;
+                            case '*': result = left * right; break;
+                            case '/':
+                                if (fabs(right) < 1e-9) { // Avoid division by zero
+                                    result = GPU_MAX_DOUBLE; 
+                                } else {
+                                    result = left / right;
+                                }
+                                break;
+                            case '^': result = pow(left, right); break;
+                            case '%':
+                                if (fabs(right) < 1e-9) result = GPU_MAX_DOUBLE;
+                                else result = fmod(left, right);
+                                break;
+                            default: result = NAN; break;
                         }
-                        break;
-                    default: result = NAN; break;
+                        stack[++stack_top] = result;
+                    }
                 }
-                stack[++stack_top] = result;
             }
         }
 
@@ -137,26 +168,50 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                 } else if (node.type == NodeType::Variable) {
                     stack[++stack_top] = x_val;
                 } else if (node.type == NodeType::Operator) {
-                    // Safety check index
-                    if (stack_top < 1) { valid = false; break; }
+                    bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
+                    
+                    if (is_unary) {
+                        if (stack_top < 0) { valid = false; break; }
+                        double val = stack[stack_top--];
+                        double result = 0.0;
+                         switch (node.op) {
+                            case 's': result = sin(val); break;
+                            case 'c': result = cos(val); break;
+                            case 'l': result = (val <= 1e-9) ? GPU_MAX_DOUBLE : log(val); break;
+                            case 'e': result = (val > 700.0) ? GPU_MAX_DOUBLE : exp(val); break;
+                            case '!': result = (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0); break;
+                            case '_': result = floor(val); break;
+                            case 'g': result = (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); break;
+                             default: result = NAN; break;
+                        }
+                        stack[++stack_top] = result;
+                    } else {
+                        // Safety check index
+                        if (stack_top < 1) { valid = false; break; }
 
-                    double right = stack[stack_top--];
-                    double left = stack[stack_top--];
-                    double result;
-                    switch (node.op) {
-                        case '+': result = left + right; break;
-                        case '-': result = left - right; break;
-                        case '*': result = left * right; break;
-                        case '/':
-                            if (fabs(right) < 1e-9) { 
-                                result = GPU_MAX_DOUBLE; 
-                            } else {
-                                result = left / right;
-                            }
-                            break;
-                        default: result = NAN; break;
+                        double right = stack[stack_top--];
+                        double left = stack[stack_top--];
+                        double result;
+                        switch (node.op) {
+                            case '+': result = left + right; break;
+                            case '-': result = left - right; break;
+                            case '*': result = left * right; break;
+                            case '/':
+                                if (fabs(right) < 1e-9) { 
+                                    result = GPU_MAX_DOUBLE; 
+                                } else {
+                                    result = left / right;
+                                }
+                                break;
+                            case '^': result = pow(left, right); break;
+                            case '%':
+                                if (fabs(right) < 1e-9) result = GPU_MAX_DOUBLE;
+                                else result = fmod(left, right);
+                                break;
+                            default: result = NAN; break;
+                        }
+                        stack[++stack_top] = result;
                     }
-                    stack[++stack_top] = result;
                 }
             }
 

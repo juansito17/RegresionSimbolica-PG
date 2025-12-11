@@ -14,16 +14,16 @@
 // ----------------------------------------
 // Datos del Problema (Regresión Simbólica)
 // ----------------------------------------
-// Asegúrate de que estos sean los datos correctos para la fórmula que quieres probar
+// MODIFICADO: Usamos log(TARGETS) para aplanar el crecimiento exponencial.
+// X representa N. TARGETS_LOG es ln(Q(N)).
+// Se han filtrado valores N<4 donde Q(N) es 0 o pequeño irrelevante.
 
-const std::vector<double> TARGETS = {92, 352, 724}; // O los que correspondan
-const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
+// MODIFICADO: RAW_TARGETS contiene los datos crudos. TARGETS se generará en runtime.
+const std::vector<double> RAW_TARGETS = {2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884};
+const std::vector<double> X_VALUES = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
 
-//const std::vector<double> TARGETS = {380, 336, 324, 308, 301, 313, 271, 268, 251, 231};
-//const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51.7, 50.6, 46.4};
-
-//const std::vector<double> TARGETS = {1, 1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884, 314666222712, 2691008701644, 24233937684440, 227514171973736, 2207893435808352, 22317699616364044, 234907967154122528};
-//const std::vector<double> X_VALUES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
+// Flag para activar la transformación logarítmica automática
+const bool USE_LOG_TRANSFORMATION = true;
 
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
@@ -49,8 +49,7 @@ const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas c
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "(((0.62358531/(((x+(0.62358531/(((-(3599.19050242/(((52.38107258-x)-0.87618851)-6.34160259)))+1.86961523)-((x-1.74732397)*((x-0.49109558)+(67.17975136/(60.76860957-x)))))))-0.49109558)-(((x+0.00294194)-0.31272581)+((5.00877511/(-60.04757248+((x+0.00398195)+0.00398195)))/(67.17975136-(x-0.49109558))))))/(67.17975136-(x+(0.33459658/(67.17975136-(x+(0.33459658/(67.17975136-((((x+0.00263118)+0.00263118)-0.47205995)+0.62358531)))))))))+((0.33459658/(67.17975136-(x-0.49109558)))+((2.68328288/(49.94971888-((x-0.00114565)+(0.33459658/(67.17975136-((x-0.00134655)-0.47205995))))))+((0.74346506/(60.76860957-x))+(((5.43909022/(-60.04757248+x))-3.3156463)+((10.02892889/(52.38107258-x))+(5.00877511*((x+(0.62358531/((385.84981692/(60.76860957-x))-(((x+0.62358531)+(0.33459658/(67.17975136-(x+(0.33459658/(67.17975136-(((x+(0.62358531/((((5.36601249*x)+5.36601249)/(60.76860957-x))-60.76860957)))-0.47205995)+0.62358531)))))))*x))))+(0.62358531/((72.88834001/(52.38107258-(x+0.00294194)))-((((5.74354339*(x+1.21141146))+x)/(67.17975136-((((x+0.00398195)+0.00398195)+0.00263118)-0.31272581)))+(x+((52.38107258/(60.76860957-(x+(0.62358531/((((5.36601249*x)+5.36601249)/(60.76860957-x))-60.76860957)))))+((-9.16958904+(((10.02892889*(52.38107258-((x+0.00263118)+0.00263118)))+(5.00877511*x))+3.25767525))-x))))))))))))))";
-// ---------------------------------------------------------
+const std::string INITIAL_FORMULA_STRING = "((((x+(x%(7.14937743-(-1.53627077^x))))+(4.98708598%x))*x)*0.0274748)";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -63,21 +62,28 @@ const int MIGRATION_SIZE = 50;      // Incrementado para una migración más sus
 // ----------------------------------------
 // Parámetros de Generación Inicial de Árboles
 // ----------------------------------------
-// Aumentamos la profundidad inicial del árbol para generar fórmulas más complejas desde el principio,
-// lo que puede aprovechar mejor la capacidad de cálculo de la GPU.
-// Aumentamos la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas,
-// lo que se traduce en más operaciones a evaluar por la GPU, maximizando su uso.
-// Aumentamos aún más la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas.
-// Esto garantiza que la GPU tenga más cálculos por individuo durante la evaluación de fitness.
-// Reducimos la profundidad inicial y de mutación para generar fórmulas más simples al principio.
-// Esto acelera la evaluación inicial y permite que el algoritmo construya la complejidad de forma más eficiente.
 const int MAX_TREE_DEPTH_INITIAL = 8; // Reducido para fórmulas iniciales más simples y rápidas
 const double TERMINAL_VS_VARIABLE_PROB = 0.75;
 const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
-const std::vector<double> OPERATOR_WEIGHTS = {0.25, 0.3, 0.25, 0.1, 0.10};
+// Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
+const std::vector<double> OPERATOR_WEIGHTS = {
+    0.10, // + (Suma)
+    0.15, // - (Resta: CRUCIAL para log(n!) - n)
+    0.10, // * (Mult)
+    0.10, // / (Div)
+    0.05, // ^ (Potencia: Ya probamos x^2, bajémosla un poco)
+    0.01, // % (Módulo: BAJAR AL MÍNIMO para evitar trucos sucios)
+    0.01, // s (Seno: Ruido innecesario)
+    0.01, // c (Coseno: Ruido innecesario)
+    0.15, // l (Log: MUY NECESARIO para envolver al factorial)
+    0.02, // e (Exp)
+    0.05, // ! (Factorial: Mantener o subir si g no funciona)
+    0.05, // _ (Floor/Neg)
+    0.20  // g (Gamma: LA ESTRELLA. Dale prioridad máxima)
+};
 
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
@@ -86,7 +92,7 @@ const double BASE_MUTATION_RATE = 0.30;
 const double BASE_ELITE_PERCENTAGE = 0.15;
 const double DEFAULT_CROSSOVER_RATE = 0.85;
 const int DEFAULT_TOURNAMENT_SIZE = 30;
-const int MAX_TREE_DEPTH_MUTATION = 6; // Reducido para mutaciones que no generen árboles excesivamente grandes
+const int MAX_TREE_DEPTH_MUTATION = 8; // Slight increase to allow complexity
 const double MUTATE_INSERT_CONST_PROB = 0.6;
 const int MUTATE_INSERT_CONST_INT_MIN = 1;
 const int MUTATE_INSERT_CONST_INT_MAX = 5;
@@ -98,7 +104,8 @@ const double MUTATE_INSERT_CONST_FLOAT_MAX = 5.0;
 // ----------------------------------------
 // Reducimos ligeramente la penalización por complejidad para permitir que fórmulas más complejas
 // (y computacionalmente más intensivas para la GPU) sean favorecidas por el algoritmo.
-const double COMPLEXITY_PENALTY_FACTOR = 0.005; // Reducido para favorecer fórmulas más complejas
+// MODIFICADO: Aumentado para penalizar bloat (Strategy 3).
+const double COMPLEXITY_PENALTY_FACTOR = 0.05; // Was 0.005. Increased significantly to fight bloat.
 const bool USE_RMSE_FITNESS = true;
 const double FITNESS_ORIGINAL_POWER = 1.3;
 const double FITNESS_PRECISION_THRESHOLD = 0.001;

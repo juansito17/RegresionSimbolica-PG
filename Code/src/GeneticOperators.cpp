@@ -27,17 +27,25 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
             return node;
         }
     } else {
-        // Crear operador (+, -, *, /, ^)
+
+        // Crear operador
         auto node = std::make_shared<Node>(NodeType::Operator);
-        const std::vector<char> ops = {'+', '-', '*', '/', '^'};
+        // Match the weights in Globals.h: +, -, *, /, ^, %, s, c, l, e, !, _, g
+        const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
         std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
         node->op = ops[op_dist(rng)];
 
+        bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
+
         // Generar hijos recursivamente
         node->left = generate_random_tree(max_depth, current_depth + 1);
-        node->right = generate_random_tree(max_depth, current_depth + 1);
+        if (!is_unary) {
+            node->right = generate_random_tree(max_depth, current_depth + 1);
+        } else {
+            node->right = nullptr;
+        }
 
-        // Fallback para hijos nulos: generar un terminal aleatorio
+        // Fallback para hijos nulos
         auto generate_random_terminal = [&]() -> NodePtr {
             if (prob_dist(rng) < TERMINAL_VS_VARIABLE_PROB) { return std::make_shared<Node>(NodeType::Variable); }
             else {
@@ -50,15 +58,13 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
         };
 
         if (!node->left) node->left = generate_random_terminal();
-        if (!node->right) node->right = generate_random_terminal();
+        if (!is_unary && !node->right) node->right = generate_random_terminal();
 
         // --- Manejo especial para el operador de potencia '^' ---
         if (node->op == '^') {
             // Regla 1: Evitar 0^0 o 0^negativo
             if (node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) {
                 if (node->right->type == NodeType::Constant && node->right->value <= SIMPLIFY_NEAR_ZERO_TOLERANCE) {
-                    // Si es 0^0 o 0^negativo, cambiar el operador a algo seguro o el exponente
-                    // Opción: Cambiar el operador a '*' o '+'
                     const std::vector<char> safe_ops = {'+', '-', '*'};
                     std::uniform_int_distribution<int> safe_op_dist(0, safe_ops.size() - 1);
                     node->op = safe_ops[safe_op_dist(rng)];
@@ -67,10 +73,10 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
             // Regla 2: Evitar base negativa con exponente no entero
             else if (node->left->type == NodeType::Constant && node->left->value < 0.0) {
                 if (node->right->type == NodeType::Constant && std::fabs(node->right->value - std::round(node->right->value)) > SIMPLIFY_NEAR_ZERO_TOLERANCE) {
-                    // Si base es negativa y exponente no es entero, cambiar el exponente a un entero aleatorio
-                    std::uniform_int_distribution<int> int_exp_dist(-3, 3); // Rango de enteros para exponente
-                    node->right = std::make_shared<Node>(NodeType::Constant);
-                    node->right->value = static_cast<double>(int_exp_dist(rng));
+                     // Change exponent to int
+                     std::uniform_int_distribution<int> int_exp_dist(-3, 3);
+                     node->right = std::make_shared<Node>(NodeType::Constant);
+                     node->right->value = static_cast<double>(int_exp_dist(rng));
                 }
             }
         }
@@ -235,12 +241,25 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
             break;
         case MutationType::OperatorChange:
              if (current_node.type == NodeType::Operator) {
-                 const std::vector<char> ops = {'+', '-', '*', '/', '^'}; // Lista completa
+                 const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
                  std::vector<char> possible_ops;
                  for (char op : ops) if (op != current_node.op) possible_ops.push_back(op);
                  if (!possible_ops.empty()) {
                      std::uniform_int_distribution<int> op_choice(0, possible_ops.size() - 1);
-                     current_node.op = possible_ops[op_choice(rng)]; // Cambiar operador
+                     char old_op = current_node.op;
+                     char new_op = possible_ops[op_choice(rng)];
+                     
+                     bool was_unary = (old_op == 's' || old_op == 'c' || old_op == 'l' || old_op == 'e' || old_op == '!' || old_op == '_' || old_op == 'g');
+                     bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_' || new_op == 'g');
+
+                     if (was_unary && !is_unary) {
+                         // Unary -> Binary: Arity increase, need new child
+                         current_node.right = generate_replacement(1);
+                     } else if (!was_unary && is_unary) {
+                         // Binary -> Unary: Arity decrease, remove child
+                         current_node.right = nullptr;
+                     }
+                     current_node.op = new_op;
                  }
              } else {
                  // Si no es operador, reemplazar por un subárbol aleatorio
@@ -253,27 +272,32 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
         case MutationType::NodeInsertion:
             {
                 auto new_op_node = std::make_shared<Node>(NodeType::Operator);
-                const std::vector<char> insert_ops = {'+', '-', '*'}; // Operadores comunes para inserción
+                // Inserting binary or unary op
+                const std::vector<char> insert_ops = {'+', '-', '*', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
                 std::uniform_int_distribution<int> op_dist(0, insert_ops.size() - 1);
                 new_op_node->op = insert_ops[op_dist(rng)];
+                bool is_unary = (new_op_node->op == 's' || new_op_node->op == 'c' || new_op_node->op == 'l' || new_op_node->op == 'e' || new_op_node->op == '!' || new_op_node->op == '_' || new_op_node->op == 'g');
 
                 // El nodo original se convierte en el hijo izquierdo
                 new_op_node->left = current_node_ptr_ref;
 
-                // Generar un hijo derecho (terminal)
-                 if (prob(rng) < MUTATE_INSERT_CONST_PROB) {
-                     auto right_child = std::make_shared<Node>(NodeType::Constant);
-                     if (FORCE_INTEGER_CONSTANTS) { std::uniform_int_distribution<int> cv(MUTATE_INSERT_CONST_INT_MIN, MUTATE_INSERT_CONST_INT_MAX); right_child->value = static_cast<double>(cv(rng)); }
-                     else { std::uniform_real_distribution<double> cv(MUTATE_INSERT_CONST_FLOAT_MIN, MUTATE_INSERT_CONST_FLOAT_MAX); right_child->value = cv(rng); }
-                     if (std::fabs(right_child->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) right_child->value = 0.0;
-                     new_op_node->right = right_child;
-                 } else {
-                     new_op_node->right = std::make_shared<Node>(NodeType::Variable);
-                 }
-                 // Fallback si el hijo derecho es nulo (no debería pasar aquí)
-                 if (!new_op_node->right) new_op_node->right = std::make_shared<Node>(NodeType::Variable);
+                // Si es binario, generar hijo derecho
+                if (!is_unary) {
+                     if (prob(rng) < MUTATE_INSERT_CONST_PROB) {
+                         auto right_child = std::make_shared<Node>(NodeType::Constant);
+                         if (FORCE_INTEGER_CONSTANTS) { std::uniform_int_distribution<int> cv(MUTATE_INSERT_CONST_INT_MIN, MUTATE_INSERT_CONST_INT_MAX); right_child->value = static_cast<double>(cv(rng)); }
+                         else { std::uniform_real_distribution<double> cv(MUTATE_INSERT_CONST_FLOAT_MIN, MUTATE_INSERT_CONST_FLOAT_MAX); right_child->value = cv(rng); }
+                         if (std::fabs(right_child->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) right_child->value = 0.0;
+                         new_op_node->right = right_child;
+                     } else {
+                         new_op_node->right = std::make_shared<Node>(NodeType::Variable);
+                     }
+                     if (!new_op_node->right) new_op_node->right = std::make_shared<Node>(NodeType::Variable);
+                } else {
+                    new_op_node->right = nullptr;
+                }
 
-                // Reemplazar el puntero original con el nuevo nodo operador
+                // Reemplazar el puntero original com el nuevo nodo operador
                 *node_to_mutate_ptr = new_op_node;
             }
             break;
