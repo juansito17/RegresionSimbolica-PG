@@ -241,25 +241,39 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
             break;
         case MutationType::OperatorChange:
              if (current_node.type == NodeType::Operator) {
-                 const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
-                 std::vector<char> possible_ops;
-                 for (char op : ops) if (op != current_node.op) possible_ops.push_back(op);
-                 if (!possible_ops.empty()) {
-                     std::uniform_int_distribution<int> op_choice(0, possible_ops.size() - 1);
-                     char old_op = current_node.op;
-                     char new_op = possible_ops[op_choice(rng)];
+                 // Usar la distribución ponderada global para elegir el nuevo operador.
+                 // Esto asegura que si 'g' tiene peso alto, sea elegido frecuentemente.
+                 // Asumimos que OPERATOR_WEIGHTS tiene 0.0 para operadores deshabilitados.
+                 
+                 const std::vector<char> all_ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
+                 std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
+                 
+                 // Verificar si hay al menos 2 operadores habilitados para evitar bucle infinito
+                 int enabled_count = 0;
+                 for (double w : OPERATOR_WEIGHTS) if (w > 0.0) enabled_count++;
+                 
+                 if (enabled_count > 1) {
+                     int attempts = 0;
+                     int new_op_idx = -1;
+                     do {
+                         new_op_idx = op_dist(rng);
+                         attempts++;
+                     } while (all_ops[new_op_idx] == current_node.op && attempts < 20); // Intentar cambiar
                      
-                     bool was_unary = (old_op == 's' || old_op == 'c' || old_op == 'l' || old_op == 'e' || old_op == '!' || old_op == '_' || old_op == 'g');
-                     bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_' || new_op == 'g');
+                     if (attempts < 20) { // Si logramos encontrar uno diferente
+                         char old_op = current_node.op;
+                         char new_op = all_ops[new_op_idx];
+                         
+                         bool was_unary = (old_op == 's' || old_op == 'c' || old_op == 'l' || old_op == 'e' || old_op == '!' || old_op == '_' || old_op == 'g');
+                         bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_' || new_op == 'g');
 
-                     if (was_unary && !is_unary) {
-                         // Unary -> Binary: Arity increase, need new child
-                         current_node.right = generate_replacement(1);
-                     } else if (!was_unary && is_unary) {
-                         // Binary -> Unary: Arity decrease, remove child
-                         current_node.right = nullptr;
+                         if (was_unary && !is_unary) {
+                             current_node.right = generate_replacement(1);
+                         } else if (!was_unary && is_unary) {
+                             current_node.right = nullptr;
+                         }
+                         current_node.op = new_op;
                      }
-                     current_node.op = new_op;
                  }
              } else {
                  // Si no es operador, reemplazar por un subárbol aleatorio
@@ -272,16 +286,17 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
         case MutationType::NodeInsertion:
             {
                 auto new_op_node = std::make_shared<Node>(NodeType::Operator);
-                // Inserting binary or unary op
-                const std::vector<char> insert_ops = {'+', '-', '*', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
-                std::uniform_int_distribution<int> op_dist(0, insert_ops.size() - 1);
-                new_op_node->op = insert_ops[op_dist(rng)];
+                // Usar distribución ponderada
+                const std::vector<char> all_ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
+                std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
+                
+                int new_op_idx = op_dist(rng); // Siempre elegirá uno habilitado
+                new_op_node->op = all_ops[new_op_idx];
+
                 bool is_unary = (new_op_node->op == 's' || new_op_node->op == 'c' || new_op_node->op == 'l' || new_op_node->op == 'e' || new_op_node->op == '!' || new_op_node->op == '_' || new_op_node->op == 'g');
 
-                // El nodo original se convierte en el hijo izquierdo
                 new_op_node->left = current_node_ptr_ref;
 
-                // Si es binario, generar hijo derecho
                 if (!is_unary) {
                      if (prob(rng) < MUTATE_INSERT_CONST_PROB) {
                          auto right_child = std::make_shared<Node>(NodeType::Constant);
@@ -297,7 +312,6 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                     new_op_node->right = nullptr;
                 }
 
-                // Reemplazar el puntero original com el nuevo nodo operador
                 *node_to_mutate_ptr = new_op_node;
             }
             break;
@@ -364,5 +378,7 @@ void crossover_trees(NodePtr& tree1, NodePtr& tree2) {
 
 // Implementación de simplify_tree
 void simplify_tree(NodePtr& tree) {
-    tree = DomainConstraints::fix_or_simplify(tree);
+    if (USE_SIMPLIFICATION) {
+        tree = DomainConstraints::fix_or_simplify(tree);
+    }
 }

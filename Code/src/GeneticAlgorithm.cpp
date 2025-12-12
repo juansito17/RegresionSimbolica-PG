@@ -313,14 +313,38 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
         }
     }
     int pattern_injection_count = 0;
-    if (random_injection_count == 0 && current_generation % PATTERN_INJECT_INTERVAL == 0) {
-        pattern_injection_count = static_cast<int>(current_pop_size * PATTERN_INJECT_PERCENT);
-        for (int i = 0; i < pattern_injection_count && next_generation.size() < current_pop_size; ++i) {
-            NodePtr pt = island.pattern_memory.suggest_pattern_based_tree(MAX_TREE_DEPTH_INITIAL);
-            if (pt) { next_generation.emplace_back(std::move(pt)); }
-            else {
-                 NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
-                 if (random_tree) next_generation.emplace_back(std::move(random_tree));
+    
+    // --- ISLAND CATACLYSM ---
+    // If enabled, triggers a hard reset if stagnation persists.
+    if (USE_ISLAND_CATACLYSM && island.stagnation_counter >= STAGNATION_LIMIT_ISLAND) {
+        // Keep only top 1 elite (already in next_generation[0] if elite_count > 0)
+        // Or if we need to enforce better elitism during cataclysm:
+        
+        int survivors = 1; // Only the absolute best one survives
+        // Resize to survivors
+        if (next_generation.size() > survivors) next_generation.resize(survivors);
+        
+        // Fill the rest with completely random trees
+        int to_fill = current_pop_size - next_generation.size();
+        for(int i=0; i<to_fill; ++i) {
+             NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
+             if (random_tree) next_generation.emplace_back(std::move(random_tree));
+        }
+        
+        island.stagnation_counter = 0; // Reset counter
+        // Optional: Pattern injection could also happen here, but random is better for total diversity.
+    }
+    // Only do standard injections if we didn't just nuke everything
+    else {
+        if (random_injection_count == 0 && current_generation % PATTERN_INJECT_INTERVAL == 0) {
+            pattern_injection_count = static_cast<int>(current_pop_size * PATTERN_INJECT_PERCENT);
+            for (int i = 0; i < pattern_injection_count && next_generation.size() < current_pop_size; ++i) {
+                NodePtr pt = island.pattern_memory.suggest_pattern_based_tree(MAX_TREE_DEPTH_INITIAL);
+                if (pt) { next_generation.emplace_back(std::move(pt)); }
+                else {
+                     NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
+                     if (random_tree) next_generation.emplace_back(std::move(random_tree));
+                }
             }
         }
     }

@@ -85,22 +85,26 @@ double evaluate_tree(const NodePtr& node, double x) {
                     case 's': result = std::sin(leftVal); break;
                     case 'c': result = std::cos(leftVal); break;
                     case 'l': 
-                        if (leftVal <= 1e-9) return INF; // Log domain check
-                        result = std::log(leftVal); 
+                        // Protected Log: log(|x|)
+                        if (std::abs(leftVal) <= 1e-9) return INF; 
+                        result = std::log(std::abs(leftVal)); 
                         break;
                     case 'e': 
                         if (leftVal > 700.0) return INF; // Overflow check
                         result = std::exp(leftVal); 
                         break;
                     case '!': 
-                        if (leftVal < 0 && std::floor(leftVal) == leftVal) return INF; // Negative integer check
-                        if (leftVal > 170.0) return INF; // Overflow check
-                        result = std::tgamma(leftVal + 1.0); 
+                        // Protected Factorial/Gamma: tgamma(|x|+1)
+                        // Allow up to reasonable limit. 
+                        // |leftVal| to handle negatives.
+                        if (std::abs(leftVal) > 170.0) return INF; // Overflow check
+                        result = std::tgamma(std::abs(leftVal) + 1.0); 
                         break;
                     case '_': result = std::floor(leftVal); break;
                     case 'g':
-                        if (leftVal <= -1.0) return INF; // Check for Gamma domain (approx)
-                        result = std::lgamma(leftVal + 1.0); 
+                        // Protected LGamma: lgamma(|x|+1)
+                        // Always defined for positive arguments.
+                        result = std::lgamma(std::abs(leftVal) + 1.0); 
                         break;
                     default: return std::nan("");
                 }

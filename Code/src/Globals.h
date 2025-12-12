@@ -49,7 +49,7 @@ const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas c
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "l(g(x+1))-(x*0.92)";
+const std::string INITIAL_FORMULA_STRING = "(g(x)-((x*909613)/1000000))+0.117427";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -69,20 +69,39 @@ const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
 // Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
+// ----------------------------------------
+// Parámetros de Operadores Genéticos (Configuración de Operadores)
+// ----------------------------------------
+const bool USE_OP_PLUS     = true; // +
+const bool USE_OP_MINUS    = true; // -
+const bool USE_OP_MULT     = true; // *
+const bool USE_OP_DIV      = true; // /
+const bool USE_OP_POW      = true; // ^
+const bool USE_OP_MOD      = true; // %
+const bool USE_OP_SIN      = true; // s
+const bool USE_OP_COS      = true; // c
+const bool USE_OP_LOG      = true; // l
+const bool USE_OP_EXP      = true; // e
+const bool USE_OP_FACT     = true; // !
+const bool USE_OP_FLOOR    = true; // _
+const bool USE_OP_GAMMA    = true; // g
+
+// Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
+// Los pesos se multiplican por el flag (0 o 1) para habilitar/deshabilitar.
 const std::vector<double> OPERATOR_WEIGHTS = {
-    0.10, // + (Suma)
-    0.15, // - (Resta: CRUCIAL para log(n!) - n)
-    0.10, // * (Mult)
-    0.10, // / (Div)
-    0.05, // ^ (Potencia: Ya probamos x^2, bajémosla un poco)
-    0.01, // % (Módulo: BAJAR AL MÍNIMO para evitar trucos sucios)
-    0.01, // s (Seno: Ruido innecesario)
-    0.01, // c (Coseno: Ruido innecesario)
-    0.15, // l (Log: MUY NECESARIO para envolver al factorial)
-    0.02, // e (Exp)
-    0.05, // ! (Factorial: Mantener o subir si g no funciona)
-    0.05, // _ (Floor/Neg)
-    0.20  // g (Gamma: LA ESTRELLA. Dale prioridad máxima)
+    0.10 * (USE_OP_PLUS  ? 1.0 : 0.0), // +
+    0.15 * (USE_OP_MINUS ? 1.0 : 0.0), // -
+    0.10 * (USE_OP_MULT  ? 1.0 : 0.0), // *
+    0.10 * (USE_OP_DIV   ? 1.0 : 0.0), // /
+    0.05 * (USE_OP_POW   ? 1.0 : 0.0), // ^
+    0.01 * (USE_OP_MOD   ? 1.0 : 0.0), // %
+    0.01 * (USE_OP_SIN   ? 1.0 : 0.0), // s
+    0.01 * (USE_OP_COS   ? 1.0 : 0.0), // c
+    0.15 * (USE_OP_LOG   ? 1.0 : 0.0), // l
+    0.02 * (USE_OP_EXP   ? 1.0 : 0.0), // e
+    0.05 * (USE_OP_FACT  ? 1.0 : 0.0), // !
+    0.05 * (USE_OP_FLOOR ? 1.0 : 0.0), // _
+    0.20 * (USE_OP_GAMMA ? 1.0 : 0.0)  // g
 };
 
 // ----------------------------------------
@@ -138,6 +157,10 @@ const size_t PARETO_MAX_FRONT_SIZE = 50;
 const double SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9;
 const double SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9;
 const int LOCAL_SEARCH_ATTEMPTS = 30;
+// Simplification Toggle
+const bool USE_SIMPLIFICATION = true;
+// Anti-Stagnation: Island Cataclysm (Hard Reset)
+const bool USE_ISLAND_CATACLYSM = true;
 
 // ----------------------------------------
 // Otros Parámetros
