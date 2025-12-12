@@ -20,6 +20,12 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
 // Constant for large finite value
 #define GPU_MAX_DOUBLE 1e308
 
+// --- WEIGHTED FITNESS: Constantes para CUDA ---
+// Estas deben coincidir con los valores en Globals.h
+// CUDA device code no puede acceder a const C++, así que usamos #define
+#define GPU_USE_WEIGHTED_FITNESS true
+#define GPU_WEIGHTED_FITNESS_EXPONENT 0.25
+
 // Single Tree Evaluation Kernel (Legacy/Single Use)
 __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                                              int tree_size,
@@ -107,7 +113,14 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
             d_raw_fitness_results[idx] = GPU_MAX_DOUBLE; 
         } else {
             double diff = predicted_val - d_targets[idx];
-            d_raw_fitness_results[idx] = diff * diff;
+            double sq_error = diff * diff;
+            // --- WEIGHTED FITNESS: Apply exponential weight ---
+            // Los últimos puntos (N altos) pesan mucho más que los primeros.
+            if (GPU_USE_WEIGHTED_FITNESS) {
+                double weight = exp((double)idx * GPU_WEIGHTED_FITNESS_EXPONENT);
+                sq_error *= weight;
+            }
+            d_raw_fitness_results[idx] = sq_error;
         }
     }
 }
@@ -153,6 +166,7 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
         int offset = d_offsets[idx];
         int size = d_sizes[idx];
         double sum_sq_error = 0.0;
+        double total_weight = 0.0; // Para normalizar fitness ponderado
         bool valid = true;
 
         for (int p = 0; p < num_points; ++p) {
@@ -227,9 +241,21 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
             }
 
             double diff = predicted_val - d_targets[p];
-            sum_sq_error += diff * diff;
+            double sq_error = diff * diff;
+            
+            // --- WEIGHTED FITNESS: Peso exponencial ---
+            double weight = 1.0;
+            if (GPU_USE_WEIGHTED_FITNESS) {
+                weight = exp((double)p * GPU_WEIGHTED_FITNESS_EXPONENT);
+            }
+            total_weight += weight;
+            sum_sq_error += sq_error * weight;
         }
 
+        // Normalizar por suma de pesos para obtener MSE ponderado
+        if (GPU_USE_WEIGHTED_FITNESS && total_weight > 0.0) {
+            sum_sq_error = sum_sq_error / total_weight * num_points; // Escalar de vuelta
+        }
         d_results[idx] = sum_sq_error;
     }
 }
