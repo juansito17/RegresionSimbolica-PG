@@ -83,8 +83,6 @@ target_link_libraries(SymbolicRegressionGP PUBLIC
 # Asegura que los flags del compilador de C++ (como /std:c++17) se pasen a nvcc.
 set(CMAKE_CUDA_PROPAGATE_HOST_FLAGS ON)
 
-# Definir macros de preprocesador
-target_compile_definitions(SymbolicRegressionGP PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
 
 # === OPTIMIZACIÓN: Flags de compilación agresivos para GCC/Clang (Colab) ===
 # NOTA: Para MSVC+CUDA, dejamos que CMake maneje la optimización automáticamente

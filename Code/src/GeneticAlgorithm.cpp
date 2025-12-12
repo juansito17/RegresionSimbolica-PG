@@ -2,9 +2,9 @@
 #include "Globals.h"
 #include "Fitness.h"
 #include "AdvancedFeatures.h" // Incluir este para DomainConstraints::
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-#include "FitnessGPU.cuh"     // Para funciones de GPU (cudaMalloc, cudaMemcpy, cudaFree)
-#include <cuda_runtime.h>     // Para cudaMalloc, cudaFree, cudaMemcpy, cudaError_t, cudaSuccess, cudaGetErrorString
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#include "FitnessGPU.cuh"     // Para funciones de GPU
+#include <cuda_runtime.h>     // Para CUDA runtime
 #endif
 #include <iostream>
 #include <algorithm>
@@ -57,7 +57,7 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
     // --- ELIMINADO: Bloque de evaluación especial para fórmula inyectada ---
     // if (USE_INITIAL_FORMULA) { ... }
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     // Asignar memoria en la GPU y copiar datos
     size_t targets_size = targets.size() * sizeof(double);
     size_t x_values_size = x_values.size() * sizeof(double);
@@ -121,7 +121,7 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
 }
 
 GeneticAlgorithm::~GeneticAlgorithm() {
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     if (d_targets) {
         cudaFree(d_targets);
         d_targets = nullptr;
@@ -155,7 +155,7 @@ void GeneticAlgorithm::evaluate_population(Island& island) {
         }
     }
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     // 2. Prepare for Batch GPU Evaluation
     std::vector<LinearGpuNode> all_nodes;
     std::vector<int> tree_offsets;
@@ -264,7 +264,7 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
     }
     island.fitness_history.push_back(current_best_fitness);
     if (best_idx != -1 && current_best_fitness < INF) {
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
          auto local_search_result = try_local_improvement(island.population[best_idx].tree, island.population[best_idx].fitness, targets, x_values, LOCAL_SEARCH_ATTEMPTS, d_targets, d_x_values);
 #else
          auto local_search_result = try_local_improvement(island.population[best_idx].tree, island.population[best_idx].fitness, targets, x_values, LOCAL_SEARCH_ATTEMPTS);
@@ -419,7 +419,7 @@ NodePtr GeneticAlgorithm::run() {
     for (int gen = 0; gen < generations; ++gen) {
         // 1. Evaluate Population
         // === OPTIMIZACIÓN: Paralelo en modo CPU, serial en modo GPU ===
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
         // Serial loop for GPU mode to prevent context contention
         for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
              evaluate_population(*islands[i]);
@@ -528,7 +528,7 @@ NodePtr GeneticAlgorithm::run() {
          std::cout << "Final Best Formula Size: " << tree_size(overall_best_tree) << std::endl;
          std::cout << "Final Best Formula: " << tree_to_string(overall_best_tree) << std::endl;
           std::cout << "--- Final Verification ---" << std::endl;
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
           double final_check_fitness = evaluate_fitness(overall_best_tree, targets, x_values, d_targets, d_x_values);
 #else
           double final_check_fitness = evaluate_fitness(overall_best_tree, targets, x_values);

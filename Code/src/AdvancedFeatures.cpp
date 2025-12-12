@@ -293,7 +293,7 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
     auto& rng = get_rng();
     
     // Evaluate initial fitness
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     double current_fitness = evaluate_fitness(tree, targets, x_values, d_targets, d_x_values);
 #else
     double current_fitness = evaluate_fitness(tree, targets, x_values);
@@ -311,7 +311,7 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
         constants[idx]->value += delta;
         if (FORCE_INTEGER_CONSTANTS) constants[idx]->value = std::round(constants[idx]->value);
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
         double new_fitness = evaluate_fitness(tree, targets, x_values, d_targets, d_x_values);
 #else
         double new_fitness = evaluate_fitness(tree, targets, x_values);
@@ -328,7 +328,7 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
     }
 }
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts, double* d_targets, double* d_x_values) {
     // 1. First, try to optimize constants of the CURRENT tree
     NodePtr optimized_tree = clone_tree(tree);

@@ -1,5 +1,5 @@
 #include "Fitness.h"
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 #include "FitnessGPU.cuh" // Include for GPU fitness evaluation
 #endif
 #include "Globals.h" // Necesario para constantes globales e INF
@@ -13,7 +13,7 @@
 
 // Calculates the raw fitness using global parameters.
 // This function will now dispatch to GPU if USE_GPU_ACCELERATION is enabled.
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values,
@@ -109,7 +109,7 @@ double calculate_raw_fitness(const NodePtr& tree,
 #endif // USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 
 // Calcula el fitness final usando parámetros globales.
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
                         const std::vector<double>& x_values,
