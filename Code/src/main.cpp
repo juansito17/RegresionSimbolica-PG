@@ -5,8 +5,14 @@
 #include <vector>
 #include <memory> // Para shared_ptr
 #include <iomanip> // Para std::setprecision
+#include <omp.h>   // Para configuración de OpenMP
 
 int main() {
+    // === OPTIMIZACIÓN: Configuración explícita de hilos OpenMP ===
+    int num_threads = omp_get_max_threads();
+    omp_set_num_threads(num_threads);
+    std::cout << "[OpenMP] Using " << num_threads << " threads" << std::endl;
+    
     // Configurar precisión de salida para números flotantes
     std::cout << std::fixed << std::setprecision(6);
 
