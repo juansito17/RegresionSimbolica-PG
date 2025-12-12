@@ -49,7 +49,7 @@ const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas c
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "(g(x)-((x*909613)/1000000))+0.117427";
+const std::string INITIAL_FORMULA_STRING = "(g(x)-((x*909613)/1000000))+0.24423";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -161,6 +161,8 @@ const int LOCAL_SEARCH_ATTEMPTS = 30;
 const bool USE_SIMPLIFICATION = true;
 // Anti-Stagnation: Island Cataclysm (Hard Reset)
 const bool USE_ISLAND_CATACLYSM = true;
+// Selection Strategy: Epsilon-Lexicase Selection (Replaces Tournament)
+const bool USE_LEXICASE_SELECTION = true;
 
 // ----------------------------------------
 // Otros Parámetros

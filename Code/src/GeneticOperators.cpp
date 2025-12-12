@@ -172,6 +172,85 @@ Individual tournament_selection(const std::vector<Individual>& population, int t
     return *best_in_tournament;
 }
 
+// --- Epsilon-Lexicase Selection Implementation ---
+// Calculates residuals on demand if not present (Lazy Eval)
+void ensure_errors_computed(Individual& ind, const std::vector<double>& targets, const std::vector<double>& x_values) {
+    if (!ind.errors.empty()) return; // Already computed
+    if (!ind.tree) return;
+    
+    ind.errors.reserve(targets.size());
+    for (size_t i = 0; i < targets.size(); ++i) {
+        double val = evaluate_tree(ind.tree, x_values[i]);
+        if (std::isnan(val) || std::isinf(val)) {
+            ind.errors.push_back(INF);
+        } else {
+            // Use ABSOLUTE error for lexicase
+            ind.errors.push_back(std::fabs(val - targets[i]));
+        }
+    }
+}
+
+Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<double>& x_values) {
+    auto& rng = get_rng();
+    
+    // 1. Initial Candidates: Random subset (Tournament Size * 2) or Full Population?
+    // Efficiency: Using a subset is "Tournament Lexicase". Using Full is "Standard Lexicase".
+    // For 50k pop, full lexicase is slow. Let's use a large pool (e.g. 50-100).
+    int pool_size = 100; 
+    std::vector<Individual*> candidates;
+    candidates.reserve(pool_size);
+    
+    std::uniform_int_distribution<int> dist(0, population.size() - 1);
+    for(int i=0; i<pool_size; ++i) {
+        Individual& ind = population[dist(rng)];
+        if(ind.tree && ind.fitness_valid) candidates.push_back(&ind);
+    }
+    
+    if (candidates.empty()) return population[0]; // Should not happen
+    
+    // 2. Shuffle test cases
+    std::vector<int> cases(targets.size());
+    std::iota(cases.begin(), cases.end(), 0);
+    std::shuffle(cases.begin(), cases.end(), rng);
+    
+    // 3. Filter loop
+    for (int case_idx : cases) {
+        // Compute errors for this case for all candidates (Lazy)
+        double min_error = INF;
+        for (Individual* cand : candidates) {
+            ensure_errors_computed(*cand, targets, x_values);
+            if (case_idx < cand->errors.size()) {
+                 if (cand->errors[case_idx] < min_error) min_error = cand->errors[case_idx];
+            }
+        }
+        
+        // Define epsilon (MAD or simple threshold)
+        // Here we use a simple dynamic epsilon based on min_error
+        double epsilon = std::max(min_error * 0.1, 1e-5); 
+        // Or if min_error is 0, epsilon is 1e-5. Epsilon-Lexicase implies "close enough".
+        
+        // Filter
+        std::vector<Individual*> next_candidates;
+        next_candidates.reserve(candidates.size());
+        for (Individual* cand : candidates) {
+             if (case_idx < cand->errors.size()) {
+                 if (cand->errors[case_idx] <= min_error + epsilon) {
+                     next_candidates.push_back(cand);
+                 }
+             }
+        }
+        
+        candidates = std::move(next_candidates);
+        if (candidates.empty()) break; // Should not happen given min_error logic
+        if (candidates.size() == 1) return *candidates[0];
+    }
+    
+    // If multiple remain, pick random
+    if (candidates.empty()) return population[dist(rng)];
+    std::uniform_int_distribution<int> pick(0, candidates.size() - 1);
+    return *candidates[pick(rng)];
+}
+
 // Implementación de crossover
 Individual crossover(const Individual& parent1, const Individual& parent2) {
     NodePtr tree1_clone = clone_tree(parent1.tree);

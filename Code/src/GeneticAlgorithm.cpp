@@ -350,30 +350,63 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
     }
     auto& rng = get_rng();
     std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+    // >>> Parallel Parent Selection Loop (OpenMP) <<<
+    // Parallelize the loop that fills 'individuals_to_add'
     int remaining_slots = current_pop_size - next_generation.size();
-    if (remaining_slots > 0 && !island.population.empty()) {
-         long long valid_parent_count = std::count_if(island.population.begin(), island.population.end(),
-                                             [](const Individual& ind){ return ind.tree && ind.fitness_valid; });
-         if (valid_parent_count > 0) {
-             for (int i = 0; i < remaining_slots; ++i) {
-                 const Individual& p1 = tournament_selection(island.population, island.params.tournament_size);
-                 Individual child;
-                 if (prob_dist(rng) < island.params.crossover_rate && valid_parent_count >= 2) {
-                     const Individual& p2 = tournament_selection(island.population, island.params.tournament_size);
-                     if (p1.tree && p2.tree) {
-                         NodePtr t1 = clone_tree(p1.tree); NodePtr t2 = clone_tree(p2.tree);
-                         crossover_trees(t1, t2); child.tree = t1;
-                     } else if (p1.tree) { child.tree = clone_tree(p1.tree); }
-                 } else { if (p1.tree) child.tree = clone_tree(p1.tree); }
-                 if (child.tree) child.tree = mutate_tree(child.tree, island.params.mutation_rate, MAX_TREE_DEPTH_MUTATION);
-                 child.fitness_valid = false; next_generation.push_back(std::move(child));
-             }
-         } else {
-              for (int i = 0; i < remaining_slots; ++i) {
-                   NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
-                   if (random_tree) next_generation.emplace_back(std::move(random_tree));
-              }
-         }
+    std::vector<Individual> individuals_to_add(remaining_slots);
+    
+    // NOTE: Lexicase is complex to parallelize fully because of test case shuffling.
+    // Tournament is easy.
+    // For now we parallelize the generation of offspring.
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < remaining_slots; ++i) {
+        // Thread-local RNG
+        auto& rng = get_rng(); 
+        
+        Individual offspring;
+        if (prob_dist(rng) < island.params.crossover_rate) {
+            Individual p1, p2;
+            if (USE_LEXICASE_SELECTION) {
+                // Lexicase selection requires access to targets/x_values
+                // We use lazy evaluation inside lexicase_selection
+                // WARNING: Lexicase inside OpenMP might be slightly inefficient due to memory allocs, 
+                // but N (cases) is small (17).
+                // We need to protect shared resources if any? No, island.population is read-only here.
+                p1 = lexicase_selection(island.population, targets, x_values);
+                p2 = lexicase_selection(island.population, targets, x_values);
+            } else {
+                p1 = tournament_selection(island.population, island.params.tournament_size);
+                p2 = tournament_selection(island.population, island.params.tournament_size);
+            }
+            offspring = crossover(p1, p2);
+        } else {
+            Individual p1;
+            if (USE_LEXICASE_SELECTION) {
+                p1 = lexicase_selection(island.population, targets, x_values);
+            } else {
+                p1 = tournament_selection(island.population, island.params.tournament_size);
+            }
+            // Mutation in place
+            // Clone first implicitly by copy assignment above? No, Individual has unique_ptr?
+            // Wait, Individual has shared_ptr (NodePtr). So p1 copies the pointer. 
+            // We need a deep clone for mutation if we don't want to affect the parent.
+            // 'mutate' function usually clones?
+            // Let's check 'mutate': "Mutata un individuo in-place."
+            // If p1 shares tree with population, we MUST clone before mutate.
+            if (p1.tree) p1.tree = clone_tree(p1.tree); 
+            mutate(p1, island.params.mutation_rate);
+            offspring = std::move(p1);
+        }
+        
+        // Optimize Constants (simplistic)
+        // optimize_constants(offspring.tree, TARGETS, X_VALUES, nullptr, nullptr); // Optional, maybe too slow for all offspring?
+        
+        individuals_to_add[i] = std::move(offspring);
+    }
+    
+    // Move generated individuals to next_generation
+    for (auto& ind : individuals_to_add) {
+        next_generation.emplace_back(std::move(ind));
     }
     if (next_generation.size() < current_pop_size) {
          int gap = current_pop_size - next_generation.size();
