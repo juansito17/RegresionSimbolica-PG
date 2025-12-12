@@ -85,20 +85,19 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
 }
 
 // --- Crea la población inicial (MODIFICADO para inyectar fórmula) ---
+// === OPTIMIZACIÓN: Paralelizado con OpenMP ===
 std::vector<Individual> create_initial_population(int population_size) {
     std::vector<Individual> population;
-    population.reserve(population_size); // Reserva memoria
-    std::uniform_int_distribution<int> depth_dist(3, MAX_TREE_DEPTH_INITIAL); // Usa constante global
-    auto& rng = get_rng();
+    population.resize(population_size); // Pre-allocate all slots for parallel access
 
     // --- NUEVO: Inyección de Fórmula Inicial ---
-    bool formula_injected = false;
+    int start_index = 0;
     if (USE_INITIAL_FORMULA && !INITIAL_FORMULA_STRING.empty() && population_size > 0) {
         try {
             NodePtr initial_tree = parse_formula_string(INITIAL_FORMULA_STRING);
             if (initial_tree) {
-                population.emplace_back(std::move(initial_tree)); // Mover el árbol parseado
-                formula_injected = true;
+                population[0] = Individual(std::move(initial_tree));
+                start_index = 1;
                 std::cout << "[INFO] Injected initial formula: " << INITIAL_FORMULA_STRING << std::endl;
             } else {
                  std::cerr << "[WARNING] Parsing initial formula returned null. Skipping injection." << std::endl;
@@ -110,29 +109,30 @@ std::vector<Individual> create_initial_population(int population_size) {
     }
     // -----------------------------------------
 
-    // Rellenar el resto de la población con árboles aleatorios
-    int start_index = formula_injected ? 1 : 0; // Empezar desde 1 si se inyectó
+    // === OPTIMIZACIÓN: Loop paralelo para generar árboles ===
+    #pragma omp parallel for schedule(dynamic, 100)
     for (int i = start_index; i < population_size; ++i) {
-        // Crea un individuo con un árbol generado aleatoriamente
-         NodePtr random_tree = nullptr;
-         int attempts = 0;
-         const int max_attempts = 10; // Intentar generar un árbol válido varias veces
-         while (!random_tree && attempts < max_attempts) {
-             random_tree = generate_random_tree(depth_dist(rng));
-             attempts++;
-         }
-         if (random_tree) {
-             population.emplace_back(std::move(random_tree));
-         } else {
-              std::cerr << "[ERROR] Failed to generate a valid random tree after " << max_attempts << " attempts for individual " << i << "." << std::endl;
-              // ¿Qué hacer aquí? Podríamos lanzar una excepción o añadir un individuo inválido simple.
-              // Añadir un individuo simple (constante 0) para evitar parar todo.
-              auto fallback_node = std::make_shared<Node>(NodeType::Constant);
-              fallback_node->value = 0.0;
-              population.emplace_back(std::move(fallback_node));
-         }
+        // Cada hilo tiene su propio RNG (thread_local en get_rng)
+        auto& rng = get_rng();
+        std::uniform_int_distribution<int> depth_dist(3, MAX_TREE_DEPTH_INITIAL);
+        
+        NodePtr random_tree = nullptr;
+        int attempts = 0;
+        const int max_attempts = 10;
+        while (!random_tree && attempts < max_attempts) {
+            random_tree = generate_random_tree(depth_dist(rng));
+            attempts++;
+        }
+        if (random_tree) {
+            population[i] = Individual(std::move(random_tree));
+        } else {
+            // Fallback: crear constante simple
+            auto fallback_node = std::make_shared<Node>(NodeType::Constant);
+            fallback_node->value = 0.0;
+            population[i] = Individual(std::move(fallback_node));
+        }
     }
-    return population; // <-- Return
+    return population;
 }
 
 // --- Selección por torneo con parsimonia ---

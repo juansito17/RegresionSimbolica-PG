@@ -417,12 +417,20 @@ NodePtr GeneticAlgorithm::run() {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int gen = 0; gen < generations; ++gen) {
-        // 1. Evaluate Population (Serial Island Loop)
-        // We use a serial loop here because evaluate_population internally uses OpenMP for simplification,
-        // and then dispatches a GPU kernel. Serializing islands prevents oversubscription and GPU context contention.
-        for (int i = 0; i < islands.size(); ++i) {
+        // 1. Evaluate Population
+        // === OPTIMIZACIÓN: Paralelo en modo CPU, serial en modo GPU ===
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+        // Serial loop for GPU mode to prevent context contention
+        for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
              evaluate_population(*islands[i]);
         }
+#else
+        // Parallel loop for CPU mode to maximize core utilization
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+             evaluate_population(*islands[i]);
+        }
+#endif
 
         // 2. Evolve Islands (Parallel Island Loop)
         // Genetic operators (crossover, mutation) are CPU-bound and independent per island.

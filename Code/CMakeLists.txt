@@ -54,5 +54,19 @@ set(CMAKE_CUDA_PROPAGATE_HOST_FLAGS ON)
 # Definir macros de preprocesador
 target_compile_definitions(SymbolicRegressionGP PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
 
-# SECCIÓN ELIMINADA: La sección target_compile_options fue removida.
-# CMake y Visual Studio manejarán los flags de Debug/Release automáticamente.
+# === OPTIMIZACIÓN: Flags de compilación agresivos para GCC/Clang (Colab) ===
+# NOTA: Para MSVC+CUDA, dejamos que CMake maneje la optimización automáticamente
+#       ya que los flags manuales causan conflictos con nvcc
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(SymbolicRegressionGP PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-O3>              # Máxima optimización
+        $<$<COMPILE_LANGUAGE:CXX>:-march=native>    # Optimizar para CPU actual
+        $<$<COMPILE_LANGUAGE:CXX>:-ffast-math>      # Matemáticas rápidas
+        $<$<COMPILE_LANGUAGE:CXX>:-funroll-loops>   # Desenrollar loops
+        $<$<COMPILE_LANGUAGE:CXX>:-ftree-vectorize> # Forzar vectorización
+    )
+    # Link-time optimization (LTO) para Release
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set_property(TARGET SymbolicRegressionGP PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+endif()

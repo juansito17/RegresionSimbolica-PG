@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <algorithm> // Para std::remove_if
 #include <cctype>    // Para isdigit, isspace
+#include <thread>    // Para thread_local RNG
 
 // --- Función auxiliar para formatear constantes ---
 // --- Función auxiliar para formatear constantes ---
@@ -191,9 +192,13 @@ void collect_node_ptrs(NodePtr& node, std::vector<NodePtr*>& vec) {
 }
 
 // --- get_rng ---
-namespace { std::mt19937 global_rng(std::random_device{}()); }
+// === OPTIMIZACIÓN: RNG thread-local para evitar contención en OpenMP ===
 std::mt19937& get_rng() {
-    return global_rng;
+    thread_local std::mt19937 local_rng(
+        std::random_device{}() ^ 
+        static_cast<unsigned>(std::hash<std::thread::id>{}(std::this_thread::get_id()))
+    );
+    return local_rng;
 }
 
 
