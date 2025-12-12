@@ -1,5 +1,7 @@
 #include "Fitness.h"
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 #include "FitnessGPU.cuh" // Include for GPU fitness evaluation
+#endif
 #include "Globals.h" // Necesario para constantes globales e INF
 #include "ExpressionTree.h" // Necesario para tree_to_string
 #include <cmath>

@@ -2,7 +2,10 @@
 #include "Globals.h"
 #include "Fitness.h"
 #include "AdvancedFeatures.h" // Incluir este para DomainConstraints::
+#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 #include "FitnessGPU.cuh"     // Para funciones de GPU (cudaMalloc, cudaMemcpy, cudaFree)
+#include <cuda_runtime.h>     // Para cudaMalloc, cudaFree, cudaMemcpy, cudaError_t, cudaSuccess, cudaGetErrorString
+#endif
 #include <iostream>
 #include <algorithm>
 #include <vector>
@@ -11,9 +14,6 @@
 #include <iomanip>
 #include <iterator>
 #include <chrono>
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-#include <cuda_runtime.h> // Para cudaMalloc, cudaFree, cudaMemcpy, cudaError_t, cudaSuccess, cudaGetErrorString
-#endif
 
 // --- Constructor (Modificado para que evaluate_population procese todo) ---
 GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
