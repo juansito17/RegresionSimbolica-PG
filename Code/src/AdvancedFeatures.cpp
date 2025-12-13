@@ -206,23 +206,13 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
     // Manejo de hijos nulos
     bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
 
-    if (node->left && !node->right) {
-        if (is_unary) return node; // Correct state for unary ops
-        return node->left; // Simplify "A op null" -> A (for binary ops? dangerous but existing logic)
-    }
-    if (!node->left && node->right) return node->right;
-    if (!node->left && !node->right) { auto cn = std::make_shared<Node>(NodeType::Constant); cn->value = 1.0; return cn; }
-
-    // Constant Folding
-    // Constant Folding
+    // Constant Folding (First priority)
     bool left_is_const = (node->left && node->left->type == NodeType::Constant);
     bool right_is_const = (node->right && node->right->type == NodeType::Constant);
     
     // Fold if binary op with 2 constants OR unary op with 1 constant
     if ((left_is_const && right_is_const) || (is_unary && left_is_const)) {
         try {
-            // For unary, evaluate_tree expects 2nd arg to be dummy if mostly unused, 
-            // but here we are evaluating a constant expression (x is irrelevant).
             double result = evaluate_tree(node, 0.0); 
             if (!std::isnan(result) && !std::isinf(result)) {
                 auto cn = std::make_shared<Node>(NodeType::Constant);
@@ -231,16 +221,24 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
             }
         } catch (const std::exception&) {}
     }
+
+    if (node->left && !node->right) {
+        if (is_unary) return node; // Correct state for unary ops (Constant folding didn't trigger, so var inside)
+        return node->left; // Simplify "A op null" -> A (for binary ops? dangerous but existing logic)
+    }
+    if (!node->left && node->right) return node->right;
+    if (!node->left && !node->right) { auto cn = std::make_shared<Node>(NodeType::Constant); cn->value = 1.0; return cn; }
+
     // Identity Simplifications & Fixes
-     if ((node->op == '+' || node->op == '-') && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->left;
-     if (node->op == '+' && node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->right;
-     if ((node->op == '*' || node->op == '/') && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left;
+     if ((node->op == '+' || node->op == '-') && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->left;
+     if (node->op == '+' && node->left && node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->right;
+     if ((node->op == '*' || node->op == '/') && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left;
      if (node->op == '*' && node->left && node->left->type == NodeType::Constant && std::fabs(node->left->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->right;
-     if (node->op == '*' && ((node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) || (node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE))) { auto z = std::make_shared<Node>(NodeType::Constant); z->value = 0.0; return z; }
-     if (node->op == '^' && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left; // A^1 -> A
-     if (node->op == '^' && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) { auto o = std::make_shared<Node>(NodeType::Constant); o->value = 1.0; return o; } // A^0 -> 1
+     if (node->op == '*' && ((node->left && node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) || (node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE))) { auto z = std::make_shared<Node>(NodeType::Constant); z->value = 0.0; return z; }
+     if (node->op == '^' && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left; // A^1 -> A
+     if (node->op == '^' && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) { auto o = std::make_shared<Node>(NodeType::Constant); o->value = 1.0; return o; } // A^0 -> 1
     // Fix div by zero (constante)
-    if (node->op == '/' && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) node->right->value = 1.0;
+    if (node->op == '/' && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) node->right->value = 1.0;
 
     // --- NUEVAS REGLAS DE SIMPLIFICACIÓN ---
     // X / X = 1 (si X no es cero)

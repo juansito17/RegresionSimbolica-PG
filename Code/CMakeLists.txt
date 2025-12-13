@@ -100,3 +100,26 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         set_property(TARGET SymbolicRegressionGP PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endif()
+# --- Test Suite Executable ---
+add_executable(TestOperators 
+    src/TestOperators.cpp
+    src/ExpressionTree.cpp
+    src/Fitness.cpp
+    src/GeneticOperators.cpp
+    src/AdvancedFeatures.cpp
+    src/GeneticAlgorithm.cpp
+)
+
+if(CMAKE_CUDA_COMPILER)
+    target_compile_definitions(TestOperators PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
+    target_sources(TestOperators PRIVATE src/FitnessGPU.cu)
+    target_include_directories(TestOperators PUBLIC ${CUDA_INCLUDE_DIRS})
+    if(TARGET CUDA::cudart)
+        target_link_libraries(TestOperators PUBLIC CUDA::cudart)
+    else()
+        target_link_libraries(TestOperators PUBLIC ${CUDA_LIBRARIES})
+    endif()
+endif()
+
+target_include_directories(TestOperators PUBLIC src)
+target_link_libraries(TestOperators PUBLIC OpenMP::OpenMP_CXX)
