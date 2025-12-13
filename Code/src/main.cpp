@@ -1,5 +1,6 @@
 #include "Globals.h" // Necesario para las constantes globales
 #include "GeneticAlgorithm.h"
+#include "Fitness.h" // Para evaluate_fitness
 #include "ExpressionTree.h" // Para tree_to_string si se necesita aquí
 #include <iostream>
 #include <vector>

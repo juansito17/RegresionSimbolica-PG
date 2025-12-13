@@ -18,6 +18,68 @@ double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
                              const std::vector<double>& x_values,
                              double* d_targets, double* d_x_values) {
+    // If GPU pointers are null (FORCE_CPU_MODE), use CPU evaluation
+    if (d_targets == nullptr || d_x_values == nullptr) {
+        // CPU fallback implementation
+        if (x_values.size() != targets.size() || x_values.empty()) return INF;
+
+        double sum_sq_error = 0.0;
+        double total_weight = 0.0;
+        bool all_precise = true;
+        size_t num_points = x_values.size();
+        bool calculation_failed = false;
+
+        for (size_t i = 0; i < num_points; ++i) {
+            double predicted_val = evaluate_tree(tree, x_values[i]);
+
+            if (std::isnan(predicted_val) || std::isinf(predicted_val)) {
+                calculation_failed = true;
+                break;
+            }
+
+            double target_val = targets[i];
+            double diff = predicted_val - target_val;
+            double abs_diff = std::fabs(diff);
+
+            if (abs_diff >= FITNESS_PRECISION_THRESHOLD) all_precise = false;
+
+            double weight = 1.0;
+            if (USE_WEIGHTED_FITNESS) {
+                weight = std::exp(static_cast<double>(i) * WEIGHTED_FITNESS_EXPONENT);
+            }
+            total_weight += weight;
+
+            double sq_error = diff * diff;
+            sum_sq_error += sq_error * weight;
+        }
+
+        if (calculation_failed) return INF;
+
+        // Normalize weighted error
+        double raw_error;
+        if (USE_WEIGHTED_FITNESS && total_weight > 0.0) {
+            sum_sq_error = sum_sq_error / total_weight * num_points;
+        }
+
+        if (USE_RMSE_FITNESS && num_points > 0) {
+            double mse = sum_sq_error / static_cast<double>(num_points);
+            raw_error = std::sqrt(mse);
+        } else {
+            raw_error = sum_sq_error;
+        }
+
+        if (std::isnan(raw_error) || std::isinf(raw_error) || raw_error < 0) {
+            return INF;
+        }
+
+        if (all_precise) {
+            raw_error *= FITNESS_PRECISION_BONUS;
+        }
+
+        return raw_error;
+    }
+    
+    // Use GPU evaluation
     return evaluate_fitness_gpu(tree, targets, x_values, d_targets, d_x_values);
 }
 #else

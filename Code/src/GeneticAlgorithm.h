@@ -8,6 +8,9 @@
 #include "GeneticOperators.h"
 #include "AdvancedFeatures.h"
 #include "Globals.h" // Incluir Globals.h para INF, NUM_ISLANDS, etc.
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#include "FitnessGPU.cuh" // For GlobalGpuBuffers definition
+#endif
 #include <vector>
 #include <string>
 #include <memory> // Para std::unique_ptr
@@ -58,6 +61,8 @@ class GeneticAlgorithm {
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     double* d_targets = nullptr;                  // Puntero a los datos objetivo en la GPU
     double* d_x_values = nullptr;                 // Puntero a los valores de x en la GPU
+    GlobalGpuBuffers global_gpu_buffers;          // Global buffers for batch evaluation of ALL islands
+    DoubleBufferedGpu double_buffer_gpu;          // Double-buffered GPU for async overlap
 #endif
     int total_population_size;                    // Tamaño total de la población
     int generations;                              // Número máximo de generaciones
@@ -88,7 +93,8 @@ public:
 
 private:
     // Funciones auxiliares internas
-    void evaluate_population(Island& island); // Evalúa fitness de una isla
+    void evaluate_population(Island& island); // Evalúa fitness de una isla (legacy)
+    void evaluate_all_islands(); // Evalúa ALL islands in ONE GPU batch call (optimized)
     void evolve_island(Island& island, int current_generation); // Evoluciona una isla por una generación
     void migrate(); // Realiza la migración entre islas
     void update_overall_best(const Island& island); // Actualiza el mejor global

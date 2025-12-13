@@ -29,9 +29,13 @@ const bool USE_LOG_TRANSFORMATION = true;
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
 // Controla si se utiliza la aceleración por GPU.
-// Se recomienda que esta constante sea controlada por la definición de compilación de CMake.
-#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE // Usamos un nuevo nombre para evitar conflictos
-const bool USE_GPU_ACCELERATION = true;
+// FORCE_CPU_MODE: Si es true, usa CPU aunque CUDA esté disponible (útil para comparar rendimiento)
+const bool FORCE_CPU_MODE = true;  // Cambiar a 'true' para forzar modo CPU
+
+// USE_GPU_ACCELERATION se define automáticamente por CMake si CUDA está disponible
+// Pero si FORCE_CPU_MODE es true, se ignora y usa CPU
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+const bool USE_GPU_ACCELERATION = !FORCE_CPU_MODE;
 #else
 const bool USE_GPU_ACCELERATION = false;
 #endif

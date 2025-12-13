@@ -204,14 +204,26 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
     node->right = simplify_recursive(node->right);
 
     // Manejo de hijos nulos
-    if (node->left && !node->right) return node->left;
+    bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
+
+    if (node->left && !node->right) {
+        if (is_unary) return node; // Correct state for unary ops
+        return node->left; // Simplify "A op null" -> A (for binary ops? dangerous but existing logic)
+    }
     if (!node->left && node->right) return node->right;
     if (!node->left && !node->right) { auto cn = std::make_shared<Node>(NodeType::Constant); cn->value = 1.0; return cn; }
 
     // Constant Folding
-    if (node->left->type == NodeType::Constant && node->right->type == NodeType::Constant) {
+    // Constant Folding
+    bool left_is_const = (node->left && node->left->type == NodeType::Constant);
+    bool right_is_const = (node->right && node->right->type == NodeType::Constant);
+    
+    // Fold if binary op with 2 constants OR unary op with 1 constant
+    if ((left_is_const && right_is_const) || (is_unary && left_is_const)) {
         try {
-            double result = evaluate_tree(node, 0.0);
+            // For unary, evaluate_tree expects 2nd arg to be dummy if mostly unused, 
+            // but here we are evaluating a constant expression (x is irrelevant).
+            double result = evaluate_tree(node, 0.0); 
             if (!std::isnan(result) && !std::isinf(result)) {
                 auto cn = std::make_shared<Node>(NodeType::Constant);
                 if (FORCE_INTEGER_CONSTANTS) cn->value = std::round(result); else cn->value = result;

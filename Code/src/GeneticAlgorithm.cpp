@@ -58,31 +58,48 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
     // if (USE_INITIAL_FORMULA) { ... }
 
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    // Asignar memoria en la GPU y copiar datos
-    size_t targets_size = targets.size() * sizeof(double);
-    size_t x_values_size = x_values.size() * sizeof(double);
+    bool gpu_init_failed = false;
+    if (!FORCE_CPU_MODE) {
+        // Asignar memoria en la GPU y copiar datos
+        size_t targets_size = targets.size() * sizeof(double);
+        size_t x_values_size = x_values.size() * sizeof(double);
 
-    cudaError_t err_t = cudaMalloc(&d_targets, targets_size);
-    cudaError_t err_x = cudaMalloc(&d_x_values, x_values_size);
+        cudaError_t err_t = cudaMalloc(&d_targets, targets_size);
+        cudaError_t err_x = cudaMalloc(&d_x_values, x_values_size);
 
-    if (err_t != cudaSuccess || err_x != cudaSuccess) {
-        std::cerr << "[ERROR] CUDA memory allocation failed: "
-                  << cudaGetErrorString(err_t) << " | " << cudaGetErrorString(err_x) << std::endl;
-        // Considerar lanzar una excepción o manejar el error adecuadamente
-        throw std::runtime_error("CUDA memory allocation failed");
+        if (err_t != cudaSuccess || err_x != cudaSuccess) {
+            std::cerr << "[WARNING] CUDA memory allocation failed: "
+                      << cudaGetErrorString(err_t) << " | " << cudaGetErrorString(err_x) << std::endl;
+            std::cerr << "[INFO] Falling back to CPU mode." << std::endl;
+            gpu_init_failed = true;
+            // Clean up any partial allocation
+            if (d_targets) { cudaFree(d_targets); d_targets = nullptr; }
+            if (d_x_values) { cudaFree(d_x_values); d_x_values = nullptr; }
+        } else {
+            cudaMemcpy(d_targets, targets.data(), targets_size, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_x_values, x_values.data(), x_values_size, cudaMemcpyHostToDevice);
+            
+            // Initialize global GPU buffers for batch evaluation of ALL islands
+            init_global_gpu_buffers(global_gpu_buffers);
+            
+            // Initialize double-buffered GPU for async pipelining
+            init_double_buffered_gpu(double_buffer_gpu);
+            
+            std::cout << "GPU buffers initialized for global batch evaluation (max " 
+                      << total_population_size << " trees in single kernel call)" << std::endl;
+            std::cout << "Double-buffered GPU enabled for async CPU/GPU overlap" << std::endl;
+        }
     }
-
-    cudaMemcpy(d_targets, targets.data(), targets_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_x_values, x_values.data(), x_values_size, cudaMemcpyHostToDevice);
+    
+    if (FORCE_CPU_MODE || gpu_init_failed) {
+        std::cout << "Using CPU for all evaluations" << std::endl;
+    }
 #endif
 
      // Evaluación inicial de TODA la población (incluyendo la inyectada)
      // La función evaluate_population ahora simplificará y evaluará a todos.
      std::cout << "Evaluating initial population (simplifying all)..." << std::endl;
-     #pragma omp parallel for
-     for (int i = 0; i < islands.size(); ++i) {
-        evaluate_population(*islands[i]);
-     }
+     evaluate_all_islands(); // Use new global batch evaluation
 
      // Actualizar el mejor global inicial (en serie)
      overall_best_fitness = INF;
@@ -122,13 +139,21 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
 
 GeneticAlgorithm::~GeneticAlgorithm() {
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    if (d_targets) {
-        cudaFree(d_targets);
-        d_targets = nullptr;
-    }
-    if (d_x_values) {
-        cudaFree(d_x_values);
-        d_x_values = nullptr;
+    if (!FORCE_CPU_MODE) {
+        // Cleanup double-buffered GPU
+        cleanup_double_buffered_gpu(double_buffer_gpu);
+        
+        // Cleanup global GPU buffers
+        cleanup_global_gpu_buffers(global_gpu_buffers);
+        
+        if (d_targets) {
+            cudaFree(d_targets);
+            d_targets = nullptr;
+        }
+        if (d_x_values) {
+            cudaFree(d_x_values);
+            d_x_values = nullptr;
+        }
     }
 #endif
     // El destructor de std::unique_ptr en 'islands' se encarga de liberar la memoria de las islas.
@@ -240,6 +265,200 @@ void GeneticAlgorithm::evaluate_population(Island& island) {
         } else {
              ind.fitness = INF;
              ind.fitness_valid = true;
+        }
+    }
+#endif
+}
+
+
+// ============================================================
+// GLOBAL BATCH EVALUATION - Evaluates ALL islands in ONE GPU kernel call
+// ============================================================
+void GeneticAlgorithm::evaluate_all_islands() {
+    int total_trees = 0;
+    for (const auto& island : islands) {
+        total_trees += island->population.size();
+    }
+    if (total_trees == 0) return;
+
+    // Step 1: Simplify ALL trees in parallel (CPU)
+    // Note: collapse(2) not supported by MSVC OpenMP 2.0, using nested parallel for
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+        for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+            Individual& ind = islands[i]->population[j];
+            if (ind.tree) {
+                ind.tree = DomainConstraints::fix_or_simplify(ind.tree);
+            }
+        }
+    }
+
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    // Runtime check: if FORCE_CPU_MODE is true or GPU init failed (d_targets == nullptr), use CPU
+    if (!FORCE_CPU_MODE && d_targets != nullptr) {
+    // Step 2: Linearize ALL trees from ALL islands into single buffer
+    // OPTIMIZATION: Parallel linearization using OpenMP
+    
+    // First pass: count valid trees and compute per-tree sizes in parallel
+    std::vector<int> tree_sizes_temp(total_trees, 0);
+    std::vector<std::pair<int, int>> index_mapping(total_trees); // (island, individual)
+    std::vector<bool> tree_valid(total_trees, false);
+    
+    int tree_idx = 0;
+    for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+        for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+            index_mapping[tree_idx] = {i, j};
+            tree_idx++;
+        }
+    }
+    
+    // Parallel linearization into per-thread buffers
+    int num_threads = omp_get_max_threads();
+    std::vector<std::vector<LinearGpuNode>> thread_nodes(num_threads);
+    std::vector<std::vector<int>> thread_offsets(num_threads);
+    std::vector<std::vector<int>> thread_sizes(num_threads);
+    std::vector<std::vector<std::pair<int, int>>> thread_mappings(num_threads);
+    
+    // Pre-allocate per-thread buffers
+    int trees_per_thread = (total_trees + num_threads - 1) / num_threads;
+    for (int t = 0; t < num_threads; ++t) {
+        thread_nodes[t].reserve(trees_per_thread * 30);
+        thread_offsets[t].reserve(trees_per_thread);
+        thread_sizes[t].reserve(trees_per_thread);
+        thread_mappings[t].reserve(trees_per_thread);
+    }
+    
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        auto& local_nodes = thread_nodes[tid];
+        auto& local_offsets = thread_offsets[tid];
+        auto& local_sizes = thread_sizes[tid];
+        auto& local_mappings = thread_mappings[tid];
+        
+        #pragma omp for schedule(static)
+        for (int t = 0; t < total_trees; ++t) {
+            int i = index_mapping[t].first;
+            int j = index_mapping[t].second;
+            Individual& ind = islands[i]->population[j];
+            
+            if (ind.tree) {
+                int start_offset = local_nodes.size();
+                linearize_tree(ind.tree, local_nodes);
+                int size = local_nodes.size() - start_offset;
+                
+                if (size > 0) {
+                    local_offsets.push_back(start_offset);
+                    local_sizes.push_back(size);
+                    local_mappings.push_back({i, j});
+                } else {
+                    ind.fitness = INF;
+                    ind.fitness_valid = true;
+                }
+            } else {
+                ind.fitness = INF;
+                ind.fitness_valid = true;
+            }
+        }
+    }
+    
+    // Merge thread-local buffers into global buffers
+    std::vector<LinearGpuNode> all_nodes;
+    std::vector<int> tree_offsets;
+    std::vector<int> tree_sizes;
+    std::vector<std::pair<int, int>> result_mapping;
+    
+    size_t total_node_count = 0;
+    size_t total_valid_trees = 0;
+    for (int t = 0; t < num_threads; ++t) {
+        total_node_count += thread_nodes[t].size();
+        total_valid_trees += thread_mappings[t].size();
+    }
+    
+    all_nodes.reserve(total_node_count);
+    tree_offsets.reserve(total_valid_trees);
+    tree_sizes.reserve(total_valid_trees);
+    result_mapping.reserve(total_valid_trees);
+    
+    for (int t = 0; t < num_threads; ++t) {
+        int offset_adjustment = all_nodes.size();
+        
+        // Copy nodes
+        all_nodes.insert(all_nodes.end(), thread_nodes[t].begin(), thread_nodes[t].end());
+        
+        // Adjust offsets and copy
+        for (size_t k = 0; k < thread_offsets[t].size(); ++k) {
+            tree_offsets.push_back(thread_offsets[t][k] + offset_adjustment);
+            tree_sizes.push_back(thread_sizes[t][k]);
+            result_mapping.push_back(thread_mappings[t][k]);
+        }
+    }
+    
+    std::vector<int> tree_complexities = tree_sizes; // Same as sizes for now
+
+    if (result_mapping.empty()) return;
+
+    int valid_trees = result_mapping.size();
+    int num_points = x_values.size();
+    
+    // Step 3: Launch GPU evaluation ASYNC (no blocking!)
+    // GPU will work while CPU continues with other tasks
+    launch_evaluation_async(
+        all_nodes, tree_offsets, tree_sizes,
+        valid_trees, d_targets, d_x_values, num_points,
+        double_buffer_gpu
+    );
+    
+    // Step 4: Wait for GPU results (this is where we sync)
+    std::vector<double> results;
+    retrieve_results_sync(results, valid_trees, double_buffer_gpu);
+
+    // Step 5: Distribute results back to islands
+    for (size_t k = 0; k < static_cast<size_t>(valid_trees); ++k) {
+        int island_idx = result_mapping[k].first;
+        int ind_idx = result_mapping[k].second;
+        double fitness = results[k];
+        
+        // Validate result
+        if (std::isnan(fitness) || std::isinf(fitness) || fitness >= 1e300) {
+            fitness = INF;
+        }
+        
+        islands[island_idx]->population[ind_idx].fitness = fitness;
+        islands[island_idx]->population[ind_idx].fitness_valid = true;
+    }
+    
+    } else {
+        // FORCE_CPU_MODE is true OR GPU init failed: Use CPU
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+            for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+                Individual& ind = islands[i]->population[j];
+                if (ind.tree) {
+                    // Pass nullptr for GPU pointers since we're in CPU mode
+                    ind.fitness = evaluate_fitness(ind.tree, targets, x_values, nullptr, nullptr);
+                    ind.fitness_valid = true;
+                } else {
+                    ind.fitness = INF;
+                    ind.fitness_valid = true;
+                }
+            }
+        }
+    }
+
+#else
+    // CPU Fallback: CUDA not available, use parallel CPU evaluation
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+        for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+            Individual& ind = islands[i]->population[j];
+            if (ind.tree) {
+                ind.fitness = evaluate_fitness(ind.tree, targets, x_values);
+                ind.fitness_valid = true;
+            } else {
+                ind.fitness = INF;
+                ind.fitness_valid = true;
+            }
         }
     }
 #endif
@@ -474,20 +693,8 @@ NodePtr GeneticAlgorithm::run() {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int gen = 0; gen < generations; ++gen) {
-        // 1. Evaluate Population
-        // === OPTIMIZACIÓN: Paralelo en modo CPU, serial en modo GPU ===
-#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-        // Serial loop for GPU mode to prevent context contention
-        for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
-             evaluate_population(*islands[i]);
-        }
-#else
-        // Parallel loop for CPU mode to maximize core utilization
-        #pragma omp parallel for schedule(dynamic)
-        for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
-             evaluate_population(*islands[i]);
-        }
-#endif
+        // 1. Evaluate ALL islands in ONE GPU kernel call (maximum GPU utilization)
+        evaluate_all_islands();
 
         // 2. Evolve Islands (Parallel Island Loop)
         // Genetic operators (crossover, mutation) are CPU-bound and independent per island.
@@ -547,8 +754,8 @@ NodePtr GeneticAlgorithm::run() {
 
         if ((gen + 1) % MIGRATION_INTERVAL == 0 && num_islands > 1) {
              migrate();
-             // Serial evaluation after migration
-             for (int i = 0; i < islands.size(); ++i) { evaluate_population(*islands[i]); }
+             // Re-evaluate after migration using global batch
+             evaluate_all_islands();
         }
 
         if (overall_best_fitness < EXACT_SOLUTION_THRESHOLD) {

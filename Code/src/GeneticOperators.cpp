@@ -5,6 +5,7 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <numeric>  // For std::iota
 #include <map>
 #include <stdexcept>
 #include <set>
