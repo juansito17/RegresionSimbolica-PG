@@ -5,6 +5,12 @@ Combines MCTS with Constant Optimization and Simplification.
 import torch
 import numpy as np
 import time
+import sys
+import os
+
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.model import AlphaSymbolicModel
 from search.mcts import MCTS
 from core.grammar import VOCABULARY, ExpressionTree
@@ -31,7 +37,7 @@ def solve_problem(target_x, target_y, model_path="alpha_symbolic_model.pth", sim
     print(f"Vocabulary size: {VOCAB_SIZE}")
     
     # Load Model
-    model = AlphaSymbolicModel(vocab_size=VOCAB_SIZE + 1, d_model=64).to(DEVICE)
+    model = AlphaSymbolicModel(vocab_size=VOCAB_SIZE + 1, d_model=128).to(DEVICE)
     try:
         model.load_state_dict(torch.load(model_path, map_location=DEVICE, weights_only=True))
         model.eval()

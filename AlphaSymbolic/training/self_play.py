@@ -17,6 +17,11 @@ import time
 import os
 from collections import deque
 import random
+import sys
+import os
+
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.model import AlphaSymbolicModel
 from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree

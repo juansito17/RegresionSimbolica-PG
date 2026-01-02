@@ -2,6 +2,7 @@
 Core state and model management for AlphaSymbolic Gradio App.
 """
 import torch
+import os
 from core.model import AlphaSymbolicModel
 from core.grammar import VOCABULARY
 
@@ -71,8 +72,13 @@ def load_model(force_reload=False):
                 break
         
         if has_nans:
-            print("⚠️ Modelo corrupto detectado (NaNs). Reiniciando pesos.")
-            status = "⚠️ Modelo corrupto reiniciado"
+            print("⚠️ Modelo corrupto detectado (NaNs). Eliminando archivo y reiniciando pesos.")
+            try:
+                os.remove("alpha_symbolic_model.pth")
+                print("✅ Archivo corrupto eliminado.")
+            except OSError as e:
+                print(f"Error al eliminar archivo: {e}")
+            status = "⚠️ Modelo corrupto eliminado y reiniciado"
         else:
             MODEL.load_state_dict(state_dict)
             MODEL.eval()
