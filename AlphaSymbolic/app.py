@@ -84,6 +84,18 @@ def create_app():
                         use_gpu = gr.Checkbox(label="Usar GPU", value=torch.cuda.is_available())
                         device_display = gr.HTML(value=f'<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid {device_color};"><span style="color: {device_color}; font-weight: bold;">{device_info}</span></div>')
                         use_gpu.change(toggle_device, [use_gpu], [device_display])
+                    with gr.Column():
+                        delete_model_btn = gr.Button("🗑️ Borrar Modelo", variant="secondary", size="sm")
+                        delete_status = gr.HTML()
+                        
+                        def delete_model_action():
+                            import os
+                            if os.path.exists("alpha_symbolic_model.pth"):
+                                os.remove("alpha_symbolic_model.pth")
+                                return '<div style="color: #ff6b6b; padding: 5px;">✅ Modelo eliminado. Reinicia la app para usar pesos nuevos.</div>'
+                            return '<div style="color: #888; padding: 5px;">No hay modelo guardado.</div>'
+                        
+                        delete_model_btn.click(delete_model_action, outputs=[delete_status])
                 
                 with gr.Tabs():
                     # Basic

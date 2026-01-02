@@ -136,7 +136,7 @@ def train_basic(epochs, batch_size, progress=gr.Progress()):
 
 
 def train_curriculum(epochs, batch_size, progress=gr.Progress()):
-    """Curriculum Learning - starts simple, increases difficulty."""
+    """Curriculum Learning - starts simple, increases difficulty gradually."""
     global TRAINING_STATUS
     
     if TRAINING_STATUS["running"]:
@@ -148,7 +148,8 @@ def train_curriculum(epochs, batch_size, progress=gr.Progress()):
         MODEL, DEVICE = get_model()
         
         MODEL.train()
-        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=5e-5, weight_decay=0.01)  # Lower LR
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2)
         ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
         
         VOCAB_SIZE = len(VOCABULARY)
@@ -156,13 +157,33 @@ def train_curriculum(epochs, batch_size, progress=gr.Progress()):
         losses = []
         
         for epoch in range(int(epochs)):
-            curriculum_progress = min(epoch / (epochs * 0.7), 1.0)
-            current_depth = int(2 + curriculum_progress * 4)
+            # Curriculum: slow progression
+            # Stage 1 (0-50%): depth 2-3, 80% inverse data
+            # Stage 2 (50-80%): depth 3-4, 50% inverse data  
+            # Stage 3 (80-100%): depth 4-5, 20% inverse data
+            progress_pct = epoch / epochs
             
-            progress((epoch + 1) / epochs, desc=f"Epoca {epoch+1}/{int(epochs)} (prof: {current_depth}) [{DEVICE.type.upper()}]")
+            if progress_pct < 0.5:
+                current_depth = 2 + int(progress_pct * 2)  # 2-3
+                inverse_ratio = 0.8
+            elif progress_pct < 0.8:
+                current_depth = 3 + int((progress_pct - 0.5) * 3.3)  # 3-4
+                inverse_ratio = 0.5
+            else:
+                current_depth = 4 + int((progress_pct - 0.8) * 5)  # 4-5
+                inverse_ratio = 0.2
+            
+            progress((epoch + 1) / epochs, desc=f"Epoca {epoch+1}/{int(epochs)} (prof: {current_depth}, inv: {inverse_ratio:.0%}) [{DEVICE.type.upper()}]")
             
             data_gen = DataGenerator(max_depth=current_depth)
-            batch = data_gen.generate_batch(int(batch_size))
+            
+            # Mix inverse + random based on curriculum stage
+            n_inverse = int(batch_size * inverse_ratio)
+            n_random = int(batch_size) - n_inverse
+            
+            batch_inverse = data_gen.generate_inverse_batch(max(1, n_inverse)) if n_inverse > 0 else []
+            batch_random = data_gen.generate_batch(max(1, n_random)) if n_random > 0 else []
+            batch = batch_inverse + batch_random
             if len(batch) < 2:
                 continue
             
@@ -195,6 +216,7 @@ def train_curriculum(epochs, batch_size, progress=gr.Progress()):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
             optimizer.step()
+            scheduler.step()
             
             losses.append(loss.item())
         

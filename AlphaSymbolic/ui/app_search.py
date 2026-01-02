@@ -73,14 +73,15 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
         searcher = BeamSearch(MODEL, DEVICE, beam_width=int(beam_width), max_length=25)
         results = searcher.search(x, y)
     else:  # MCTS
-        mcts = MCTS(MODEL, DEVICE)
-        best_seq = mcts.search(x, y, num_simulations=int(beam_width) * 10)
-        if best_seq:
-            tree = ExpressionTree(best_seq)
+        mcts = MCTS(MODEL, DEVICE, max_simulations=int(beam_width) * 10)
+        result = mcts.search(x, y)
+        if result and result.get('tokens'):
+            tokens = result['tokens']
+            tree = ExpressionTree(tokens)
             if tree.is_valid:
                 constants, rmse = optimize_constants(tree, x, y)
                 results = [{
-                    'tokens': best_seq,
+                    'tokens': tokens,
                     'formula': tree.get_infix(),
                     'rmse': rmse,
                     'constants': constants
