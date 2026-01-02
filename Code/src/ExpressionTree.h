@@ -30,6 +30,8 @@ double evaluate_tree(const NodePtr& node, double x);
 std::string tree_to_string(const NodePtr& node);
 int tree_size(const NodePtr& node);
 NodePtr clone_tree(const NodePtr& node);
+int get_tree_depth(const NodePtr& node);
+void trim_tree(NodePtr& node, int max_depth);
 
 // Helper for mutation/crossover
 void collect_node_ptrs(NodePtr& node, std::vector<NodePtr*>& vec);

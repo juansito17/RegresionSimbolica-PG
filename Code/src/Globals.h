@@ -53,7 +53,7 @@ const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas c
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "(g(x)-((x*909613)/1000000))+0.24423";
+const std::string INITIAL_FORMULA_STRING = "(g(x)-(x*0.912079)+0.146743+(3.78968/x))";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -72,6 +72,8 @@ const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
+const bool USE_HARD_DEPTH_LIMIT = true; // Toggle for hard depth limit
+const int MAX_TREE_DEPTH_HARD_LIMIT = 12; // Hard limit to prevent bloat
 // Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Configuración de Operadores)
@@ -177,6 +179,13 @@ const int PROGRESS_REPORT_INTERVAL = 100;
 // en las constantes generadas y mutadas, lo que podría conducir a mejores soluciones
 // y mantener la GPU ocupada con un rango más amplio de valores.
 const bool FORCE_INTEGER_CONSTANTS = false; // Mantenemos false para mayor flexibilidad
+
+// ----------------------------------------
+// Control de Duplicados
+// ----------------------------------------
+const bool PREVENT_DUPLICATES = true; // Activa la verificación de unicidad
+const int DUPLICATE_RETRIES = 10;     // Intentos para generar un individuo único antes de rendirse
+
 
 // ============================================================
 //                  UTILIDADES GLOBALES

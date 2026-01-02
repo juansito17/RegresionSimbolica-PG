@@ -257,6 +257,7 @@ Individual crossover(const Individual& parent1, const Individual& parent2) {
     NodePtr tree1_clone = clone_tree(parent1.tree);
     NodePtr tree2_clone = clone_tree(parent2.tree);
     crossover_trees(tree1_clone, tree2_clone);
+    if (USE_HARD_DEPTH_LIMIT) trim_tree(tree1_clone, MAX_TREE_DEPTH_HARD_LIMIT); // Enforce hard limit
     return Individual(tree1_clone); // Devolver uno de los hijos, el otro se descarta
 }
 
@@ -430,6 +431,7 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
              *node_to_mutate_ptr = generate_replacement(max_depth);
             break;
     }
+    if (USE_HARD_DEPTH_LIMIT) trim_tree(new_tree, MAX_TREE_DEPTH_HARD_LIMIT); // Enforce hard limit after mutation
     return new_tree;
 }
 

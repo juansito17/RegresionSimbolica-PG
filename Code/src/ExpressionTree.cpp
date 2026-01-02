@@ -205,6 +205,38 @@ std::mt19937& get_rng() {
     return local_rng;
 }
 
+// --- get_tree_depth ---
+int get_tree_depth(const NodePtr& node) {
+    if (!node) return 0;
+    if (node->type != NodeType::Operator) return 1;
+    return 1 + std::max(get_tree_depth(node->left), get_tree_depth(node->right));
+}
+
+// --- trim_tree ---
+void trim_tree(NodePtr& node, int max_depth) {
+    if (!node) return;
+    if (max_depth <= 1) {
+        // Force terminal if we reached depth limit
+        if (node->type == NodeType::Operator) {
+            // Replace with minimal terminal (Variable 'x' or Constant 1.0)
+            // Using 'x' is generally safer for retaining some logic, but 1.0 is neutral for *
+            // Let's pick a random terminal to avoid bias? 
+            // For now, let's just make it a variable 'x' as it's often more useful than a constant 0 or 1.
+             node->type = NodeType::Variable;
+             node->op = 0;
+             node->left = nullptr;
+             node->right = nullptr;
+             // value ignored for variable
+        }
+        return;
+    }
+    
+    if (node->type == NodeType::Operator) {
+        trim_tree(node->left, max_depth - 1);
+        trim_tree(node->right, max_depth - 1);
+    }
+}
+
 
 // ============================================================
 // --- Parser de Fórmulas desde String (v4 - Parser Corregido) ---

@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <iterator>
 #include <chrono>
+#include <unordered_set>
 
 // --- Constructor (Modificado para que evaluate_population procese todo) ---
 GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
@@ -569,70 +570,97 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
     }
     auto& rng = get_rng();
     std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
-    // >>> Parallel Parent Selection Loop (OpenMP) <<<
-    // Parallelize the loop that fills 'individuals_to_add'
-    int remaining_slots = current_pop_size - next_generation.size();
-    std::vector<Individual> individuals_to_add(remaining_slots);
+    // >>> Parallel Parent Selection Loop with Uniqueness Check <<<
     
-    // NOTE: Lexicase is complex to parallelize fully because of test case shuffling.
-    // Tournament is easy.
-    // For now we parallelize the generation of offspring.
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < remaining_slots; ++i) {
-        // Thread-local RNG
-        auto& rng = get_rng(); 
+    // 1. Initialize uniqueness set with survivors (elites/injected)
+    std::unordered_set<std::string> unique_signatures;
+    if (PREVENT_DUPLICATES) {
+        for (const auto& ind : next_generation) {
+            if (ind.tree) {
+                unique_signatures.insert(tree_to_string(ind.tree));
+            }
+        }
+    }
+
+    // 2. Fill the rest of the population
+    int fail_safe_counter = 0;
+    while (next_generation.size() < current_pop_size) {
+        int needed = current_pop_size - next_generation.size();
         
-        Individual offspring;
-        if (prob_dist(rng) < island.params.crossover_rate) {
-            Individual p1, p2;
-            if (USE_LEXICASE_SELECTION) {
-                // Lexicase selection requires access to targets/x_values
-                // We use lazy evaluation inside lexicase_selection
-                // WARNING: Lexicase inside OpenMP might be slightly inefficient due to memory allocs, 
-                // but N (cases) is small (17).
-                // We need to protect shared resources if any? No, island.population is read-only here.
-                p1 = lexicase_selection(island.population, targets, x_values);
-                p2 = lexicase_selection(island.population, targets, x_values);
+        // Generate candidates in parallel
+        std::vector<Individual> candidates(needed);
+        
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < needed; ++i) {
+            // Thread-local RNG
+            auto& rng = get_rng(); 
+            
+            Individual offspring;
+            // Use distribution defined outside or create new one? 
+            // Better create local to avoid shared state issues if not const
+            std::uniform_real_distribution<double> local_prob_dist(0.0, 1.0);
+
+            if (local_prob_dist(rng) < island.params.crossover_rate) {
+                Individual p1, p2;
+                if (USE_LEXICASE_SELECTION) {
+                    p1 = lexicase_selection(island.population, targets, x_values);
+                    p2 = lexicase_selection(island.population, targets, x_values);
+                } else {
+                    p1 = tournament_selection(island.population, island.params.tournament_size);
+                    p2 = tournament_selection(island.population, island.params.tournament_size);
+                }
+                offspring = crossover(p1, p2);
             } else {
-                p1 = tournament_selection(island.population, island.params.tournament_size);
-                p2 = tournament_selection(island.population, island.params.tournament_size);
+                Individual p1;
+                if (USE_LEXICASE_SELECTION) {
+                    p1 = lexicase_selection(island.population, targets, x_values);
+                } else {
+                    p1 = tournament_selection(island.population, island.params.tournament_size);
+                }
+                if (p1.tree) p1.tree = clone_tree(p1.tree); 
+                mutate(p1, island.params.mutation_rate);
+                offspring = std::move(p1);
             }
-            offspring = crossover(p1, p2);
-        } else {
-            Individual p1;
-            if (USE_LEXICASE_SELECTION) {
-                p1 = lexicase_selection(island.population, targets, x_values);
-            } else {
-                p1 = tournament_selection(island.population, island.params.tournament_size);
-            }
-            // Mutation in place
-            // Clone first implicitly by copy assignment above? No, Individual has unique_ptr?
-            // Wait, Individual has shared_ptr (NodePtr). So p1 copies the pointer. 
-            // We need a deep clone for mutation if we don't want to affect the parent.
-            // 'mutate' function usually clones?
-            // Let's check 'mutate': "Mutata un individuo in-place."
-            // If p1 shares tree with population, we MUST clone before mutate.
-            if (p1.tree) p1.tree = clone_tree(p1.tree); 
-            mutate(p1, island.params.mutation_rate);
-            offspring = std::move(p1);
+            
+            candidates[i] = std::move(offspring);
         }
         
-        // Optimize Constants (simplistic)
-        // optimize_constants(offspring.tree, TARGETS, X_VALUES, nullptr, nullptr); // Optional, maybe too slow for all offspring?
+        // Filter and add unique candidates (Serial)
+        int added_this_round = 0;
+        for (auto& cand : candidates) {
+            if (next_generation.size() >= current_pop_size) break;
+            
+            bool is_valid_to_add = true;
+            if (PREVENT_DUPLICATES && cand.tree) {
+                std::string sig = tree_to_string(cand.tree);
+                if (unique_signatures.find(sig) != unique_signatures.end()) {
+                    is_valid_to_add = false; 
+                } else {
+                    unique_signatures.insert(sig);
+                }
+            }
+            
+            if (is_valid_to_add) {
+                next_generation.emplace_back(std::move(cand));
+                added_this_round++;
+            }
+        }
         
-        individuals_to_add[i] = std::move(offspring);
-    }
-    
-    // Move generated individuals to next_generation
-    for (auto& ind : individuals_to_add) {
-        next_generation.emplace_back(std::move(ind));
-    }
-    if (next_generation.size() < current_pop_size) {
-         int gap = current_pop_size - next_generation.size();
-         for (int i = 0; i < gap; ++i) {
-              NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
-              if (random_tree) next_generation.emplace_back(std::move(random_tree));
-         }
+        // Deadlock prevention
+        if (added_this_round == 0) {
+            fail_safe_counter++;
+            if (fail_safe_counter > DUPLICATE_RETRIES) {
+                // Fill remaining with random trees
+                int remaining = current_pop_size - next_generation.size();
+                for (int k = 0; k < remaining; ++k) {
+                    NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
+                    if (random_tree) next_generation.emplace_back(std::move(random_tree));
+                }
+                break; // Exit loop
+            }
+        } else {
+            fail_safe_counter = 0; // Reset if we made progress
+        }
     }
      if (next_generation.size() > current_pop_size) next_generation.resize(current_pop_size);
     island.population = std::move(next_generation);
