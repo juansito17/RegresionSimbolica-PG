@@ -156,7 +156,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     # Predictions table
     pred_html = '<table style="width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 10px; overflow: hidden;">'
     pred_html += '<tr style="background: #16213e;"><th style="padding: 10px; color: #00d4ff;">X</th><th style="color: #00d4ff;">Pred</th><th style="color: #00d4ff;">Real</th><th style="color: #00d4ff;">Delta</th></tr>'
-    for i in range(min(8, len(x))):
+    for i in range(min(50, len(x))):
         delta = abs(y_pred[i] - y[i])
         color = "#4ade80" if delta < 0.1 else "#fbbf24" if delta < 1 else "#ef4444"
         pred_html += f'<tr style="border-bottom: 1px solid #333;"><td style="padding: 8px; color: white; text-align: center;">{x[i]:.2f}</td><td style="color: white; text-align: center;">{y_pred[i]:.4f}</td><td style="color: white; text-align: center;">{y[i]:.4f}</td><td style="color: {color}; text-align: center; font-weight: bold;">{delta:.4f}</td></tr>'
