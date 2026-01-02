@@ -2,6 +2,7 @@
 Training functions for AlphaSymbolic Gradio App.
 With proper data normalization.
 """
+import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -66,7 +67,11 @@ def train_basic(epochs, batch_size, progress=gr.Progress()):
         for epoch in range(int(epochs)):
             progress((epoch + 1) / epochs, desc=f"Epoca {epoch+1}/{int(epochs)} [{DEVICE.type.upper()}]")
             
-            batch = data_gen.generate_batch(int(batch_size))
+            # Mix of inverse (known formulas) + random data (AlphaTensor-style)
+            half_batch = int(batch_size) // 2
+            batch_inverse = data_gen.generate_inverse_batch(half_batch)
+            batch_random = data_gen.generate_batch(int(batch_size) - half_batch)
+            batch = batch_inverse + batch_random
             if len(batch) < 2:
                 continue
             

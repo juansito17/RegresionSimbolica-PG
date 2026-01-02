@@ -1,197 +1,235 @@
 import math
 import numpy as np
 import torch
-from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree
+import copy
+from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES
+from utils.optimize_constants import optimize_constants
 
 class MCTSNode:
-    def __init__(self, sequence, parent=None, prior=0.0):
-        self.sequence = sequence
+    def __init__(self, tokens, parent=None, prior=0.0):
+        self.tokens = tokens # List of tokens
         self.parent = parent
-        self.children = {} # map action_id -> MCTSNode
-        self.visits = 0
+        self.children = {} # {token: MCTSNode}
+        self.visit_count = 0
         self.value_sum = 0.0
-        self.prior = prior # P(s, a) from policy head
+        self.prior = prior
         self.is_expanded = False
         
-        # Calculate validity/terminal status
-        self.open_branches = self._calculate_open_branches(sequence)
-        self.is_terminal = (self.open_branches == 0) and (len(sequence) > 0)
-        
-    def _calculate_open_branches(self, seq):
-        if not seq: return 1 # Expect root
-        open_b = 1
-        for token in seq:
-            if token in OPERATORS:
-                open_b += (OPERATORS[token] - 1)
-            else:
-                open_b -= 1
-        return open_b
-
+    @property
     def value(self):
-        if self.visits == 0:
+        if self.visit_count == 0:
             return 0.0
-        return self.value_sum / self.visits
+        return self.value_sum / self.visit_count
 
-    def ucb_score(self, total_visits, c_puct=1.0):
-        # Q + U
-        q_value = self.value()
-        # U = c * P * sqrt(N_parent) / (1 + N_child)
-        u_value = c_puct * self.prior * math.sqrt(total_visits) / (1 + self.visits)
-        return q_value + u_value
+    def ucb_score(self, c_puct=1.0):
+        # UCB = Q(s,a) + U(s,a)
+        # U(s,a) = c_puct * P(s,a) * sqrt(N(parent)) / (1 + N(s,a))
+        if self.parent is None:
+            return 0.0
+            
+        u = c_puct * self.prior * math.sqrt(self.parent.visit_count) / (1 + self.visit_count)
+        return self.value + u
 
 class MCTS:
-    def __init__(self, model, device, max_len=50):
+    def __init__(self, model, device, max_simulations=100, max_depth=30, c_puct=1.0, lambda_mix=0.5):
         self.model = model
         self.device = device
-        self.max_len = max_len
-        self.cpuct = 1.41
+        self.max_simulations = max_simulations
+        self.max_depth = max_depth
+        self.c_puct = c_puct
+        self.lambda_mix = lambda_mix  # Mix ratio: (1-λ)*Value + λ*Rollout
+        self.vocab_size = len(VOCABULARY)
+        self.sos_id = self.vocab_size
         
-    def search(self, x_values, y_values, num_simulations=50):
+    def search(self, x_values, y_values, num_simulations=None):
         """
-        Runs MCTS to find the best formula for (X, Y).
-        Returns the best found formula string.
+        Run MCTS to find the best formula.
+        Returns the best node (or sequence of tokens).
         """
-        # Root state: empty specific sequence? Or do we assume we need to start?
-        # Our model expects at least a restart token implicitly or we manage it.
-        # Let's start with empty sequence [] representing state before first move.
-        # Ideally, we loop MCTS step-by-step to build the formula, 
-        # BUT standard AlphaZero MCTS builds a whole tree for one "move", then picks move, then discards/reuses tree.
-        # For formula generation, the "Game" is short (10-50 moves).
-        # We can just run one big MCTS from root if we want, or step-by-step.
-        # Step-by-step is more robust.
+        # Root node
+        root = MCTSNode(tokens=[]) # Empty start, will prepend SOS for model
         
-        root = MCTSNode(sequence=[]) 
+        # Expand root immediately
+        self._expand(root, x_values, y_values)
         
-        # Prepare context tensors once
+        best_rmse = float('inf')
+        best_formula = None
+        best_tokens = None
+        
+        limit = num_simulations if num_simulations is not None else self.max_simulations
+        for _ in range(limit):
+            node = root
+            
+            # 1. Selection
+            depth = 0
+            while node.is_expanded and node.children and depth < self.max_depth:
+                # Select best child by UCB
+                node = max(node.children.values(), key=lambda n: n.ucb_score(self.c_puct))
+                depth += 1
+            
+            # 2. Expansion & Evaluation
+            # If not terminal and not expanded/new
+            if depth < self.max_depth:
+                value = self._expand(node, x_values, y_values)
+            else:
+                value = 0.0 # Too deep or terminal without result
+            
+            # Check if this node represents a valid complete formula (terminal)
+            # Or if we just expanded it, we might want to check its validity?
+            # Actually, standard MCTS expands one step. 
+            # We can check if `tokens` form a valid tree.
+            
+            # To evaluate "validity" or "score" of a partial formula is hard.
+            # But the Value Head predicts the *future* score. 
+            
+            # Let's check if it's a valid complete tree
+            if self._is_complete_tree(node.tokens):
+                # Calculate real RMSE
+                rmse = self._evaluate_formula(node.tokens, x_values, y_values)
+                # Value for MCTS is -RMSE (or similar). 
+                # Model predicts predicted_neg_rmse. 
+                # We can mix Model Value with Real Value if terminal?
+                value = -rmse
+                
+                if rmse < best_rmse:
+                    best_rmse = rmse
+                    best_tokens = node.tokens
+                    best_formula = ExpressionTree(node.tokens).get_infix()
+            
+            # 3. Backpropagation
+            while node is not None:
+                node.visit_count += 1
+                node.value_sum += value
+                node = node.parent
+                
+        return {
+            'tokens': best_tokens,
+            'formula': best_formula,
+            'rmse': best_rmse
+        }
+
+    def _expand(self, node, x_values, y_values):
+        """
+        Expands the node using the policy head and returns the hybrid value estimate.
+        V = (1-λ)*v_θ + λ*z  where z is the rollout value
+        """
+        if node.is_expanded:
+            return node.value # Should not happen in standard flow unless re-visiting leaf
+            
+        # Prepare input
+        # [SOS, t1, t2, ...]
+        seq = [self.sos_id] + [TOKEN_TO_ID[t] for t in node.tokens]
+        input_tensor = torch.tensor([seq], dtype=torch.long).to(self.device)
         x_tensor = torch.tensor(x_values, dtype=torch.float32).unsqueeze(0).to(self.device)
         y_tensor = torch.tensor(y_values, dtype=torch.float32).unsqueeze(0).to(self.device)
         
-        current_node = root
+        with torch.no_grad():
+            logits, value_pred = self.model(x_tensor, y_tensor, input_tensor)
+            
+        # Logits: [1, seq_len, vocab_size] -> Last token logits
+        last_logits = logits[0, -1, :self.vocab_size]
+        probs = torch.softmax(last_logits, dim=0).cpu().numpy()
+        network_value = value_pred.item()
         
-        # Build formula token by token
-        for _ in range(self.max_len):
-            if current_node.is_terminal:
-                break
-                
-            # Run simulations from current state
-            for _ in range(num_simulations):
-                self._simulate(current_node, x_tensor, y_tensor)
+        # Fast rollout: complete the formula greedily and evaluate
+        rollout_value = self._fast_rollout(node.tokens, x_values, y_values, logits)
+        
+        # Hybrid value: (1-λ)*network + λ*rollout
+        value = (1 - self.lambda_mix) * network_value + self.lambda_mix * rollout_value
+        
+        # Create children
+        # We can mask invalid tokens here (grammar constraints)
+        valid_next_tokens = self._get_valid_next_tokens(node.tokens)
+        
+        for idx in valid_next_tokens:
+            token = VOCABULARY[idx]
+            prior = probs[idx]
+            child = MCTSNode(tokens=node.tokens + [token], parent=node, prior=prior)
+            node.children[token] = child
             
-            # Select best move (most visited)
-            if not current_node.children:
-                break # Should not happen if sims ran
-                
-            best_action = max(current_node.children.items(), key=lambda item: item[1].visits)[0]
-            current_node = current_node.children[best_action]
-            
-        # Reconstruct formula
-        return current_node.sequence
+        node.is_expanded = True
+        return value
 
-    def _simulate(self, node, x_tensor, y_tensor):
-        path = []
-        curr = node
+    def _fast_rollout(self, tokens, x_values, y_values, initial_logits=None):
+        """
+        Fast greedy rollout: complete the formula by always picking the most likely token.
+        Returns a value (negative RMSE, normalized).
+        """
+        current_tokens = tokens.copy()
+        max_rollout_steps = 20
         
-        # 1. Selection
-        while curr.is_expanded and not curr.is_terminal:
-            path.append(curr)
-            # Pick child with highest UCB
-            total_parent_visits = curr.visits
+        for _ in range(max_rollout_steps):
+            # Check if complete
+            if self._is_complete_tree(current_tokens):
+                rmse = self._evaluate_formula(current_tokens, x_values, y_values)
+                # Normalize RMSE to value-like range [-1, 1]
+                # Lower RMSE = higher value
+                return max(-1.0, -rmse / 10.0)  # Simple normalization
             
-            best_score = -float('inf')
-            best_child = None
-            
-            for action, child in curr.children.items():
-                score = child.ucb_score(total_parent_visits, self.cpuct)
-                if score > best_score:
-                    best_score = score
-                    best_child = child
-                    
-            if best_child:
-                curr = best_child
-            else:
-                # Should not happen if expanded
-                break
-
-        path.append(curr)
-        leaf = curr
-        
-        # 2. Expansion & Evaluation
-        value = 0.0
-        
-        if leaf.is_terminal:
-            # Calculate true reward
-            value = self._evaluate_formula(leaf.sequence, x_tensor, y_tensor)
-        else:
-            # Expand using NN
-            # Prepare input for model
-            # Sequence tokens to IDs
-            seq_ids = [TOKEN_TO_ID[t] for t in leaf.sequence]
-            # Add SOS (using len(VOCAB) as SOS ID from train.py logic)
-            # Actually train.py used VOCAB_SIZE as SOS. Let's align.
-            sos_id = len(VOCABULARY) 
-            input_seq = [sos_id] + seq_ids
-            
-            input_tensor = torch.tensor([input_seq], dtype=torch.long).to(self.device)
+            # Get next token (greedy)
+            seq = [self.sos_id] + [TOKEN_TO_ID[t] for t in current_tokens]
+            input_tensor = torch.tensor([seq], dtype=torch.long).to(self.device)
+            x_tensor = torch.tensor(x_values, dtype=torch.float32).unsqueeze(0).to(self.device)
+            y_tensor = torch.tensor(y_values, dtype=torch.float32).unsqueeze(0).to(self.device)
             
             with torch.no_grad():
-                logits, v_pred = self.model(x_tensor, y_tensor, input_tensor)
+                logits, _ = self.model(x_tensor, y_tensor, input_tensor)
             
-            # Logits are [1, seq_len, vocab]. We want the LAST prediction.
-            last_logits = logits[0, -1, :]
-            # Filter invalid moves? (Optional, helps convergence)
-            # e.g. if leaf.open_branches == 0 (though processed above) 
+            # Greedy selection
+            last_logits = logits[0, -1, :self.vocab_size]
             
-            probs = torch.softmax(last_logits, dim=0).cpu().numpy()
-            value = v_pred.item()
+            # Grammar mask
+            valid_tokens = self._get_valid_next_tokens(current_tokens)
+            if not valid_tokens:
+                break
             
-            leaf.is_expanded = True
+            # Mask invalid tokens
+            mask = torch.full((self.vocab_size,), float('-inf'))
+            for idx in valid_tokens:
+                mask[idx] = 0
+            masked_logits = last_logits + mask.to(self.device)
             
-            # Create children
-            # We treat all tokens as possible actions
-            # Optimization: Mask invalid syntax (e.g. if open branches is high, maybe limit?)
-            # For now, simplistic.
-            for action_id, prob in enumerate(probs):
-                if action_id >= len(VOCABULARY): continue # Skip special tokens if any
-                
-                token = VOCABULARY[action_id]
-                new_seq = leaf.sequence + [token]
-                
-                # Check rudimentary validity to prune tree
-                # E.g. don't allow too many branches or negative branches
-                try:
-                    child_node = MCTSNode(new_seq, parent=leaf, prior=prob)
-                    if child_node.open_branches >= 0: # Valid prefix
-                        leaf.children[action_id] = child_node
-                except:
-                    pass
+            next_token_id = torch.argmax(masked_logits).item()
+            current_tokens.append(VOCABULARY[next_token_id])
         
-        # 3. Backup
-        for node in reversed(path):
-            node.visits += 1
-            node.value_sum += value
-            # Standard AlphaZero backup: value is from perspective of current player.
-            # Here single player, so maximize positive reward.
+        # Did not reach valid formula
+        return -1.0
+
+    def _get_valid_next_tokens(self, tokens):
+        """
+        Simple grammar check.
+        If we want to enforce structure:
+        - Open branches count (arity)
+        """
+        # Determine open branches
+        open_slots = 1 # Root
+        for t in tokens:
+            if t in OPERATORS:
+                open_slots += OPERATORS[t] - 1
+            else:
+                open_slots -= 1
+        
+        if open_slots <= 0:
+            return [] # No more tokens allowed (fully formed)
             
-    def _evaluate_formula(self, sequence, x_tensor, y_tensor):
-        # Calculate RMSE/Reward
+        # Identify valid indices
+        # If open_slots > 0, we can basically place anything? 
+        # Except if we want to limit depth or balance. 
+        # For now, allow all.
+        return list(range(self.vocab_size))
+
+    def _is_complete_tree(self, tokens):
+        if not tokens: return False
         try:
-            tree = ExpressionTree(sequence)
-            if not tree.is_valid:
-                return -10.0 # Penalty
-            
-            x_np = x_tensor.cpu().numpy()[0]
-            y_target = y_tensor.cpu().numpy()[0]
-            
-            y_pred = tree.evaluate(x_np)
-            
-            mse = np.mean((y_pred - y_target)**2)
-            rmse = np.sqrt(mse)
-            
-            if np.isnan(rmse) or np.isinf(rmse):
-                return -10.0
-                
-            # Reward: usually we want normalized.
-            # Bound it? 1 / (1 + rmse) is good [0, 1]
-            return 1.0 / (1.0 + rmse)
+            tree = ExpressionTree(tokens)
+            return tree.is_valid
         except:
-            return -10.0
+            return False
+
+    def _evaluate_formula(self, tokens, x, y):
+        try:
+            tree = ExpressionTree(tokens)
+            _, rmse = optimize_constants(tree, x, y)
+            return rmse
+        except:
+            return 1e9

@@ -4,9 +4,9 @@ The model improves by learning from its own search results.
 
 Process:
 1. Generate problems (synthetic or from memory)
-2. Use MCTS/Beam to find best formulas
-3. Store successful (state, action, value) tuples
-4. Train network on this experience
+2. Use MCTS to find best formulas
+3. Store successful (state, action, value) tuples with priority
+4. Train network on this experience using weighted sampling
 5. Repeat
 """
 import torch
@@ -24,25 +24,23 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.model import AlphaSymbolicModel
-from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree
+from core.grammar import VOCABULARY, TOKEN_TO_ID
 from data.synthetic_data import DataGenerator
-from search.beam_search import BeamSearch
-from utils.optimize_constants import optimize_constants
+from search.mcts import MCTS
 from data.pattern_memory import PatternMemory
 
 
 class ReplayBuffer:
-    """Experience replay buffer for storing (state, policy, value) tuples."""
+    """Experience replay buffer for storing (state, policy, value) tuples with priority."""
     
     def __init__(self, capacity=50000):
         self.buffer = deque(maxlen=capacity)
+        self.priorities = deque(maxlen=capacity)
     
     def add(self, x_data, y_data, tokens, rmse):
         """
         Add an experience.
-        x_data, y_data: the problem
-        tokens: the solution found
-        rmse: reward (negative RMSE, so higher is better)
+        Priority based on 1 / (RMSE + epsilon). Higher priority for better solutions.
         """
         self.buffer.append({
             'x': x_data,
@@ -50,21 +48,36 @@ class ReplayBuffer:
             'tokens': tokens,
             'value': -rmse  # Convert RMSE to value (higher is better)
         })
+        # Priority: simple inverse RMSE
+        priority = 1.0 / (rmse + 1e-6)
+        self.priorities.append(priority)
     
     def sample(self, batch_size):
-        """Sample a random batch."""
+        """Sample a batch based on priorities."""
         if len(self.buffer) < batch_size:
             return list(self.buffer)
-        return random.sample(list(self.buffer), batch_size)
+        
+        # Normalize priorities
+        probs = np.array(self.priorities)
+        probs = probs / probs.sum()
+        
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs, replace=False)
+        return [self.buffer[i] for i in indices]
     
     def __len__(self):
         return len(self.buffer)
 
 
 class AlphaZeroLoop:
-    def __init__(self, model_path="alpha_symbolic_model.pth"):
+    def __init__(self, model_path="alpha_symbolic_model.pth", fresh_start=False):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.vocab_size = len(VOCABULARY)
+        self.model_path = model_path
+
+        # Handle fresh start
+        if fresh_start and os.path.exists(self.model_path):
+            os.remove(self.model_path)
+            print("Previous model deleted. Starting fresh.")
         
         # Model
         self.model = AlphaSymbolicModel(
@@ -90,8 +103,8 @@ class AlphaZeroLoop:
         # Pattern memory
         self.memory = PatternMemory()
         
-        # Search
-        self.searcher = BeamSearch(self.model, self.device, beam_width=10, max_length=25)
+        # Search (MCTS)
+        self.searcher = MCTS(self.model, self.device, max_simulations=50, max_depth=25)
         
         # Statistics
         self.stats = {
@@ -113,7 +126,7 @@ class AlphaZeroLoop:
     
     def self_play_episode(self, num_problems=10):
         """
-        Generate problems, solve them with current model, store experiences.
+        Generate problems, solve them with MCTS, store experiences.
         """
         self.model.eval()
         
@@ -126,23 +139,22 @@ class AlphaZeroLoop:
             x_data = prob['x'].astype(np.float64)
             y_data = prob['y'].astype(np.float64)
             
-            # Search for solution
-            results = self.searcher.search(x_data, y_data)
+            # Search for solution via MCTS
+            result = self.searcher.search(x_data, y_data)
             
-            if results:
-                best = results[0]  # Best by RMSE
-                
+            if result['tokens']:
                 # Store experience
-                self.replay.add(x_data, y_data, best['tokens'], best['rmse'])
-                experiences.append(best['rmse'])
+                self.replay.add(x_data, y_data, result['tokens'], result['rmse'])
+                experiences.append(result['rmse'])
                 
                 # Update pattern memory
-                self.memory.record(best['tokens'], best['rmse'], best['formula'])
+                if result['formula']:
+                     self.memory.record(result['tokens'], result['rmse'], result['formula'])
                 
                 # Track statistics
-                if best['rmse'] < self.stats['best_rmse']:
-                    self.stats['best_rmse'] = best['rmse']
-                self.stats['avg_rmse'].append(best['rmse'])
+                if result['rmse'] < self.stats['best_rmse']:
+                    self.stats['best_rmse'] = result['rmse']
+                self.stats['avg_rmse'].append(result['rmse'])
         
         return experiences
     
@@ -192,6 +204,9 @@ class AlphaZeroLoop:
             logits.view(-1, self.vocab_size + 1), 
             targets.view(-1)
         )
+        if value_pred.shape != value_targets.shape:
+             value_pred = value_pred.view_as(value_targets)
+             
         value_loss = nn.MSELoss()(value_pred, value_targets)
         
         total_loss = ce_loss + 0.5 * value_loss
@@ -215,7 +230,7 @@ class AlphaZeroLoop:
         """
         if verbose:
             print("="*60)
-            print("AlphaZero Self-Play Loop")
+            print("AlphaZero Self-Play Loop (MCTS Enhanced)")
             print("="*60)
             print(f"Device: {self.device}")
             print(f"Iterations: {iterations}")
