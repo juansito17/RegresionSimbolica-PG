@@ -326,9 +326,25 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 decoder_input = decoder_input.to(DEVICE)
                 targets = targets.to(DEVICE)
                 
+                # Prepare value targets based on RMSE
+                # Transform RMSE -> Value [0, 1] (1 = perfect match)
+                rmses_batch = [exp['rmse'] for exp in batch]
+                value_targets = torch.tensor([1.0 / (1.0 + r) for r in rmses_batch], dtype=torch.float32).unsqueeze(1).to(DEVICE)
+                
                 optimizer.zero_grad()
-                logits, _ = MODEL(x_tensor, y_tensor, decoder_input)
-                loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+                logits, value_pred = MODEL(x_tensor, y_tensor, decoder_input)
+                
+                # Policy Loss (Cross Entropy)
+                loss_policy = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+                
+                # Value Loss (MSE)
+                # We want value_pred to match the "quality" of the formula associated with this state
+                # Note: value_pred corresponds to the LAST token in sequence
+                value_pred_last = value_pred  # It's already [batch, 1] from just the last token in model.py
+                loss_value = torch.nn.functional.mse_loss(value_pred, value_targets)
+                
+                # Total Loss = Policy + Value
+                loss = loss_policy + loss_value
                 
                 if not (torch.isnan(loss) or torch.isinf(loss)):
                     loss.backward()
