@@ -13,7 +13,7 @@ from search.mcts import MCTS
 from utils.simplify import simplify_tree
 from search.pareto import ParetoFront
 from utils.detect_pattern import detect_pattern
-from utils.optimize_constants import optimize_constants
+from utils.optimize_constants import optimize_constants, substitute_constants
 from ui.app_core import get_model
 
 
@@ -105,6 +105,17 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     simplified = simplify_tree(tree)
     y_pred = tree.evaluate(x, constants=best.constants)
     
+    # Substitute constants for display
+    substituted_formula = simplified
+    if best.constants:
+        try:
+            positions = tree.root.get_constant_positions()
+            # We use the raw infix for substitution to ensure matching C positions
+            raw_infix = tree.get_infix()
+            substituted_formula = substitute_constants(raw_infix, best.constants, positions)
+        except:
+            substituted_formula = simplified
+    
     fig = create_fit_plot(x, y, y_pred, simplified)
     
     # Format results
@@ -112,7 +123,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 15px; border: 2px solid #00d4ff;">
         <h2 style="color: #00d4ff; margin: 0; font-size: 24px;">Formula Encontrada</h2>
         <div style="background: #0f0f23; padding: 15px; border-radius: 10px; margin: 15px 0; border-left: 4px solid #ff6b6b;">
-            <code style="color: #ff6b6b; font-size: 28px; font-weight: bold;">{simplified}</code>
+            <code style="color: #ff6b6b; font-size: 28px; font-weight: bold;">{substituted_formula}</code>
         </div>
         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
             <div style="background: #0f0f23; padding: 10px; border-radius: 8px; text-align: center;">
@@ -142,8 +153,15 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     """
     
     # Add constants if any
+    # Add constants if any
     if best.constants:
-        const_str = " | ".join([f"{k} = {v:.4f}" for k, v in best.constants.items()])
+        # Sort and format cleanly
+        sorted_items = sorted(best.constants.items(), key=lambda x: str(x[0]))
+        clean_consts = []
+        for i, (k, v) in enumerate(sorted_items):
+            clean_consts.append(f"C_{i+1}: {v:.4f}")
+        const_str = "  |  ".join(clean_consts)
+        
         result_html += f"""
         <div style="margin-top: 10px; padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #ffd93d;">
             <span style="color: #888;">Constantes:</span>
