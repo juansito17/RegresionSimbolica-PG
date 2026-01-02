@@ -23,6 +23,9 @@ OPERATORS = {
     'ceil': 1,
     'gamma': 1,  # Gamma function (for combinatorics)
     'neg': 1,    # Negation
+    'sign': 1,
+    'max': 2,
+    'min': 2,
 }
 
 # Terminal tokens
@@ -196,6 +199,12 @@ class ExpressionTree:
                 return result
             if val == 'neg':
                 return -args[0]
+            if val == 'sign':
+                return np.sign(args[0])
+            if val == 'max':
+                return np.maximum(args[0], args[1])
+            if val == 'min':
+                return np.minimum(args[0], args[1])
                 
         return np.zeros_like(x, dtype=np.float64)
 

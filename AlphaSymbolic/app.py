@@ -34,6 +34,19 @@ def create_app():
         </div>
         """)
         
+        # System Controls
+        with gr.Row():
+            with gr.Column(scale=1):
+                model_selector = gr.Dropdown(choices=["lite", "pro"], value="lite", label="Arquitectura (Cerebro)", interactive=True)
+            with gr.Column(scale=3):
+                model_status = gr.Textbox(label="Estado del Modelo", value="Lite (Laptop Optimized) - Vocabulario Extendido", interactive=False)
+        
+        def on_model_change(preset):
+            status, _ = load_model(preset_name=preset)
+            return status
+
+        model_selector.change(on_model_change, model_selector, model_status)
+        
         with gr.Tabs():
             # TAB 1: Search
             with gr.Tab("Buscar Formula"):

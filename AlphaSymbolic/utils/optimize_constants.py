@@ -45,6 +45,12 @@ def optimize_constants(tree, x_data, y_data, method='L-BFGS-B'):
         if np.any(np.isnan(y_pred)) or np.any(np.isinf(y_pred)):
             return 1e10
         
+        if not np.all(np.isfinite(y_pred)):
+            return 1e9
+        
+        # Clip huge values to prevent overflow in MSE
+        y_pred = np.clip(y_pred, -1e9, 1e9)
+        
         mse = np.mean((y_pred - y_data)**2)
         return mse
     

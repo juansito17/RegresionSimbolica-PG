@@ -11,6 +11,12 @@ MODEL = None
 DEVICE = None
 TRAINING_STATUS = {"running": False, "epoch": 0, "loss": 0, "message": "Listo"}
 
+MODEL_PRESETS = {
+    'lite': {'d_model': 128, 'nhead': 4, 'num_encoder_layers': 3, 'num_decoder_layers': 3},
+    'pro': {'d_model': 256, 'nhead': 8, 'num_encoder_layers': 6, 'num_decoder_layers': 6}
+}
+CURRENT_PRESET = 'lite'
+
 def get_device(force_cpu=False):
     """Get the best available device (CUDA > MPS > CPU)."""
     if force_cpu:
@@ -45,21 +51,26 @@ def get_device_info():
     else:
         return "CPU"
 
-def load_model(force_reload=False):
+def load_model(force_reload=False, preset_name=None):
     """Load or reload the model."""
-    global MODEL, DEVICE
+    global MODEL, DEVICE, CURRENT_PRESET
+    
+    if preset_name:
+        CURRENT_PRESET = preset_name
     
     if DEVICE is None:
         DEVICE = get_device()
     
     VOCAB_SIZE = len(VOCABULARY)
+    config = MODEL_PRESETS[CURRENT_PRESET]
     
+    print(f"Loading Model [{CURRENT_PRESET.upper()}]...")
     MODEL = AlphaSymbolicModel(
         vocab_size=VOCAB_SIZE + 1, 
-        d_model=128, 
-        nhead=4,
-        num_encoder_layers=3, 
-        num_decoder_layers=3
+        d_model=config['d_model'], 
+        nhead=config['nhead'],
+        num_encoder_layers=config['num_encoder_layers'], 
+        num_decoder_layers=config['num_decoder_layers']
     ).to(DEVICE)
     
     try:
@@ -82,8 +93,12 @@ def load_model(force_reload=False):
         else:
             MODEL.load_state_dict(state_dict)
             MODEL.eval()
-            status = "Modelo cargado"
-    except:
+            status = f"Modelo cargado ({CURRENT_PRESET})"
+    except RuntimeError as e:
+        print(f"⚠️ Error de compatibilidad ({e}). Iniciando modelo fresco.")
+        status = f"Nuevo modelo ({CURRENT_PRESET})"
+    except Exception as e:
+        print(f"Error cargando: {e}")
         status = "Sin modelo pre-entrenado"
     
     return status, get_device_info()
