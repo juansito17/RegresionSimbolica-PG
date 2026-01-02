@@ -41,7 +41,7 @@ def normalize_batch(x_list, y_list):
     return normalized_x, normalized_y
 
 
-def train_basic(epochs, batch_size, progress=gr.Progress()):
+def train_basic(epochs, batch_size, point_count=10, progress=gr.Progress()):
     """Basic training with synthetic data."""
     global TRAINING_STATUS
     
@@ -69,8 +69,8 @@ def train_basic(epochs, batch_size, progress=gr.Progress()):
             
             # Mix of inverse (known formulas) + random data (AlphaTensor-style)
             half_batch = int(batch_size) // 2
-            batch_inverse = data_gen.generate_inverse_batch(half_batch)
-            batch_random = data_gen.generate_batch(int(batch_size) - half_batch)
+            batch_inverse = data_gen.generate_inverse_batch(half_batch, point_count=int(point_count))
+            batch_random = data_gen.generate_batch(int(batch_size) - half_batch, point_count=int(point_count))
             batch = batch_inverse + batch_random
             if len(batch) < 2:
                 continue
@@ -135,7 +135,7 @@ def train_basic(epochs, batch_size, progress=gr.Progress()):
         return f"Error: {str(e)}", None
 
 
-def train_curriculum(epochs, batch_size, progress=gr.Progress()):
+def train_curriculum(epochs, batch_size, point_count=10, progress=gr.Progress()):
     """Curriculum Learning - starts simple, increases difficulty gradually."""
     global TRAINING_STATUS
     
@@ -181,8 +181,8 @@ def train_curriculum(epochs, batch_size, progress=gr.Progress()):
             n_inverse = int(batch_size * inverse_ratio)
             n_random = int(batch_size) - n_inverse
             
-            batch_inverse = data_gen.generate_inverse_batch(max(1, n_inverse)) if n_inverse > 0 else []
-            batch_random = data_gen.generate_batch(max(1, n_random)) if n_random > 0 else []
+            batch_inverse = data_gen.generate_inverse_batch(max(1, n_inverse), point_count=int(point_count)) if n_inverse > 0 else []
+            batch_random = data_gen.generate_batch(max(1, n_random), point_count=int(point_count)) if n_random > 0 else []
             batch = batch_inverse + batch_random
             if len(batch) < 2:
                 continue
@@ -243,7 +243,7 @@ def train_curriculum(epochs, batch_size, progress=gr.Progress()):
         return f"Error: {str(e)}", None
 
 
-def train_self_play(iterations, problems_per_iter, progress=gr.Progress()):
+def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.Progress()):
     """AlphaZero Self-Play loop."""
     global TRAINING_STATUS
     
@@ -255,7 +255,7 @@ def train_self_play(iterations, problems_per_iter, progress=gr.Progress()):
     try:
         MODEL, DEVICE = get_model()
         
-        from search.beam_search import BeamSearch
+        from search.mcts import MCTS
         
         optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
         ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -265,7 +265,8 @@ def train_self_play(iterations, problems_per_iter, progress=gr.Progress()):
         
         replay_buffer = deque(maxlen=10000)
         data_gen = DataGenerator(max_depth=5)
-        searcher = BeamSearch(MODEL, DEVICE, beam_width=8, max_length=20)
+        # Use MCTS for self-play as per AlphaZero
+        searcher = MCTS(MODEL, DEVICE, max_simulations=50)
         
         rmses = []
         losses = []
@@ -275,23 +276,30 @@ def train_self_play(iterations, problems_per_iter, progress=gr.Progress()):
             
             # Self-play phase
             MODEL.eval()
-            problems = data_gen.generate_batch(int(problems_per_iter))
+            
+            # Generate mix of problems: 50% inverse (solvable), 50% random
+            n_inverse = int(problems_per_iter) // 2
+            n_random = int(problems_per_iter) - n_inverse
+            
+            probs_inv = data_gen.generate_inverse_batch(n_inverse, point_count=int(point_count))
+            probs_rnd = data_gen.generate_batch(n_random, point_count=int(point_count))
+            problems = probs_inv + probs_rnd
             
             for prob in problems:
                 x_data = prob['x'].astype(np.float64)
                 y_data = prob['y'].astype(np.float64)
                 
                 try:
-                    results = searcher.search(x_data, y_data)
-                    if results:
-                        best = results[0]
+                    result = searcher.search(x_data, y_data)
+                    if result and result.get('tokens'):
                         replay_buffer.append({
                             'x': x_data, 'y': y_data,
-                            'tokens': best['tokens'],
-                            'rmse': best['rmse']
+                            'tokens': result['tokens'],
+                            'rmse': result['rmse']
                         })
-                        rmses.append(best['rmse'])
-                except:
+                        rmses.append(result['rmse'])
+                except Exception as e:
+                    print(f"Self-play error: {e}")
                     continue
             
             # Training phase
@@ -327,6 +335,10 @@ def train_self_play(iterations, problems_per_iter, progress=gr.Progress()):
                     torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
                     optimizer.step()
                     losses.append(loss.item())
+            
+            # Periodic save
+            if (iteration + 1) % 10 == 0:
+                save_model()
         
         save_model()
         MODEL.eval()

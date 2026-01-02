@@ -105,11 +105,12 @@ def create_app():
                             with gr.Column():
                                 epochs_basic = gr.Slider(10, 500, value=100, step=10, label="Epocas")
                                 batch_basic = gr.Slider(16, 128, value=32, step=16, label="Batch Size")
+                                points_basic = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
                                 train_basic_btn = gr.Button("Entrenar Basico", variant="primary")
                             with gr.Column():
                                 result_basic = gr.HTML()
                                 plot_basic = gr.Plot()
-                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic], [result_basic, plot_basic])
+                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic], [result_basic, plot_basic])
                     
                     # Curriculum
                     with gr.Tab("Curriculum"):
@@ -123,11 +124,12 @@ def create_app():
                             with gr.Column():
                                 epochs_curriculum = gr.Slider(50, 2000, value=200, step=50, label="Epocas")
                                 batch_curriculum = gr.Slider(16, 128, value=64, step=16, label="Batch Size")
+                                points_curriculum = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
                                 train_curriculum_btn = gr.Button("Entrenar Curriculum", variant="primary")
                             with gr.Column():
                                 result_curriculum = gr.HTML()
                                 plot_curriculum = gr.Plot()
-                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum], [result_curriculum, plot_curriculum])
+                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum], [result_curriculum, plot_curriculum])
                     
                     # Self-Play
                     with gr.Tab("Self-Play"):
@@ -139,13 +141,14 @@ def create_app():
                         ''')
                         with gr.Row():
                             with gr.Column():
-                                iterations_sp = gr.Slider(10, 200, value=30, step=10, label="Iteraciones")
+                                iterations_sp = gr.Slider(10, 1000, value=100, step=10, label="Iteraciones")
                                 problems_sp = gr.Slider(5, 50, value=10, step=5, label="Problemas/Iter")
+                                points_sp = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
                                 train_sp_btn = gr.Button("Iniciar Self-Play", variant="primary")
                             with gr.Column():
                                 result_sp = gr.HTML()
                                 plot_sp = gr.Plot()
-                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp], [result_sp, plot_sp])
+                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
             
             # TAB 3: Info
             with gr.Tab("Informacion"):

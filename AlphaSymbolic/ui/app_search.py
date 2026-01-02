@@ -139,8 +139,19 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
             <span style="color: #888; margin-left: 20px;">Device:</span>
             <span style="color: #4ade80;">{DEVICE.type.upper()}</span>
         </div>
-    </div>
     """
+    
+    # Add constants if any
+    if best.constants:
+        const_str = " | ".join([f"{k} = {v:.4f}" for k, v in best.constants.items()])
+        result_html += f"""
+        <div style="margin-top: 10px; padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #ffd93d;">
+            <span style="color: #888;">Constantes:</span>
+            <span style="color: #fff; font-family: monospace; margin-left: 10px;">{const_str}</span>
+        </div>
+        """
+        
+    result_html += "</div>"
     
     # Predictions table
     pred_html = '<table style="width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 10px; overflow: hidden;">'
