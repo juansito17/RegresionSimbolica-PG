@@ -81,23 +81,23 @@ def load_model(force_reload=False, preset_name=None):
             state_dict = torch.load(filename, map_location=DEVICE, weights_only=True)
             # Check for NaNs
             has_nans = False
-        for k, v in state_dict.items():
-            if torch.isnan(v).any() or torch.isinf(v).any():
-                has_nans = True
-                break
-        
-        if has_nans:
-            print(f"⚠️ Modelo corrupto detectado (NaNs) en {filename}. Eliminando y esperando reinicio.")
-            try:
-                os.remove(filename)
-                print("✅ Archivo corrupto eliminado.")
-            except OSError as e:
-                print(f"Error al eliminar archivo: {e}")
-            status = "⚠️ Modelo corrupto eliminado y reiniciado"
-        else:
-            MODEL.load_state_dict(state_dict)
-            MODEL.eval()
-            status = f"Modelo cargado ({CURRENT_PRESET})"
+            for k, v in state_dict.items():
+                if torch.isnan(v).any() or torch.isinf(v).any():
+                    has_nans = True
+                    break
+            
+            if has_nans:
+                print(f"⚠️ Modelo corrupto detectado (NaNs) en {filename}. Eliminando y esperando reinicio.")
+                try:
+                    os.remove(filename)
+                    print("✅ Archivo corrupto eliminado.")
+                except OSError as e:
+                    print(f"Error al eliminar archivo: {e}")
+                status = "⚠️ Modelo corrupto eliminado y reiniciado"
+            else:
+                MODEL.load_state_dict(state_dict)
+                MODEL.eval()
+                status = f"Modelo cargado ({CURRENT_PRESET})"
     except RuntimeError as e:
         print(f"⚠️ Error de compatibilidad ({e}). Iniciando modelo fresco.")
         status = f"Nuevo modelo ({CURRENT_PRESET})"
