@@ -8,6 +8,7 @@ import torch
 from ui.app_core import load_model, get_device, get_device_info, set_device
 from ui.app_training import train_basic, train_curriculum, train_self_play
 from ui.app_search import solve_formula, generate_example
+from ui.app_benchmark import get_benchmark_tab
 
 
 def toggle_device(use_gpu):
@@ -150,7 +151,10 @@ def create_app():
                                 plot_sp = gr.Plot()
                         train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
             
-            # TAB 3: Info
+            # TAB 4: Benchmark
+            get_benchmark_tab()
+
+            # TAB 5: Info
             with gr.Tab("Informacion"):
                 device_info_current = get_device_info()
                 device_color_current = "#4ade80" if "CUDA" in device_info_current else "#fbbf24" if "MPS" in device_info_current else "#888"
