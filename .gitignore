@@ -57,6 +57,19 @@ venv/
 env/
 .env
 
+# PyTorch / Models
+*.pth
+*.pt
+*.ckpt
+
+# Data & Artifacts
+AlphaSymbolic/data/*.json
+pattern_memory.json
+
+# IDEs
+.idea/
+.vscode/
+
 # OS generated files
 .DS_Store
 Thumbs.db
