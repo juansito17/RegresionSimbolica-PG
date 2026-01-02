@@ -73,19 +73,23 @@ def load_model(force_reload=False, preset_name=None):
         num_decoder_layers=config['num_decoder_layers']
     ).to(DEVICE)
     
+    filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
+    status = f"Nuevo modelo ({CURRENT_PRESET})" # Default status
+    
     try:
-        state_dict = torch.load("alpha_symbolic_model.pth", map_location=DEVICE, weights_only=True)
-        # Check for NaNs
-        has_nans = False
+        if os.path.exists(filename):
+            state_dict = torch.load(filename, map_location=DEVICE, weights_only=True)
+            # Check for NaNs
+            has_nans = False
         for k, v in state_dict.items():
             if torch.isnan(v).any() or torch.isinf(v).any():
                 has_nans = True
                 break
         
         if has_nans:
-            print("⚠️ Modelo corrupto detectado (NaNs). Eliminando archivo y reiniciando pesos.")
+            print(f"⚠️ Modelo corrupto detectado (NaNs) en {filename}. Eliminando y esperando reinicio.")
             try:
-                os.remove("alpha_symbolic_model.pth")
+                os.remove(filename)
                 print("✅ Archivo corrupto eliminado.")
             except OSError as e:
                 print(f"Error al eliminar archivo: {e}")
@@ -112,6 +116,7 @@ def get_model():
 
 def save_model():
     """Save the current model."""
-    global MODEL
+    global MODEL, CURRENT_PRESET
     if MODEL is not None:
-        torch.save(MODEL.state_dict(), "alpha_symbolic_model.pth")
+        filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
+        torch.save(MODEL.state_dict(), filename)
