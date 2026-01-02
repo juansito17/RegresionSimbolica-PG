@@ -1,0 +1,49 @@
+{
+  "patterns": {
+    "abs exp exp exp C": {
+      "structure": [
+        "abs",
+        "exp",
+        "exp",
+        "exp",
+        "C"
+      ],
+      "best_rmse": 5.85937891948496,
+      "uses": 1,
+      "examples": [
+        {
+          "tokens": [
+            "abs",
+            "exp",
+            "exp",
+            "exp",
+            "0"
+          ],
+          "formula": "abs(exp(exp(exp(0))))",
+          "rmse": 5.85937891948496
+        }
+      ]
+    },
+    "+ C C": {
+      "structure": [
+        "+",
+        "C",
+        "C"
+      ],
+      "best_rmse": 8.461119369108095,
+      "uses": 1,
+      "examples": [
+        {
+          "tokens": [
+            "+",
+            "C",
+            "C"
+          ],
+          "formula": "(C + C)",
+          "rmse": 8.461119369108095
+        }
+      ]
+    }
+  },
+  "updated": "2026-01-02T00:17:36.010387"
+}
