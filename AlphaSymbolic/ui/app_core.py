@@ -76,9 +76,10 @@ def load_model(force_reload=False, preset_name=None):
     filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
     status = f"Nuevo modelo ({CURRENT_PRESET})" # Default status
     
-    try:
-        if os.path.exists(filename):
+    if os.path.exists(filename):
+        try:
             state_dict = torch.load(filename, map_location=DEVICE, weights_only=True)
+            
             # Check for NaNs
             has_nans = False
             for k, v in state_dict.items():
@@ -98,12 +99,13 @@ def load_model(force_reload=False, preset_name=None):
                 MODEL.load_state_dict(state_dict)
                 MODEL.eval()
                 status = f"Modelo cargado ({CURRENT_PRESET})"
-    except RuntimeError as e:
-        print(f"⚠️ Error de compatibilidad ({e}). Iniciando modelo fresco.")
-        status = f"Nuevo modelo ({CURRENT_PRESET})"
-    except Exception as e:
-        print(f"Error cargando: {e}")
-        status = "Sin modelo pre-entrenado"
+                
+        except RuntimeError as e:
+            print(f"⚠️ Error de compatibilidad ({e}). Iniciando modelo fresco.")
+            status = f"Nuevo modelo ({CURRENT_PRESET})"
+        except Exception as e:
+            print(f"Error cargando: {e}")
+            status = "Sin modelo pre-entrenado"
     
     return status, get_device_info()
 
