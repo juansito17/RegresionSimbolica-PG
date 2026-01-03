@@ -44,7 +44,7 @@ class MCTSNode:
         return len(self.tokens)
 
 class MCTS:
-    def __init__(self, model, device, grammar=None, c_puct=1.0, n_simulations=100, max_simulations=None, max_depth=50, complexity_lambda=0.1, max_len=200, batch_size=8):
+    def __init__(self, model, device, grammar=None, c_puct=1.0, n_simulations=100, max_simulations=None, max_depth=50, complexity_lambda=0.1, max_len=200):
         self.model = model
         self.device = device
         self.grammar = grammar
@@ -63,7 +63,7 @@ class MCTS:
         self.max_value = float('inf')
         self.vocab_size = len(VOCABULARY)
         self.sos_id = self.vocab_size
-        self.batch_size = batch_size
+        self.batch_size = 8 # Default batch size
         
         # Pareto Front: List of {'tokens':, 'rmse':, 'complexity':, 'formula':}
         self.pareto_front = []

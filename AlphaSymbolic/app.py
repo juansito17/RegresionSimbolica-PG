@@ -222,4 +222,4 @@ if __name__ == "__main__":
     print("Abriendo navegador...")
     
     app = create_app()
-    app.launch(share=False, inbrowser=True)
+    app.launch(share=True, inbrowser=True)

@@ -22,7 +22,7 @@ def run_benchmark_suite(model, device, progress_callback=None):
     
     # Configure MCTS for benchmark (balanced speed/accuracy)
     # 500 simulations is decent for benchmarking
-    mcts = MCTS(model, device, max_simulations=500, lambda_mix=0.5, batch_size=32)
+    mcts = MCTS(model, device, max_simulations=500, batch_size=32)
     
     total = len(BENCHMARK_SUITE)
     solved_count = 0

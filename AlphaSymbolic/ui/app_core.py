@@ -15,7 +15,7 @@ MODEL_PRESETS = {
     'lite': {'d_model': 128, 'nhead': 4, 'num_encoder_layers': 3, 'num_decoder_layers': 3},
     'pro': {'d_model': 256, 'nhead': 8, 'num_encoder_layers': 6, 'num_decoder_layers': 6}
 }
-CURRENT_PRESET = 'lite'
+CURRENT_PRESET = 'pro'
 
 def get_device(force_cpu=False):
     """Get the best available device (CUDA > MPS > CPU)."""

@@ -207,8 +207,18 @@ def train_curriculum(epochs, batch_size, point_count=10, progress=gr.Progress())
             targets = targets.to(DEVICE)
             
             optimizer.zero_grad()
-            logits, _ = MODEL(x_tensor, y_tensor, decoder_input)
-            loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+            logits, value_pred = MODEL(x_tensor, y_tensor, decoder_input)
+            
+            # Policy Loss
+            loss_policy = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+            
+            # Value Loss
+            # For supervised learning, these are "perfect" solutions, so Value Target = 1.0
+            value_targets = torch.ones_like(value_pred)
+            loss_value = torch.nn.functional.mse_loss(value_pred, value_targets)
+            
+            # Combined Loss
+            loss = loss_policy + 0.5 * loss_value
             
             if torch.isnan(loss) or torch.isinf(loss):
                 continue
@@ -258,31 +268,49 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         from search.mcts import MCTS
         
         optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
-        ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
+        
+        # Losses for AlphaZero
+        # Policy: KLDiv (comparing distributions)
+        # Value: MSE (comparing scalar values)
+        kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
+        mse_loss = torch.nn.MSELoss()
         
         VOCAB_SIZE = len(VOCABULARY)
         SOS_ID = VOCAB_SIZE
         
-        replay_buffer = deque(maxlen=10000)
-        data_gen = DataGenerator(max_depth=5)
-        # Use MCTS for self-play as per AlphaZero
-        searcher = MCTS(MODEL, DEVICE, max_simulations=50)
+        replay_buffer = deque(maxlen=20000)
+        
+        # Adaptive Curriculum State
+        current_depth = 2
+        data_gen = DataGenerator(max_depth=current_depth)
+        
+        # MCTS for A100: Increase batch size and simulations significantly
+        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=256)
         
         rmses = []
         losses = []
+        best_avg_rmse = float('inf')
         
         for iteration in range(int(iterations)):
-            progress((iteration + 1) / iterations, desc=f"Iter {iteration+1}/{int(iterations)} [{DEVICE.type.upper()}]")
+            # Adaptive Curriculum Check
+            # If average RMSE of last 20 episodes is very low (< 0.05), increase difficulty
+            recent_rmse = np.mean(rmses[-20:]) if len(rmses) >= 20 else 1.0
+            if len(rmses) > 20 and recent_rmse < 0.1 and current_depth < 7:
+                current_depth += 1
+                data_gen = DataGenerator(max_depth=current_depth)
+                print(f"Curriculum Level Up! New Depth: {current_depth}")
+                
+            progress((iteration + 1) / iterations, desc=f"Iter {iteration+1}/{int(iterations)} [D:{current_depth}] RMSE:{recent_rmse:.3f}")
             
             # Self-play phase
             MODEL.eval()
             
-            # Generate mix of problems: 50% inverse (solvable), 50% random
-            n_inverse = int(problems_per_iter) // 2
+            # Generate mix of problems: 70% inverse (solvable), 30% random
+            n_inverse = int(problems_per_iter * 0.7)
             n_random = int(problems_per_iter) - n_inverse
             
-            probs_inv = data_gen.generate_inverse_batch(n_inverse, point_count=int(point_count))
-            probs_rnd = data_gen.generate_batch(n_random, point_count=int(point_count))
+            probs_inv = data_gen.generate_inverse_batch(n_inverse, point_count=int(point_count)) if n_inverse > 0 else []
+            probs_rnd = data_gen.generate_batch(n_random, point_count=int(point_count)) if n_random > 0 else []
             problems = probs_inv + probs_rnd
             
             for prob in problems:
@@ -291,66 +319,88 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 
                 try:
                     result = searcher.search(x_data, y_data)
-                    if result and result.get('tokens'):
-                        replay_buffer.append({
-                            'x': x_data, 'y': y_data,
-                            'tokens': result['tokens'],
-                            'rmse': result['rmse']
-                        })
+                    
+                    # 1. Store Training Examples (State, Policy, Value)
+                    if 'root' in result:
+                        examples = searcher.get_training_examples(result['root'])
+                        for (tokens, policy, value) in examples:
+                            replay_buffer.append({
+                                'x': x_data, 'y': y_data,
+                                'tokens': tokens,
+                                'policy': policy,
+                                'value': value
+                            })
+                    
+                    # 2. Track Metrics
+                    if result.get('tokens'):
                         rmses.append(result['rmse'])
+                        
                 except Exception as e:
                     print(f"Self-play error: {e}")
                     continue
             
             # Training phase
-            if len(replay_buffer) >= 16:
+            if len(replay_buffer) >= 64:
                 MODEL.train()
-                batch = random.sample(list(replay_buffer), min(32, len(replay_buffer)))
-                
-                x_list = [exp['x'] for exp in batch]
-                y_list = [exp['y'] for exp in batch]
-                x_list, y_list = normalize_batch(x_list, y_list)
-                
-                token_lists = [[TOKEN_TO_ID[t] for t in exp['tokens']] for exp in batch]
-                
-                max_len = max(len(s) for s in token_lists)
-                decoder_input = torch.full((len(batch), max_len + 1), SOS_ID, dtype=torch.long)
-                targets = torch.full((len(batch), max_len + 1), -1, dtype=torch.long)
-                
-                for i, seq in enumerate(token_lists):
-                    decoder_input[i, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
-                    targets[i, :len(seq)] = torch.tensor(seq, dtype=torch.long)
-                
-                x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
-                y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
-                decoder_input = decoder_input.to(DEVICE)
-                targets = targets.to(DEVICE)
-                
-                # Prepare value targets based on RMSE
-                # Transform RMSE -> Value [0, 1] (1 = perfect match)
-                rmses_batch = [exp['rmse'] for exp in batch]
-                value_targets = torch.tensor([1.0 / (1.0 + r) for r in rmses_batch], dtype=torch.float32).unsqueeze(1).to(DEVICE)
-                
-                optimizer.zero_grad()
-                logits, value_pred = MODEL(x_tensor, y_tensor, decoder_input)
-                
-                # Policy Loss (Cross Entropy)
-                loss_policy = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
-                
-                # Value Loss (MSE)
-                # We want value_pred to match the "quality" of the formula associated with this state
-                # Note: value_pred corresponds to the LAST token in sequence
-                value_pred_last = value_pred  # It's already [batch, 1] from just the last token in model.py
-                loss_value = torch.nn.functional.mse_loss(value_pred, value_targets)
-                
-                # Total Loss = Policy + Value
-                loss = loss_policy + loss_value
-                
-                if not (torch.isnan(loss) or torch.isinf(loss)):
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
-                    optimizer.step()
-                    losses.append(loss.item())
+                # Train multiple steps per iteration to learn efficiently
+                for _ in range(4):
+                    batch = random.sample(list(replay_buffer), min(64, len(replay_buffer)))
+                    
+                    x_list = [exp['x'] for exp in batch]
+                    y_list = [exp['y'] for exp in batch]
+                    x_list, y_list = normalize_batch(x_list, y_list)
+                    
+                    token_lists = [[TOKEN_TO_ID[t] for t in exp['tokens']] for exp in batch]
+                    policy_targets = [exp['policy'] for exp in batch]
+                    value_targets_list = [exp['value'] for exp in batch]
+                    
+                    max_len = max(len(s) for s in token_lists)
+                    decoder_input = torch.full((len(batch), max_len + 1), SOS_ID, dtype=torch.long)
+                    
+                    # Policy targets (for KLDiv) and Value targets
+                    policy_target_tensor = torch.tensor(np.array(policy_targets), dtype=torch.float32).to(DEVICE)
+                    value_target_tensor = torch.tensor(np.array(value_targets_list), dtype=torch.float32).unsqueeze(1).to(DEVICE)
+                    
+                    for i, seq in enumerate(token_lists):
+                        l = len(seq)
+                        decoder_input[i, 1:l+1] = torch.tensor(seq, dtype=torch.long)
+                    
+                    x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+                    y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+                    decoder_input = decoder_input.to(DEVICE)
+                    
+                    optimizer.zero_grad()
+                    logits, value_pred = MODEL(x_tensor, y_tensor, decoder_input)
+                    
+                    # Policy Loss (KL Divergence)
+                    # Get logits for the last token position of each sequence
+                    last_logits = []
+                    for i, seq in enumerate(token_lists):
+                        idx = len(seq) # Post-padding index? No, index in padded tensor.
+                        # decoder_input: [SOS, T1, T2]
+                        # logits: [PredSOS, PredT1, PredT2]
+                        # We want prediction AFTER T2? No.
+                        # MCTS Example: State=[T1, T2]. Policy=Dist for T3.
+                        # Model Input: [SOS, T1, T2]. Output Last: Dist for T3.
+                        # Index is len(seq).
+                        last_logits.append(logits[i, idx, :VOCAB_SIZE])
+                    
+                    last_logits = torch.stack(last_logits)
+                    log_probs = torch.nn.functional.log_softmax(last_logits, dim=1)
+                    
+                    loss_policy = kl_loss(log_probs, policy_target_tensor)
+                    
+                    # Value Loss (MSE)
+                    loss_value = mse_loss(value_pred, value_target_tensor)
+                    
+                    # Total Loss
+                    loss = loss_policy + loss_value 
+                    
+                    if not (torch.isnan(loss) or torch.isinf(loss)):
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
+                        optimizer.step()
+                        losses.append(loss.item())
             
             # Periodic save
             if (iteration + 1) % 10 == 0:
