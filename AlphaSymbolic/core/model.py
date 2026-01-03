@@ -30,7 +30,7 @@ class AlphaSymbolicModel(nn.Module):
         self.value_head = nn.Sequential(
             nn.Linear(d_model, 64),
             nn.ReLU(),
-            nn.Linear(64, 1) # Expected negative RMSE
+            nn.Linear(64, 3) # Quantiles: 0.25, 0.50, 0.75
         )
         
     def forward(self, x_values, y_values, formula_input, formula_mask=None):

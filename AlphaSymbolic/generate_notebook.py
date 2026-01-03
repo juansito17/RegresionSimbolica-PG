@@ -7,6 +7,7 @@ files_to_embed = [
     "core/grammar.py",
     "core/model.py",
     "core/environment.py",
+    "core/loss.py",
     "core/__init__.py",
     "data/synthetic_data.py",
     "data/benchmark_data.py",

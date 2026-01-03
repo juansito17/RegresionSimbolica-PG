@@ -9,10 +9,12 @@ import matplotlib.pyplot as plt
 import gradio as gr
 from collections import deque
 import random
+import time
 
 from core.grammar import VOCABULARY, TOKEN_TO_ID
 from data.synthetic_data import DataGenerator
 from ui.app_core import get_model, save_model, TRAINING_STATUS
+from core.loss import QuantileLoss
 
 
 def normalize_batch(x_list, y_list):
@@ -271,9 +273,9 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         
         # Losses for AlphaZero
         # Policy: KLDiv (comparing distributions)
-        # Value: MSE (comparing scalar values)
+        # Value: Quantile Loss (3 Quantiles)
         kl_loss = torch.nn.KLDivLoss(reduction='batchmean')
-        mse_loss = torch.nn.MSELoss()
+        quantile_loss_fn = QuantileLoss()
         
         VOCAB_SIZE = len(VOCABULARY)
         SOS_ID = VOCAB_SIZE
@@ -291,7 +293,26 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         losses = []
         best_avg_rmse = float('inf')
         
+        start_time = time.time()
+        
         for iteration in range(int(iterations)):
+            # ETA Calculation
+            elapsed = time.time() - start_time
+            if iteration > 0:
+                avg_time_per_iter = elapsed / iteration
+                remaining_iters = int(iterations) - iteration
+                eta_seconds = remaining_iters * avg_time_per_iter
+                
+                # Format ETA
+                if eta_seconds > 3600:
+                    eta_str = f"{eta_seconds/3600:.1f}h"
+                elif eta_seconds > 60:
+                    eta_str = f"{eta_seconds/60:.0f}m"
+                else:
+                    eta_str = f"{eta_seconds:.0f}s"
+            else:
+                eta_str = "Calculando..."
+
             # Adaptive Curriculum Check
             # If average RMSE of last 20 episodes is very low (< 0.05), increase difficulty
             recent_rmse = np.mean(rmses[-20:]) if len(rmses) >= 20 else 1.0
@@ -300,7 +321,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 data_gen = DataGenerator(max_depth=current_depth)
                 print(f"Curriculum Level Up! New Depth: {current_depth}")
                 
-            progress((iteration + 1) / iterations, desc=f"Iter {iteration+1}/{int(iterations)} [D:{current_depth}] RMSE:{recent_rmse:.3f}")
+            progress((iteration + 1) / iterations, desc=f"Iter {iteration+1}/{int(iterations)} [D:{current_depth}] RMSE:{recent_rmse:.3f} | ETA: {eta_str}")
             
             # Self-play phase
             MODEL.eval()
@@ -390,8 +411,8 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                     
                     loss_policy = kl_loss(log_probs, policy_target_tensor)
                     
-                    # Value Loss (MSE)
-                    loss_value = mse_loss(value_pred, value_target_tensor)
+                    # Value Loss (Quantile)
+                    loss_value = quantile_loss_fn(value_pred, value_target_tensor)
                     
                     # Total Loss
                     loss = loss_policy + loss_value 

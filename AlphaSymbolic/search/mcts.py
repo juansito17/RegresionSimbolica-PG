@@ -308,11 +308,14 @@ class MCTS:
         
         # To CPU numpy for probability processing
         probs_batch = torch.softmax(logits[:, -1, :self.vocab_size], dim=1).cpu().numpy()
-        value_preds = value_preds.cpu().numpy().flatten()
+        value_preds = value_preds.cpu().numpy() # [batch, 3]
         
         for i, node in enumerate(nodes):
-            # 1. Store Value
-            val = float(np.clip(value_preds[i], 0.0, 1.0))
+            # 1. Store Value (Median for now)
+            # value_preds is [batch, 3] -> (Pessimistic, Median, Optimistic)
+            # We use Median (index 1) for standard UCB.
+            val_pred = value_preds[i, 1] 
+            val = float(np.clip(val_pred, 0.0, 1.0))
             values.append(val)
             
             # 2. Expand children

@@ -28,6 +28,7 @@ from core.grammar import VOCABULARY, TOKEN_TO_ID
 from data.synthetic_data import DataGenerator
 from search.mcts import MCTS
 from data.pattern_memory import PatternMemory
+from core.loss import QuantileLoss
 
 
 class ReplayBuffer:
@@ -256,8 +257,9 @@ class AlphaZeroLoop:
         # KLDivLoss(input, target) expects log_probs as input
         policy_loss = nn.KLDivLoss(reduction='batchmean')(log_probs, policy_target_tensor)
         
-        # Value Loss (MSE)
-        value_loss = nn.MSELoss()(value_pred, value_target_tensor)
+        # Value Loss (Quantile Regression)
+        # value_pred: [batch, 3], value_target_tensor: [batch, 1]
+        value_loss = QuantileLoss()(value_pred, value_target_tensor)
         
         total_loss = policy_loss + value_loss # Weighting? 1.0 each for now
         
