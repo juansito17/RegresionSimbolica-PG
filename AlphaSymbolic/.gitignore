@@ -8,6 +8,10 @@ __pycache__/
 *.pt
 alpha_symbolic_model_*.pth
 
+# Logs
+test_log.txt
+test_output.txt
+
 # Jupyter
 .ipynb_checkpoints/
 
