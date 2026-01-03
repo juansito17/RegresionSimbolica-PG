@@ -1,6 +1,7 @@
 import numpy as np
 import random
 from core.grammar import VOCABULARY, OPERATORS, VARIABLES, CONSTANTS, ExpressionTree
+from data.augmentation import augment_formula_tokens
 
 class DataGenerator:
     def __init__(self, max_depth=5, population_size=1000, allowed_operators=None):
@@ -110,14 +111,20 @@ class DataGenerator:
             try:
                 tokens, formula_str = template(a, b)
                 
-                # Convert string numbers back to proper tokens
+                # Convert string numbers -> 'C'
                 final_tokens = []
                 for t in tokens:
                     if t in VOCABULARY:
                         final_tokens.append(t)
                     else:
-                        # It's a number - use 'C' placeholder or closest constant
                         final_tokens.append('C')
+                
+                # --- DATA AUGMENTATION (AlphaTensor Style) ---
+                # Apply mathematical invariances (Commutativity, etc.)
+                # This multiplies the effective dataset size
+                if random.random() < 0.5:
+                    final_tokens = augment_formula_tokens(final_tokens)
+                # ---------------------------------------------
                 
                 tree = ExpressionTree(final_tokens)
                 if not tree.is_valid:

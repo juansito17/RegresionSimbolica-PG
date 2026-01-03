@@ -10,6 +10,7 @@ files_to_embed = [
     "core/__init__.py",
     "data/synthetic_data.py",
     "data/benchmark_data.py",
+    "data/augmentation.py",
     "data/__init__.py",
     "search/mcts.py",
     "search/beam_search.py",
