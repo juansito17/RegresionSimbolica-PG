@@ -80,6 +80,27 @@ class BeamSearch:
             
             log_probs = torch.log_softmax(last_token_logits, dim=-1) # [batch, vocab]
             
+            # --- Repetition Penalty (Simple) ---
+            # If the same token was generated recently, penalize it slightly.
+            # This prevents 10 ////////// loops.
+            penalty_factor = 2.0  # Reduce log_prob (which is negative) by absolute amount or multiplier?
+            # Log probs are negative (e.g. -0.1). Making them MORE negative penalizes.
+            # If we multiply by 1.2, -0.1 becomes -0.12 (lower probability).
+            
+            for i, beam in enumerate(active_beams):
+                if beam['seq']:
+                     # Get last token ID
+                    last_token = beam['seq'][-1]
+                    if last_token in TOKEN_TO_ID:
+                        last_id = TOKEN_TO_ID[last_token]
+                        # Penalize current step logits for this token
+                        # If log_prob is close to 0 (high prob), e.g. -0.01 -> -0.012
+                        # If log_prob is -10 (low prob), -> -12
+                        # Check bounds to avoid NaN if -inf
+                        if log_probs[i, last_id] > -1e9:
+                             log_probs[i, last_id] *= 1.5 
+            # -----------------------------------
+            
             # We need to find the top-K candidates ACROSS current beams?
             # Standard beam search: expand all, then prune to K
             

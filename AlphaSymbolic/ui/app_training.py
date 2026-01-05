@@ -479,6 +479,15 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                             pred_formula = "Search Empty (No Tokens)"
                         else:
                             pred_formula = res[0]['formula']
+                            
+                        # Detect Looping (e.g. "10 / / / / / /")
+                        # Basic heuristic: check if last 10 chars contain > 80% same char or repeating pattern
+                        if len(pred_formula) > 20:
+                            # Check for repeating slashes or other single chars
+                            if pred_formula.count('/') > 10 and pred_formula.endswith('/ .'): 
+                                 pred_formula = pred_formula[:20] + " ... [Loop Detected]"
+                            elif " / / / " in pred_formula:
+                                 pred_formula = pred_formula.split(" / / / ")[0] + " ... [Loop Detected]"
                         
                         add_training_error(
                             target=target_formulas[i],

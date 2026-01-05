@@ -76,7 +76,8 @@ def reproduce():
     
     x_val = np.linspace(-5, 5, 10).astype(np.float64)
     
-    bs = BeamSearch(model, device, beam_width=1, max_length=20)
+    # Use stage 0 (Arithmetic) mask if tested model is pre-trained
+    bs = BeamSearch(model, device, beam_width=1, max_length=20, curriculum_stage=0)
     
     for name, func in cases:
         print(f"\nTesting Case: {name}")
