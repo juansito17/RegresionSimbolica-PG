@@ -287,7 +287,8 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         data_gen = DataGenerator(max_depth=current_depth)
         
         # MCTS for A100: Increase batch size and simulations significantly
-        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=256)
+        # Adjusted for RTX 3050/i5: Batch 64 is smoother (less CPU wait)
+        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64)
         
         rmses = []
         losses = []
@@ -361,11 +362,22 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                     continue
             
             # Training phase
+            # To saturate GPU: Increase batch size and number of updates
             if len(replay_buffer) >= 64:
                 MODEL.train()
-                # Train multiple steps per iteration to learn efficiently
-                for _ in range(4):
-                    batch = random.sample(list(replay_buffer), min(64, len(replay_buffer)))
+                
+                # Dynamic training steps: Train more if we have more data
+                # AlphaZero ratio usually high (e.g. 10 epochs on new data)
+                # Here we sample from buffer.
+                train_batch_size = 128
+                if len(replay_buffer) < train_batch_size:
+                    train_batch_size = 64
+                
+                # Steps: roughly cover 20% of buffer or at least 10 steps
+                steps = max(10, min(50, len(replay_buffer) // train_batch_size))
+                
+                for _ in range(steps):
+                    batch = random.sample(list(replay_buffer), min(train_batch_size, len(replay_buffer)))
                     
                     x_list = [exp['x'] for exp in batch]
                     y_list = [exp['y'] for exp in batch]

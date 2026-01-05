@@ -72,85 +72,145 @@ class DataGenerator:
             
         return data
 
+    def generate_structured_tree(self, complexity=1, input_node='x'):
+        """
+        Recursively builds a structured, human-like formula.
+        complexity: Level of nesting/combination (1=Basic, 3=Complex)
+        input_node: The token representing the input (default 'x', or a subtree)
+        """
+        # Base cases
+        if complexity <= 0:
+            return input_node if isinstance(input_node, list) else [input_node]
+            
+        # Types of structures we can build
+        structures = ['poly', 'trig', 'exp_log', 'arithmetic', 'composition']
+        # Weights depend on complexity? 
+        # For low complexity, prefer poly/trig. For high, prefer composition/arithmetic.
+        choice = random.choice(structures)
+        
+        if choice == 'poly':
+            # a*x + b or a*x^2 + b
+            a = str(random.randint(1, 5))
+            b = str(random.randint(-5, 5))
+            power = random.choice(['1', '2', '3'])
+            if power == '1':
+                # a*x + b -> ['+', '*', a, input, b]
+                term = ['*', a] + (input_node if isinstance(input_node, list) else [input_node])
+                return ['+', ] + term + [b]
+            else:
+                # a*x^n + b
+                # pow(x, n)
+                base = input_node if isinstance(input_node, list) else [input_node]
+                pow_term = ['pow'] + base + [power]
+                term = ['*', a] + pow_term
+                return ['+', ] + term + [b]
+                
+        elif choice == 'trig':
+            # sin(input) or cos(input)
+            func = random.choice(['sin', 'cos'])
+            val = input_node if isinstance(input_node, list) else [input_node]
+            return [func] + val
+            
+        elif choice == 'exp_log':
+            # exp(input) or log(abs(input))
+            # Only if allowed? We assume all are allowed for "Smart" mode.
+            func = random.choice(['exp']) # safe ones
+            val = input_node if isinstance(input_node, list) else [input_node]
+            return [func] + val
+            
+        elif choice == 'arithmetic':
+            # f(x) op g(x)
+            # Reduce complexity for children to avoid explosion
+            left = self.generate_structured_tree(complexity - 1, input_node)
+            right = self.generate_structured_tree(complexity - 1, input_node)
+            op = random.choice(['+', '-', '*']) # Limit to safe ops
+            return [op] + left + right
+            
+        elif choice == 'composition':
+            # f(g(x))
+            inner = self.generate_structured_tree(complexity - 1, input_node)
+            outer = self.generate_structured_tree(1, inner) # Outer is simple wrapper
+            return outer
+            
+        return [input_node]
+
     def generate_inverse_batch(self, batch_size, point_count=10, x_range=(-5, 5)):
         """
-        Inverse data generation (AlphaTensor-style):
-        Generate KNOWN formulas with guaranteed solutions.
-        This helps the model learn from solvable problems first.
+        Generates complex, structured formulas using the new engine.
         """
         data = []
+        attempts = 0
         
-        # Known formula templates with their token representations
-        templates = [
-            # Linear: a*x + b
-            lambda a, b: (['+', '*', str(a), 'x', str(b)], f"({a}*x + {b})"),
-            # Quadratic: a*x^2 + b
-            lambda a, b: (['+', '*', str(a), 'pow', 'x', '2', str(b)], f"({a}*x^2 + {b})"),
-            # Simple sin: sin(x)
-            lambda a, b: (['sin', 'x'], "sin(x)"),
-            # Scaled sin: a*sin(x)
-            lambda a, b: (['*', str(a), 'sin', 'x'], f"{a}*sin(x)"),
-            # Exponential: exp(x/a)
-            lambda a, b: (['exp', '/', 'x', str(max(1, abs(a)))], f"exp(x/{max(1, abs(a))})"),
-            # Square root: sqrt(x + a) 
-            lambda a, b: (['sqrt', '+', 'x', str(abs(a)+1)], f"sqrt(x+{abs(a)+1})"),
-            # Polynomial: x^2 - a
-            lambda a, b: (['-', 'pow', 'x', '2', str(a)], f"(x^2 - {a})"),
-            # Cosine
-            lambda a, b: (['cos', 'x'], "cos(x)"),
-        ]
-        
-        while len(data) < batch_size:
-            # Random coefficients (small integers for stability)
-            a = random.randint(1, 5)
-            b = random.randint(-3, 3)
-            
-            # Pick random template
-            template = random.choice(templates)
+        while len(data) < batch_size and attempts < batch_size * 5:
+            attempts += 1
+            # Random complexity 1 to 3
+            complexity = random.randint(1, 3)
             
             try:
-                tokens, formula_str = template(a, b)
+                tokens = self.generate_structured_tree(complexity, 'x')
                 
-                # Convert string numbers -> 'C'
+                # Convert numeric strings to 'C' placeholders if needed
+                # But here we want the GROUND TRUTH tokens with numbers for checking?
+                # The model predicts tokens. 'C' is for optimization.
+                # If we train "End-to-End" (predict 3*x), we keep numbers.
+                # If we train "Symbolic" (predict C*x), we swap.
+                # The original code swapped numbers to 'C'. Let's check VOCABULARY.
+                # '1','2','3' are in VOCABULARY. So we can keep small integers.
+                # Large integers -> 'C'.
+                
                 final_tokens = []
                 for t in tokens:
-                    if t in VOCABULARY:
+                    if t in self.vocab:
                         final_tokens.append(t)
                     else:
-                        final_tokens.append('C')
-                
-                # --- DATA AUGMENTATION (AlphaTensor Style) ---
-                # Apply mathematical invariances (Commutativity, etc.)
-                # This multiplies the effective dataset size
-                if random.random() < 0.5:
+                        # If it's a number not in vocab, map to C?
+                        # Or just nearest constant?
+                        # For now, simplistic mapping:
+                        try:
+                            val = float(t)
+                            if abs(val - round(val)) < 0.01 and str(int(round(val))) in self.vocab:
+                                final_tokens.append(str(int(round(val))))
+                            else:
+                                final_tokens.append('C')
+                        except:
+                            final_tokens.append('C')
+
+                # --- DATA AUGMENTATION ---
+                if random.random() < 0.3:
                     final_tokens = augment_formula_tokens(final_tokens)
-                # ---------------------------------------------
+                # -------------------------
                 
                 tree = ExpressionTree(final_tokens)
                 if not tree.is_valid:
                     continue
                 
-                # Generate X points (positive for sqrt/log safety)
-                if 'sqrt' in final_tokens or 'log' in final_tokens:
-                    x_values = np.linspace(0.5, x_range[1], point_count)
-                else:
-                    x_values = np.linspace(x_range[0], x_range[1], point_count)
+                # Check constraints (depth, length)
+                if len(final_tokens) > 30: # Limit length
+                    continue
+
+                # Generate X points
+                # Use safer range for complex funcs
+                x_safe = np.linspace(x_range[0], x_range[1], point_count)
+                if 'log' in final_tokens or 'sqrt' in final_tokens:
+                    x_safe = np.linspace(0.1, x_range[1], point_count)
                 
-                y_values = tree.evaluate(x_values)
+                y_values = tree.evaluate(x_safe)
                 
-                # Validity checks
+                # Quality Control
                 if np.any(np.isnan(y_values)) or np.any(np.isinf(y_values)):
                     continue
-                if np.max(np.abs(y_values)) > 1e6:
+                if np.max(np.abs(y_values)) > 1e4: # Relaxed limit
+                    continue
+                if np.std(y_values) < 0.01: # Too flat
                     continue
                 
                 data.append({
                     'tokens': final_tokens,
                     'infix': tree.get_infix(),
-                    'x': x_values,
+                    'x': x_safe,
                     'y': y_values
                 })
-            except:
+            except Exception:
                 continue
                 
         return data

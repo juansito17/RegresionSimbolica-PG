@@ -63,7 +63,7 @@ def create_app():
                                 label="Metodo de Busqueda"
                             )
                         
-                        beam_slider = gr.Slider(5, 50, value=15, step=5, label="Beam Width / Simulaciones")
+                        beam_slider = gr.Slider(5, 500, value=50, step=5, label="Beam Width / Simulaciones")
                         
                         solve_btn = gr.Button("Buscar Formula", variant="primary", size="lg")
                         
@@ -156,7 +156,7 @@ def create_app():
                         with gr.Row():
                             with gr.Column():
                                 iterations_sp = gr.Slider(10, 1000, value=100, step=10, label="Iteraciones")
-                                problems_sp = gr.Slider(5, 50, value=10, step=5, label="Problemas/Iter")
+                                problems_sp = gr.Slider(5, 200, value=10, step=5, label="Problemas/Iter")
                                 points_sp = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
                                 train_sp_btn = gr.Button("Iniciar Self-Play", variant="primary")
                             with gr.Column():
