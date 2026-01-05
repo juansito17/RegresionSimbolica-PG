@@ -292,7 +292,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         
         from search.mcts import MCTS
         
-        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=5e-5, weight_decay=0.01)
         # Scheduler: Reduce LR when plateauing to help convergence
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=15, min_lr=1e-6)
         
