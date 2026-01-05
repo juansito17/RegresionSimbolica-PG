@@ -15,7 +15,10 @@ class GPEngine:
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             possible_paths = [
                 os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP.exe"),
-                os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP.exe")
+                os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP.exe"),
+                # Linux/Mac support (no .exe)
+                os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP"),
+                os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP")
             ]
             self.binary_path = None
             for p in possible_paths:
