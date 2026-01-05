@@ -2,7 +2,7 @@ import math
 import numpy as np
 import torch
 import copy
-from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES
+from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES, OPERATOR_STAGES
 from utils.optimize_constants import optimize_constants
 
 class MCTSNode:
@@ -44,7 +44,7 @@ class MCTSNode:
         return len(self.tokens)
 
 class MCTS:
-    def __init__(self, model, device, grammar=None, c_puct=1.0, n_simulations=100, max_simulations=None, max_depth=50, complexity_lambda=0.1, max_len=200, batch_size=8):
+    def __init__(self, model, device, grammar=None, c_puct=1.0, n_simulations=100, max_simulations=None, max_depth=50, complexity_lambda=0.1, max_len=200, batch_size=8, curriculum_stage=None):
         self.model = model
         self.device = device
         self.grammar = grammar
@@ -65,11 +65,33 @@ class MCTS:
         self.sos_id = self.vocab_size
         self.batch_size = batch_size
         
+        # Curriculum stage for operator filtering
+        self.curriculum_stage = curriculum_stage
+        self._build_allowed_tokens()
+        
         # Pareto Front: List of {'tokens':, 'rmse':, 'complexity':, 'formula':}
         self.pareto_front = []
         
         # Virtual loss constant usually 1-3
         self.v_loss_const = 3.0
+    
+    def _build_allowed_tokens(self):
+        """Build set of allowed token indices based on curriculum stage."""
+        # Terminals are always allowed
+        allowed = {'x', 'C', '0', '1', '2', '3', '5', '10', 'pi', 'e'}
+        
+        # Add operators based on curriculum stage
+        if self.curriculum_stage is not None and self.curriculum_stage in OPERATOR_STAGES:
+            allowed.update(OPERATOR_STAGES[self.curriculum_stage])
+        else:
+            # No stage = all operators allowed
+            allowed.update(OPERATORS.keys())
+        
+        # Convert to indices
+        self.allowed_token_indices = set()
+        for token in allowed:
+            if token in TOKEN_TO_ID:
+                self.allowed_token_indices.add(TOKEN_TO_ID[token])
         
     def search(self, x_values, y_values, num_simulations=None):
         """
@@ -333,7 +355,7 @@ class MCTS:
         return values
 
     def _get_valid_next_tokens(self, tokens):
-        """Simple grammar check."""
+        """Grammar check + curriculum filtering."""
         open_slots = 1
         for t in tokens:
             if t in OPERATORS:
@@ -343,7 +365,9 @@ class MCTS:
         
         if open_slots <= 0:
             return []
-        return list(range(self.vocab_size))
+        
+        # Filter by curriculum-allowed tokens
+        return list(self.allowed_token_indices)
 
     def _is_complete_tree(self, tokens):
         if not tokens: return False

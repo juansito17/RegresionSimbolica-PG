@@ -3,7 +3,22 @@ import subprocess
 import tempfile
 import re
 import time
+import sys
 from typing import List, Optional
+
+# Windows: Disable crash dialog boxes for child processes
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+        SEM_NOGPFAULTERRORBOX = 0x0002
+        SEM_FAILCRITICALERRORS = 0x0001
+        SEM_NOOPENFILEERRORBOX = 0x8000
+        ctypes.windll.kernel32.SetErrorMode(
+            SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+        )
+    except Exception:
+        pass  # Silently ignore if ctypes fails
 
 class GPEngine:
     def __init__(self, binary_path=None):
@@ -100,11 +115,25 @@ class GPEngine:
             cmd = [self.binary_path, "--seed", seed_file_path, "--data", data_file_path]
             print(f"Running GP Engine: {' '.join(cmd)}")
             
-            # Capture output
-            # We can't strictly enforce timeout via subprocess.run's timeout argument easily if we want partial results?
-            # Actually we can.
+            # Windows-specific: Hide console window and suppress error dialogs
+            startupinfo = None
+            creationflags = 0
+            if os.name == 'nt':  # Windows
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                # CREATE_NO_WINDOW + Don't show error dialogs
+                creationflags = subprocess.CREATE_NO_WINDOW | 0x08000000  # CREATE_NO_WINDOW | SEM_NOGPFAULTERRORBOX
+            
             start_time = time.time()
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=timeout_sec,
+                startupinfo=startupinfo,
+                creationflags=creationflags
+            )
             
             output = result.stdout
             

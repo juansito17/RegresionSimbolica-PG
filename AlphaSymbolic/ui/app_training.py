@@ -315,10 +315,13 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         
         # MCTS for A100: Increase batch size and simulations significantly
         # Adjusted for RTX 3050/i5: Batch 64 is smoother (less CPU wait)
-        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64)
+        # Initialize with Stage 0 (Arithmetic only)
+        curriculum_stage = 0
+        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage)
         
         rmses = []
         losses = []
+        total_gp_corrections = 0  # Track GP expert corrections
         best_avg_rmse = float('inf')
         
         start_time = time.time()
@@ -355,10 +358,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 {'depth': 5, 'ops': None} # All
             ]
             
-            # Initialize state if not present
-            if 'curriculum_stage' not in locals():
-                curriculum_stage = 0
-            
+
             recent_rmse = np.mean(rmses[-20:]) if len(rmses) >= 20 else 1.0
             
             # Graduation condition: RMSE < 0.1 stable
@@ -366,13 +366,15 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 curriculum_stage += 1
                 stage_info = CURRICULUM_LEVELS[curriculum_stage]
                 data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                # Recreate MCTS with new curriculum stage for operator filtering
+                searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage)
                 print(f"*** Curriculum Level Up! Stage {curriculum_stage} ({stage_info['depth']}, {stage_info['ops']}) ***")
                 # Clear buffer to avoid training on old easy data? Maybe keep some for replay.
             
             # Ensure data_gen is initialized at start
             if iteration == 0:
-                 stage_info = CURRICULUM_LEVELS[0]
-                 data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                stage_info = CURRICULUM_LEVELS[0]
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
 
             stage_name = ["Arithmetic", "Polynomials", "Trigonometry", "Advanced", "Complex"][curriculum_stage]
             
@@ -510,35 +512,116 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 print(f"HoS Outer Error: {e}")
                 traceback.print_exc()
 
-            # --- MCTS SOLVE ---
+            # --- MCTS SOLVE + GP EXPERT CORRECTION ---
+            gp_corrections = 0
+            nn_successes = 0
+            
             for prob in selected_problems:
                 x_data = prob['x'].astype(np.float64)
                 y_data = prob['y'].astype(np.float64)
+                target_tokens = prob.get('tokens', [])  # Known answer for inverse problems
                 
                 try:
-                    # Use MCTS to find the solution (or improve upon it)
-                    # For inverse problems, we KNOW the solution, but MCTS helps explore variations
-                    # and generates the policy distribution we want to learn.
+                    # 1. Neural Network attempts to solve
                     result = searcher.search(x_data, y_data)
+                    nn_rmse = result.get('rmse', float('inf'))
                     
-                    # 1. Store Training Examples
-                    if 'root' in result:
-                        examples = searcher.get_training_examples(result['root'])
-                        for (tokens, policy, value) in examples:
-                            replay_buffer.append({
-                                'x': x_data, 'y': y_data,
-                                'tokens': tokens,
-                                'policy': policy,
-                                'value': value
-                            })
+                    # 2. Check if NN succeeded or failed
+                    NN_SUCCESS_THRESHOLD = 0.1  # RMSE threshold for "good enough"
                     
-                    # 2. Track Metrics
-                    if result.get('tokens'):
-                        rmses.append(result['rmse'])
+                    if nn_rmse < NN_SUCCESS_THRESHOLD:
+                        # NN succeeded - store its examples
+                        nn_successes += 1
+                        if 'root' in result:
+                            examples = searcher.get_training_examples(result['root'])
+                            for (tokens, policy, value) in examples:
+                                replay_buffer.append({
+                                    'x': x_data, 'y': y_data,
+                                    'tokens': tokens,
+                                    'policy': policy,
+                                    'value': value,
+                                    'source': 'NN'
+                                })
+                        rmses.append(nn_rmse)
+                    else:
+                        # 3. NN FAILED - GP Engine to the rescue!
+                        # Use hybrid_solve with short timeout for speed
+                        try:
+                            gp_result = hybrid_solve(
+                                x_data, y_data, MODEL, DEVICE,
+                                beam_width=20,  # Small beam for speed
+                                gp_timeout=5    # Short timeout
+                            )
+                            
+                            if gp_result and gp_result.get('formula'):
+                                # Convert GP formula to tokens
+                                tree = ExpressionTree.from_infix(gp_result['formula'])
+                                if tree.is_valid and tree.tokens:
+                                    # Calculate actual RMSE of GP solution
+                                    y_pred = tree.evaluate(x_data)
+                                    gp_rmse = np.sqrt(np.mean((y_pred - y_data)**2))
+                                    
+                                    # Only use GP solution if it's actually good
+                                    if gp_rmse < 0.15 and len(tree.tokens) <= 30:
+                                        # Sanitize tokens: replace numeric constants NOT in vocab with 'C'
+                                        # GP outputs numbers like '7.80207885' which aren't in TOKEN_TO_ID
+                                        sanitized_tokens = []
+                                        for t in tree.tokens:
+                                            if t in TOKEN_TO_ID:
+                                                sanitized_tokens.append(t)
+                                            else:
+                                                # Try to parse as float - if it is, replace with 'C'
+                                                try:
+                                                    float(t)
+                                                    sanitized_tokens.append('C')
+                                                except ValueError:
+                                                    # Unknown token - skip this formula
+                                                    sanitized_tokens = None
+                                                    break
+                                        
+                                        if sanitized_tokens and len(sanitized_tokens) > 0:
+                                            # Create "expert" policy - uniform over tokens
+                                            # This teaches the model the correct sequence
+                                            policy = np.ones(len(VOCABULARY)) / len(VOCABULARY)
+                                            
+                                            replay_buffer.append({
+                                                'x': x_data, 'y': y_data,
+                                                'tokens': sanitized_tokens,
+                                                'policy': policy,
+                                                'value': max(0.5, 1.0 - gp_rmse),  # Higher value for better GP solutions
+                                                'source': 'GP_EXPERT'
+                                            })
+                                            gp_corrections += 1
+                                            rmses.append(gp_rmse)
+                                            
+                                            # Also add as supervised training example (CrossEntropy)
+                                            # This is the key learning signal!
+                                            print(f"📚 GP Expert: {gp_result['formula'][:50]}... (RMSE: {gp_rmse:.4f})")
+                        except Exception as gp_err:
+                            # GP failed too - skip this problem
+                            pass
+                        
+                        # Also store NN failure for learning (lower value)
+                        if 'root' in result and result.get('tokens'):
+                            examples = searcher.get_training_examples(result['root'])
+                            for (tokens, policy, value) in examples:
+                                replay_buffer.append({
+                                    'x': x_data, 'y': y_data,
+                                    'tokens': tokens,
+                                    'policy': policy,
+                                    'value': max(0.0, 0.3 - nn_rmse * 0.1),  # Low value for bad solutions
+                                    'source': 'NN_FAIL'
+                                })
+                            rmses.append(nn_rmse)
                         
                 except Exception as e:
                     print(f"Self-play error: {e}")
                     continue
+            
+            # Log progress
+            if gp_corrections > 0:
+                total_gp_corrections += gp_corrections
+                print(f"🎯 Iteration {iteration+1}: NN Success: {nn_successes}, GP Corrections: {gp_corrections}")
             
             # Training phase
             # To saturate GPU: Increase batch size and number of updates
@@ -632,17 +715,22 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         fig = create_selfplay_plot(losses, rmses)
         
         avg_rmse = np.mean(rmses[-50:]) if rmses else 0
+        gp_pct = (total_gp_corrections / max(1, len(rmses))) * 100
         result = f"""
         <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 15px; border: 2px solid #ff6b6b;">
-            <h2 style="color: #ff6b6b; margin: 0;">Self-Play Completado</h2>
+            <h2 style="color: #ff6b6b; margin: 0;">Self-Play + GP Expert Completado</h2>
             <p style="color: white;">Iteraciones: {int(iterations)} | Problemas: {len(rmses)}</p>
             <p style="color: #888;">RMSE Promedio: {avg_rmse:.4f} | Dispositivo: {DEVICE.type.upper()}</p>
+            <p style="color: #4ade80;">📚 Correcciones GP Expert: {total_gp_corrections} ({gp_pct:.1f}% de problemas)</p>
         </div>
         """
         return result, fig
         
     except Exception as e:
         TRAINING_STATUS["running"] = False
+        import traceback
+        print(f"Self-play error traceback:")
+        traceback.print_exc()
         return f"Error: {str(e)}", None
 
 
@@ -720,11 +808,20 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
         VOCAB_SIZE = len(VOCABULARY)
         SOS_ID = VOCAB_SIZE
         
-        # Start extremely simple (Depth 1: x+1, x*x, etc.)
-        allowed_ops = OPERATOR_STAGES[0]
-        data_gen = DataGenerator(max_depth=1, allowed_operators=allowed_ops) 
-        allowed_mask = get_allowed_token_mask(0, VOCAB_SIZE, DEVICE) # Stage 0 mask
+        # Progressive Curriculum Stages for Pre-training
+        PRE_CURRICULUM = [
+            {'depth': 1, 'ops': ['+', '-', '*', '/'], 'stage': 0},           # 0-20%: Very basic
+            {'depth': 2, 'ops': ['+', '-', '*', '/'], 'stage': 0},           # 20-40%: Deeper arithmetic
+            {'depth': 2, 'ops': ['+', '-', '*', '/', 'pow', 'sqrt'], 'stage': 1},  # 40-60%: Powers
+            {'depth': 3, 'ops': ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos'], 'stage': 2},  # 60-80%: Trig
+            {'depth': 3, 'ops': None, 'stage': None},  # 80-100%: All ops
+        ]
+        
         losses = []
+        current_stage_idx = 0
+        stage_info = PRE_CURRICULUM[0]
+        data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+        allowed_mask = get_allowed_token_mask(stage_info['stage'] if stage_info['stage'] is not None else 4, VOCAB_SIZE, DEVICE)
         
         start_time = time.time()
         
@@ -733,6 +830,20 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
             if should_stop_training():
                 print("⏹️ Pre-training stopped by user")
                 break
+            
+            # Progressive curriculum: change stage based on progress
+            progress_pct = i / int(iterations)
+            new_stage_idx = min(int(progress_pct * 5), 4)  # 0-4 based on 20% increments
+            
+            if new_stage_idx != current_stage_idx:
+                current_stage_idx = new_stage_idx
+                stage_info = PRE_CURRICULUM[current_stage_idx]
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                stage_id = stage_info['stage'] if stage_info['stage'] is not None else 4
+                allowed_mask = get_allowed_token_mask(stage_id, VOCAB_SIZE, DEVICE)
+                stage_name = ['Arithmetic', 'Polynomials', 'Trigonometry', 'Advanced', 'Complex'][new_stage_idx]
+                print(f"📚 Pre-training: {stage_name} (depth={stage_info['depth']})")
+            
             # ETA
             elapsed = time.time() - start_time
             if i > 0:
@@ -744,7 +855,8 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
                 eta_str = "..."
                 
             current_lr = optimizer.param_groups[0]['lr']
-            msg = f"Iter {i+1}/{int(iterations)} Loss:{np.mean(losses[-50:]) if losses else 0:.3f} LR:{current_lr:.1e} ETA:{eta_str}"
+            stage_name = ['Arithmetic', 'Polynomials', 'Trigonometry', 'Advanced', 'Complex'][current_stage_idx]
+            msg = f"[{stage_name}] Iter {i+1}/{int(iterations)} Loss:{np.mean(losses[-50:]) if losses else 0:.3f} LR:{current_lr:.1e} ETA:{eta_str}"
             progress((i + 1) / iterations, desc=msg)
             
             # Generate Random Batch (High Speed)
@@ -775,8 +887,7 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
             optimizer.zero_grad()
             logits, _ = MODEL(x_tensor, y_tensor, decoder_input)
             
-            # Apply Stage 0 mask to bridge Pre-training with Curriculum
-            # Use a more stable value (-1e4 instead of -1e9) to avoid overflow
+            # Apply curriculum mask to prevent learning tokens not yet introduced
             logits = logits + (1 - allowed_mask.view(1, 1, -1)) * -1e4
             
             loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
