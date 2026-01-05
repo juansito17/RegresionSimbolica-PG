@@ -140,8 +140,16 @@ class GPEngine:
 
         except subprocess.TimeoutExpired as e:
             print(f"GP Engine timed out after {timeout_sec}s.")
-            # Recover output captured so far
+            # Recover output captured so far. 
+            # Note: TimeoutExpired.stdout/stderr might be bytes even if text=True was passed to subprocess.run.
             output = e.stdout if e.stdout else ""
+            if isinstance(output, bytes):
+                output = output.decode('utf-8', errors='ignore')
+            
+            error_output = e.stderr if e.stderr else ""
+            if isinstance(error_output, bytes):
+                error_output = error_output.decode('utf-8', errors='ignore')
+
             best_formula = None
             if output:
                 for line in output.splitlines():
@@ -159,9 +167,8 @@ class GPEngine:
                 print(f"Recovered best formula from timeout: {best_formula}")
                 return best_formula
             
-            # Print stderr for timeout diagnose
-            if e.stderr:
-                 print(f"GP Engine Timeout Stderr: {e.stderr}")
+            if error_output:
+                 print(f"GP Engine Timeout Stderr: {error_output}")
             return None
 
         except Exception as e:
