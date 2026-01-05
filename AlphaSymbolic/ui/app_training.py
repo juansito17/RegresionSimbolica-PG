@@ -15,6 +15,8 @@ from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES
 from data.synthetic_data import DataGenerator
 from ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
 from core.loss import QuantileLoss
+from search.hybrid_search import hybrid_solve
+from core.grammar import ExpressionTree, simplify_formula
 
 
 def get_allowed_token_mask(stage, vocab_size, device):
@@ -807,3 +809,222 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
     except Exception as e:
         TRAINING_STATUS["running"] = False
         return f"Error: {str(e)}", None
+
+
+def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, progress=gr.Progress()):
+    """
+    Teacher-Student Distillation Loop.
+    1. Find problems where model has high loss.
+    2. Use Hybrid Search (GP) to solve them.
+    3. Train model on GP solutions.
+    """
+    global TRAINING_STATUS
+    
+    if TRAINING_STATUS["running"]:
+        return "Entrenamiento ya en progreso", None
+    
+    TRAINING_STATUS["running"] = True
+    reset_stop_flag()
+    
+    try:
+        MODEL, DEVICE = get_model()
+        
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=5e-5, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+        
+        VOCAB_SIZE = len(VOCABULARY)
+        SOS_ID = VOCAB_SIZE
+        
+        # Replay buffer for "Gold Standard" examples found by GP
+        replay_buffer = deque(maxlen=5000)
+        
+        # Start with simple problems and grow
+        data_gen = DataGenerator(max_depth=3)
+        
+        losses = []
+        gp_successes = 0
+        gp_attempts = 0
+        
+        start_time = time.time()
+        
+        for iteration in range(int(iterations)):
+            if should_stop_training():
+                print("⏹️ Feedback Loop stopped")
+                break
+                
+            elapsed = time.time() - start_time
+            # eta_str = f"{(int(iterations)-iteration) * (elapsed/(iteration+1) if iteration>0 else 0):.0f}s"
+            iter_dur = elapsed/(iteration+1) if iteration > 0 else 0
+            eta_seconds = (int(iterations)-iteration) * iter_dur
+            eta_str = f"{eta_seconds:.0f}s"
+
+            progress((iteration + 1) / iterations, 
+                     desc=f"Iter {iteration+1}/{int(iterations)} | GP Success: {gp_successes}/{gp_attempts} | Loss: {np.mean(losses[-10:]) if losses else 0:.3f}")
+            
+            # --- PHASE 1: HARD MINING ---
+            MODEL.eval()
+            
+            # Generate candidates
+            pool_size = 50 
+            candidates = data_gen.generate_inverse_batch(pool_size, point_count=10)
+            
+            hard_problems = []
+            
+            with torch.no_grad():
+                # We want to find problems with HIGH LOSS (model failure)
+                # Quick batch forward
+                x_list = [d['x'] for d in candidates]
+                y_list = [d['y'] for d in candidates]
+                x_list, y_list = normalize_batch(x_list, y_list)
+                
+                token_lists = [[TOKEN_TO_ID.get(t, TOKEN_TO_ID['C']) for t in d['tokens']] for d in candidates]
+                max_len = max(len(s) for s in token_lists)
+                
+                dec_in = torch.full((pool_size, max_len + 1), SOS_ID, dtype=torch.long).to(DEVICE)
+                targets = torch.full((pool_size, max_len + 1), -1, dtype=torch.long).to(DEVICE)
+                
+                for j, seq in enumerate(token_lists):
+                    dec_in[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
+                    targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+                    
+                x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+                y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+                
+                logits, value_pred = MODEL(x_tensor, y_tensor, dec_in)
+                
+                loss_f = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction='none')
+                raw_losses = loss_f(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+                raw_losses = raw_losses.view(pool_size, -1)
+                
+                mask = (targets != -1)
+                sample_losses = (raw_losses * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+                
+                # Filter: Keep if loss > 1.0 (arbitrary threshold for "confused")
+                for j, loss_val in enumerate(sample_losses):
+                    if loss_val.item() > 0.5: # Lower threshold to catch more
+                        hard_problems.append(candidates[j])
+            
+            # Take top K hardest
+            # Limit GP calls per iter to avoid slowness
+            problems_to_solve = hard_problems[:int(problems_per_iter)]
+            
+            if not problems_to_solve:
+                continue
+
+            # --- PHASE 2: TEACHER SOLVES (GP) ---
+            print(f"Iter {iteration}: Asking Teacher to solve {len(problems_to_solve)} hard problems...")
+            
+            for prob in problems_to_solve:
+                gp_attempts += 1
+                try:
+                    # Run Hybrid Search (Quick Mode)
+                    # We pass the model so beam search can seed the GP
+                    res = hybrid_solve(
+                        prob['x'], 
+                        prob['y'], 
+                        MODEL, 
+                        DEVICE, 
+                        beam_width=10,     # Faster beam
+                        gp_timeout=gp_timeout,
+                        gp_binary_path=None 
+                    )
+                    
+                    if res and res.get('formula') and res.get('rmse', 1e6) < 0.01:
+                        # SUCCESS!
+                        gp_successes += 1
+                        
+                        # Parse formula to tokens
+                        try:
+                            # 1. Parse string to tree
+                            tree = ExpressionTree.from_infix(res['formula'])
+                            # 2. Get tokens
+                            tokens = tree.tokens
+                            
+                            replay_buffer.append({
+                                'x': prob['x'],
+                                'y': prob['y'],
+                                'tokens': tokens,
+                                'source': 'GP_Teacher'
+                            })
+                            
+                        except Exception as e:
+                            print(f"Failed to tokenize GP result: {e}")
+                            
+                except Exception as e:
+                    print(f"GP Hybrid Error: {e}")
+                    
+            # --- PHASE 3: STUDENT TRAINS (NN) ---
+            if len(replay_buffer) > 10:
+                MODEL.train()
+                # Train on batch from buffer
+                batch_size_train = min(len(replay_buffer), 64)
+                
+                # Multiple steps to enforce learning
+                steps = 5
+                
+                for _ in range(steps):
+                    batch = random.sample(list(replay_buffer), batch_size_train)
+                    
+                    x_list = [d['x'] for d in batch]
+                    y_list = [d['y'] for d in batch]
+                    x_list, y_list = normalize_batch(x_list, y_list)
+                    
+                    token_lists = [[TOKEN_TO_ID.get(t, TOKEN_TO_ID['C']) for t in d['tokens']] for d in batch]
+                    max_len = max(len(s) for s in token_lists)
+                    
+                    dec_in = torch.full((batch_size_train, max_len + 1), SOS_ID, dtype=torch.long).to(DEVICE)
+                    targets = torch.full((batch_size_train, max_len + 1), -1, dtype=torch.long).to(DEVICE)
+                    
+                    for j, seq in enumerate(token_lists):
+                        dec_in[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
+                        targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+                        
+                    x_t = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+                    y_t = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+                    dec_in = dec_in.to(DEVICE)
+                    targets = targets.to(DEVICE)
+                    
+                    optimizer.zero_grad()
+                    logits, value_pred = MODEL(x_t, y_t, dec_in)
+                    
+                    # Policy Loss only (Standard Supervised)
+                    # We trust the GP solution is "Correct" (Value=1.0)
+                    loss_ce = torch.nn.CrossEntropyLoss(ignore_index=-1)(logits.view(-1, VOCAB_SIZE+1), targets.view(-1))
+                    
+                    # Value Loss
+                    value_targets = torch.ones_like(value_pred) # GP solutions are always valid
+                    loss_val = torch.nn.functional.mse_loss(value_pred, value_targets)
+                    
+                    loss = loss_ce + 0.1 * loss_val
+                    
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
+                    optimizer.step()
+                    
+                    losses.append(loss.item())
+                    
+                scheduler.step(np.mean(losses[-10:]))
+                
+            if (iteration + 1) % 5 == 0:
+                save_model()
+                
+        save_model()
+        MODEL.eval()
+        TRAINING_STATUS["running"] = False
+        
+        fig = create_loss_plot(losses, "Feedback Loop Loss")
+        
+        result_html = f"""
+        <div style="background: linear-gradient(135deg, #2c3e50 0%, #000000 100%); padding: 20px; border-radius: 15px; border: 2px solid #f1c40f;">
+            <h2 style="color: #f1c40f; margin: 0;">Feedback Loop Completado</h2>
+            <p style="color: white;">Iteraciones: {iterations} | GP Success: {gp_successes}/{gp_attempts}</p>
+            <p style="color: #bbb;">Nuevos Ejemplos Generados: {len(replay_buffer)}</p>
+        </div>
+        """
+        return result_html, fig
+
+    except Exception as e:
+        TRAINING_STATUS["running"] = False
+        import traceback
+        traceback.print_exc()
+        return f"Error CRITICO: {str(e)}", None

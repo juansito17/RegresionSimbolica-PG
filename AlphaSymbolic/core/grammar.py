@@ -322,7 +322,46 @@ class ExpressionTree:
             return "Invalid"
         return self.root.to_infix()
     
+    
     def count_constants(self):
         if not self.is_valid:
             return 0
         return self.root.count_constants()
+
+import sympy
+
+def simplify_formula(formula_str):
+    """
+    Simplifies a mathematical formula using SymPy.
+    """
+    try:
+        # 1. Clean up C++ notation that sympy might not like directly
+        # e.g., 'pi' is fine. 'neg(x)' -> '-x'.
+        # But our infix is usually standard. 
+        # C++ 'pow(x,2)' might need conversion to 'x**2' or sympy handles it?
+        # Sympy uses 'Pow'. 
+        
+        # Replace common mismatches
+        s_str = formula_str.replace("pow(", "Pow(")
+        # s_str = s_str.replace("abs(", "Abs(") # Sympy handles abs
+        
+        # Parse
+        expr = sympy.sympify(s_str)
+        
+        # Simplify
+        simplified = sympy.simplify(expr)
+        
+        # Convert back to string
+        # We need to ensure it uses our function names (e.g. sin, cos)
+        # Sympy standard printer is usually good.
+        # But 'Power' is '**'. We used 'hat' or 'pow' in some places?
+        # Our tokenizer supports standard operators. 'x**2' is not standard infix for our parser?
+        # Our Parser supports 'x^2' or 'pow(x,2)'? 
+        # AST parser handles '**' -> 'pow'.
+        
+        final_str = str(simplified)
+        return final_str
+        
+    except Exception as e:
+        # Fallback if simplification fails (e.g. unknown functions)
+        return formula_str

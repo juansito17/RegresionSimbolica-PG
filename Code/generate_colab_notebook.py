@@ -274,7 +274,7 @@ globals_code = [
     "",
     "// Advanced Features",
     "const int STAGNATION_LIMIT_ISLAND = 50;",
-    "const int GLOBAL_STAGNATION_LIMIT = 5000;",
+    "const int GLOBAL_STAGNATION_LIMIT = 200;",
     "const double STAGNATION_RANDOM_INJECT_PERCENT = 0.1;",
     "const int PARAM_MUTATE_INTERVAL = 50;",
     "const double PATTERN_RECORD_FITNESS_THRESHOLD = 10.0;",

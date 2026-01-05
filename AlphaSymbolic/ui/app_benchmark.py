@@ -1,5 +1,6 @@
 import gradio as gr
 from utils.benchmark_comparison import run_comparison_benchmark
+from ui.app_core import get_model, DEVICE
 
 def get_benchmark_tab():
     with gr.Tab("🥇 Benchmark (IQ Test)"):

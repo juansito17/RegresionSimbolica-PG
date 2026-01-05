@@ -6,7 +6,7 @@ import gradio as gr
 import torch
 
 from ui.app_core import load_model, get_device, get_device_info, set_device, get_training_errors, request_stop_training
-from ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised
+from ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised, train_hybrid_feedback_loop
 from ui.app_search import solve_formula, generate_example
 from ui.app_benchmark import get_benchmark_tab
 
@@ -169,6 +169,25 @@ def create_app():
                                 result_sp = gr.HTML()
                                 plot_sp = gr.Plot()
                         train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
+                
+                    # Feedback Loop (Teacher-Student)
+                    with gr.Tab("Feedback Loop (Hybrid)"):
+                        gr.HTML('''
+                        <div style="background: #0f0f23; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 3px solid #f1c40f;">
+                            <p style="color: #f1c40f; margin: 0;"><strong>Teacher-Student Feedback Loop</strong></p>
+                            <p style="color: #888; margin: 5px 0 0 0;">El modelo (Estudiante) intenta resolver problemas. Si falla, el Alpha-GP (Maestro) interviene y añade la solución al dataset.</p>
+                        </div>
+                        ''')
+                        with gr.Row():
+                            with gr.Column():
+                                iterations_fb = gr.Slider(5, 500, value=20, step=5, label="Ciclos")
+                                problems_fb = gr.Slider(5, 50, value=10, step=5, label="Problemas Difíciles / Ciclo")
+                                timeout_fb = gr.Slider(5, 30, value=10, step=5, label="Timeout Maestro (s)")
+                                train_fb_btn = gr.Button("Iniciar Feedback Loop", variant="primary")
+                            with gr.Column():
+                                result_fb = gr.HTML()
+                                plot_fb = gr.Plot()
+                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb], [result_fb, plot_fb])
                 
                 # --- PRE-TRAINING (Warmup) ---
                 with gr.Accordion("🎓 Escuela Primaria (Pre-Entrenamiento)", open=False):
