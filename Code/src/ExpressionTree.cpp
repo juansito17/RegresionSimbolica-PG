@@ -51,7 +51,7 @@ double evaluate_tree(const NodePtr& node, double x) {
         case NodeType::Variable: return x;
         case NodeType::Operator: {
             // Determine arity
-            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
+            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u');
 
             double leftVal = evaluate_tree(node->left, x);
             double rightVal = 0.0;
@@ -84,6 +84,13 @@ double evaluate_tree(const NodePtr& node, double x) {
                         break;
                     case 's': result = std::sin(leftVal); break;
                     case 'c': result = std::cos(leftVal); break;
+                    case 't': result = std::tan(leftVal); break;
+                    case 'q': 
+                        // Protected Sqrt: sqrt(|x|)
+                        result = std::sqrt(std::abs(leftVal)); 
+                        break;
+                    case 'a': result = std::abs(leftVal); break;
+                    case 'n': result = (leftVal > 0) ? 1.0 : ((leftVal < 0) ? -1.0 : 0.0); break;
                     case 'l': 
                         // Protected Log: log(|x|)
                         if (std::abs(leftVal) <= 1e-9) return INF; 
@@ -95,15 +102,12 @@ double evaluate_tree(const NodePtr& node, double x) {
                         break;
                     case '!': 
                         // Protected Factorial/Gamma: tgamma(|x|+1)
-                        // Allow up to reasonable limit. 
-                        // |leftVal| to handle negatives.
-                        if (std::abs(leftVal) > 170.0) return INF; // Overflow check
+                        if (std::abs(leftVal) > 170.0) return INF; 
                         result = std::tgamma(std::abs(leftVal) + 1.0); 
                         break;
                     case '_': result = std::floor(leftVal); break;
+                    case 'u': result = std::ceil(leftVal); break; // 'u' for ceil (up)
                     case 'g':
-                        // Protected LGamma: lgamma(|x|+1)
-                        // Always defined for positive arguments.
                         result = std::lgamma(std::abs(leftVal) + 1.0); 
                         break;
                     default: return std::nan("");
@@ -128,16 +132,21 @@ std::string tree_to_string(const NodePtr& node) {
             std::string left_str = tree_to_string(left_node);
             
             // Check arity
-            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
+            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u');
 
             if (is_unary) {
                 switch(node->op) {
                     case 's': return "sin(" + left_str + ")";
                     case 'c': return "cos(" + left_str + ")";
+                    case 't': return "tan(" + left_str + ")";
+                    case 'q': return "sqrt(" + left_str + ")";
+                    case 'a': return "abs(" + left_str + ")";
+                    case 'n': return "sign(" + left_str + ")";
                     case 'l': return "log(" + left_str + ")";
                     case 'e': return "exp(" + left_str + ")";
                     case '!': return "(" + left_str + ")!"; // Postfix for factorial
                     case '_': return "floor(" + left_str + ")";
+                    case 'u': return "ceil(" + left_str + ")";
                     case 'g': return "lgamma(" + left_str + ")";
                     default: return "op(" + left_str + ")";
                 }
@@ -329,13 +338,60 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             continue;
         }
 
-        // --- B. Parsear Funciones Unarias (l, g, sin, cos, exp, log, lgamma, floor, gamma) ---
-        // Map of function names to their operator characters
+        // --- B. Parsear Funciones Unarias y Constantes ---
         std::unordered_map<std::string, char> func_map = {
-            {"sin", 's'}, {"cos", 'c'}, {"log", 'l'}, {"exp", 'e'},
-            {"floor", '_'}, {"lgamma", 'g'}, {"gamma", '!'}, 
-            {"l", 'l'}, {"g", 'g'}, {"e", 'e'}, {"s", 's'}, {"c", 'c'}
+            {"sin", 's'}, {"cos", 'c'}, {"tan", 't'}, 
+            {"log", 'l'}, {"exp", 'e'}, {"sqrt", 'q'},
+            {"floor", '_'}, {"ceil", '^'}, {"abs", 'a'}, {"sign", 'n'},
+            {"gamma", '!'}, {"lgamma", 'g'}, {"g", 'g'}
         };
+
+        // Special handling for Constants (pi, e, C)
+        if (token == 'C') {
+             if (last_token_was_operand) { // Implicit multiplication
+                 process_operators_by_precedence(get_precedence('*'));
+                 operator_stack.push('*');
+             }
+             auto node = std::make_shared<Node>(NodeType::Constant); 
+             // Default constant value (will be optimized later)
+             node->value = 1.0; 
+             // Mark it specifically as an optimizable constant in a way that clone/optimize respects?
+             // Actually, for C++ GP, usually constants are just numbers. 
+             // But if we want to preserve 'C' semantics:
+             // Let's treat 'C' as a special Variable? No, Variable is x.
+             // Let's just treat it as 1.0 for now, or use a special Op 'C'?
+             // The system typically optimizes *numeric* constants attached to nodes.
+             // If we parse 'C', we should probably parse it as a random constant?
+             // Or better, a Constant node with a placeholder value.
+             // Re-reading ExpressionTree.h might help, but let's stick to 1.0 for now.
+             operand_stack.push(node);
+             last_token_was_operand = true;
+             i++;
+             continue;
+        }
+        if (i + 1 < formula.length() && formula.substr(i, 2) == "pi") {
+             if (last_token_was_operand) {
+                 process_operators_by_precedence(get_precedence('*'));
+                 operator_stack.push('*');
+             }
+             auto node = std::make_shared<Node>(NodeType::Constant); node->value = 3.14159265359;
+             operand_stack.push(node);
+             last_token_was_operand = true;
+             i += 2;
+             continue;
+        }
+        if (token == 'e' && (i+1 >= formula.length() || formula[i+1] != 'x')) { // Check it's not 'exp'
+             // Handle 'e' constant
+             if (last_token_was_operand) {
+                 process_operators_by_precedence(get_precedence('*'));
+                 operator_stack.push('*');
+             }
+             auto node = std::make_shared<Node>(NodeType::Constant); node->value = 2.71828182846;
+             operand_stack.push(node);
+             last_token_was_operand = true;
+             i++;
+             continue;
+        }
         
         // Try to match function names (check longer names first)
         bool matched_func = false;

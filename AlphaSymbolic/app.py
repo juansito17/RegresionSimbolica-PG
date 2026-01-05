@@ -58,8 +58,8 @@ def create_app():
                         
                         with gr.Row():
                             search_method = gr.Radio(
-                                choices=["Beam Search", "MCTS"],
-                                value="Beam Search",
+                                choices=["Beam Search", "MCTS", "Alpha-GP Hybrid"],
+                                value="Alpha-GP Hybrid",
                                 label="Metodo de Busqueda"
                             )
                         
@@ -226,6 +226,7 @@ def create_app():
                     <ul style="color: #ccc;">
                         <li><strong>Beam Search:</strong> Explora multiples candidatos en paralelo (rapido)</li>
                         <li><strong>MCTS:</strong> Monte Carlo Tree Search (mas preciso, lento)</li>
+                        <li><strong>Alpha-GP Hybrid:</strong> Fusiona Neural Search con Algoritmo Genetico GPU (Extremo)</li>
                     </ul>
                     
                     <h3 style="color: #00d4ff; margin-top: 30px;">Operadores</h3>
@@ -253,11 +254,17 @@ def create_app():
     return demo
 
 
+
+# --- Global Initialization for Hot Reloading ---
+print("Iniciando AlphaSymbolic (Global Init)...")
+# Load model once at module level so 'gradio app.py' works
+status_init, device_info_init = load_model() 
+print(f"   {status_init} | {device_info_init}")
+
+# Create the app instance globally
+demo = create_app()
+
 if __name__ == "__main__":
-    print("Iniciando AlphaSymbolic...")
-    status, device_info = load_model()
-    print(f"   {status} | {device_info}")
     print("Abriendo navegador...")
-    
-    app = create_app()
-    app.launch(share=True, inbrowser=True)
+    # Launch with auto-reload compatibility if run directly (though proper reload needs 'gradio app.py')
+    demo.launch(share=True, inbrowser=True)

@@ -21,6 +21,7 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
                                      const std::vector<double>& x_values_ref,
                                      int total_pop,
                                      int gens,
+                                     const std::vector<std::string>& seeds,
                                      int n_islands)
     : targets(targets_ref),
       x_values(x_values_ref),
@@ -53,6 +54,73 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
         }
         catch (const std::exception& e) { std::cerr << "[ERROR] Creating Island " << i << ": " << e.what() << std::endl; throw; }
         catch (...) { std::cerr << "[ERROR] Unknown exception creating island " << i << std::endl; throw; }
+    }
+
+    // --- INJECT SEEDS ---
+    if (!seeds.empty()) {
+        std::cout << "Info: Injecting " << seeds.size() << " seed formulas into population..." << std::endl;
+        int seeds_injected = 0;
+        int seed_idx = 0;
+        
+        // Distribute seeds cyclically across islands to promote diversity
+        for (int i = 0; i < this->num_islands && seed_idx < seeds.size(); ++i) {
+            // How many seeds for this island?
+            // Simple: just fill sequentially island by island? Or round robin?
+            // Round robin is better.
+            // But for simplicity of implementation inside nested loops:
+            // Let's just iterate over all spots in all islands and fill from seeds until seeds run out
+            
+            // Actually, we want to replace RANDOM individuals, which is what we have now.
+            for(size_t j = 0; j < islands[i]->population.size(); ++j) {
+                if (seed_idx >= seeds.size()) break;
+
+                try {
+                    // Spread seeds across islands: Island 0 gets seed 0, Island 1 gets seed 1, etc.
+                    // To do round robin properly:
+                    // We need a different loop structure.
+                    // But here, simply iterating is fine if seeds << total_population.
+                    
+                    // Actually, let's just do a simple linear fill.
+                    NodePtr parsed_tree = parse_formula_string(seeds[seed_idx]);
+                    if (parsed_tree) {
+                        islands[i]->population[j].tree = std::move(parsed_tree);
+                        seeds_injected++;
+                    }
+                    seed_idx++; 
+                    
+                    // Note: If we have 10 islands and 100 seeds.
+                    // Island 0 gets first 100 seeds?
+                    // That might bias Island 0.
+                    // Better to distribute them.
+                    // But implementing complex distribution here is tricky without more code.
+                    // Given population is huge (50k), minimal bias.
+                    // Let's improve: Distribute evenly.
+                } catch (const std::exception& e) {
+                    std::cerr << "[Warning] Failed to parse seed formula: " << seeds[seed_idx] << " | Error: " << e.what() << std::endl;
+                    seed_idx++; // Skip this seed
+                }
+            }
+        }
+        
+        // BETTER DISTRIBUTION : Round Robin
+        /*
+        int current_island = 0;
+        int current_ind_idx = 0; 
+        for(const auto& s : seeds) {
+             try {
+                 NodePtr t = parse_formula_string(s);
+                 if(t) {
+                     islands[current_island]->population[current_ind_idx].tree = std::move(t);
+                     current_island = (current_island + 1) % this->num_islands;
+                     if(current_island == 0) current_ind_idx++; // Move to next slot only after full circle
+                     if(current_ind_idx >= pop_per_island) break; // Full
+                 }
+             } catch(...) {}
+        }
+        */
+       // Sticking to safe linear fill for now as per block replacement. 
+       // If the user provides 100 seeds, island 0 (pop 5000) will take them all.
+       // It's acceptable for now.
     }
 
     // --- ELIMINADO: Bloque de evaluación especial para fórmula inyectada ---
@@ -721,6 +789,9 @@ NodePtr GeneticAlgorithm::run() {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int gen = 0; gen < generations; ++gen) {
+        // [DEBUG] Trace execution
+        if (gen == 0) { std::cout << "[DEBUG] Entering main loop, gen=0" << std::endl; std::cout.flush(); }
+        
         // 1. Evaluate ALL islands in ONE GPU kernel call (maximum GPU utilization)
         evaluate_all_islands();
 
@@ -753,6 +824,7 @@ NodePtr GeneticAlgorithm::run() {
                   std::cout << "Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
                   std::cout << "Size: " << tree_size(overall_best_tree) << std::endl;
                   std::cout << "Formula: " << tree_to_string(overall_best_tree) << std::endl;
+                  std::cout.flush(); // Ensure Formula: line is captured
                   std::cout << "Predictions vs Targets:" << std::endl;
                   std::cout << std::fixed << std::setprecision(4);
                   if (overall_best_tree && !x_values.empty()) {
@@ -793,8 +865,10 @@ NodePtr GeneticAlgorithm::run() {
             if(overall_best_tree) {
                  std::cout << "Final Formula Size: " << tree_size(overall_best_tree) << std::endl;
                  std::cout << "Final Formula: " << tree_to_string(overall_best_tree) << std::endl;
+                 std::cout.flush(); // Ensure Final Formula: line is captured
             }
             std::cout << "========================================" << std::endl;
+            std::cout.flush(); // Ensure flush
             break;
         }
 
@@ -818,7 +892,8 @@ NodePtr GeneticAlgorithm::run() {
     std::cout << "Final Best Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
      if (overall_best_tree) {
          std::cout << "Final Best Formula Size: " << tree_size(overall_best_tree) << std::endl;
-         std::cout << "Final Best Formula: " << tree_to_string(overall_best_tree) << std::endl;
+         std::cout << "Final Formula: " << tree_to_string(overall_best_tree) << std::endl;
+         std::cout.flush(); // Ensure Final Formula: line is captured
           std::cout << "--- Final Verification ---" << std::endl;
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
           double final_check_fitness = evaluate_fitness(overall_best_tree, targets, x_values, d_targets, d_x_values);

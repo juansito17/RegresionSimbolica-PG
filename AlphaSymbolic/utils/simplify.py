@@ -51,6 +51,7 @@ def tree_to_sympy(node):
     if val == 'floor': return sp.floor(args[0])
     if val == 'ceil': return sp.ceiling(args[0])
     if val == 'gamma': return sp.gamma(args[0])
+    if val == 'lgamma': return sp.loggamma(args[0])  # SymPy's log-gamma
     if val == 'neg': return -args[0]
     
     return sp.Integer(0)
@@ -66,13 +67,24 @@ def simplify_tree(tree):
     if not tree.is_valid:
         return "Invalid"
     
+    original_infix = tree.get_infix()
+    
     try:
         sympy_expr = tree_to_sympy(tree.root)
         simplified = sp.simplify(sympy_expr)
-        return str(simplified)
+        result_str = str(simplified)
+        
+        # Validate: reject results containing invalid SymPy artifacts
+        # zoo = complex infinity, nan, oo = infinity
+        invalid_terms = ['zoo', 'nan', 'I*']  # I* indicates complex numbers
+        for term in invalid_terms:
+            if term in result_str:
+                return original_infix  # Fall back to original
+        
+        return result_str
     except Exception as e:
         # If simplification fails, return original
-        return tree.get_infix()
+        return original_infix
 
 def simplify_infix(infix_str):
     """

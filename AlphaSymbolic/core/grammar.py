@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.special import gamma as scipy_gamma
+from scipy.special import gamma as scipy_gamma, gammaln
 import math
 
 # Supported operators and their arity (number of arguments)
@@ -32,6 +32,7 @@ OPERATORS = {
     'ceil': 1,
     'mod': 2,
     'gamma': 1,
+    'lgamma': 1,  # Log-gamma function (from C++ GP engine)
 }
 
 # Operator groups for curriculum control
@@ -102,6 +103,8 @@ class Node:
         return positions
 
 
+import ast
+
 class ExpressionTree:
     def __init__(self, token_list):
         """
@@ -117,6 +120,91 @@ class ExpressionTree:
         except Exception:
             self.root = None
             self.is_valid = False
+
+    @classmethod
+    def from_infix(cls, infix_str):
+        """
+        Creates an ExpressionTree from a standard infix string (e.g. "sin(x) + x^2").
+        Uses Python's ast to parse.
+        """
+        # Replacements to make it valid python for AST
+        # 1. Handle postfix factorial '!' which C++ outputs as '(... )!'
+        # We convert '(... )!' to 'gamma(...)'
+        # Iterate until no '!' left
+        processed_str = infix_str
+        while '!' in processed_str:
+            idx = processed_str.find('!')
+            # Helper to find matching paren backwards
+            if idx > 0 and processed_str[idx-1] == ')':
+                paren_count = 1
+                start = idx - 2
+                while start >= 0 and paren_count > 0:
+                    if processed_str[start] == ')':
+                        paren_count += 1
+                    elif processed_str[start] == '(':
+                        paren_count -= 1
+                    start -= 1
+                # start is now 1 char before the matching '('
+                start += 1 
+                # Reconstruct: ... + gamma( + ... + ) + ...
+                # Content includes the parens: ( ... )
+                content = processed_str[start:idx] 
+                processed_str = processed_str[:start] + "gamma" + content + processed_str[idx+1:]
+            else:
+                # Fallback: Just remove ! if it's weirdly placed (should not happen with GP output)
+                processed_str = processed_str.replace('!', '', 1)
+
+        # 2. C++ uses ^ for power, Python uses **. AST parses ^ as BitXor.
+        try:
+            tree = ast.parse(processed_str, mode='eval')
+            tokens = cls._ast_to_prefix(tree.body)
+            return cls(tokens)
+        except Exception as e:
+            print(f"Error parsing infix: {e} | Original: {infix_str} | Processed: {processed_str}")
+            return cls([]) # Invalid
+
+    @staticmethod
+    def _ast_to_prefix(node):
+        if isinstance(node, ast.BinOp):
+            # Map operators
+            op_map = {
+                ast.Add: '+', ast.Sub: '-', ast.Mult: '*', ast.Div: '/',
+                ast.BitXor: 'pow', ast.Pow: 'pow', ast.Mod: 'mod'
+            }
+            op_type = type(node.op)
+            if op_type in op_map:
+                return [op_map[op_type]] + ExpressionTree._ast_to_prefix(node.left) + ExpressionTree._ast_to_prefix(node.right)
+        
+        elif isinstance(node, ast.UnaryOp):
+            op_map = {ast.USub: 'neg', ast.UAdd: None} # Ignore unary +
+            op_type = type(node.op)
+            if op_type == ast.USub:
+                # Check directly if it's a number to collapse "-5"
+                if isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, (int, float)):
+                    return [str(-node.operand.value)]
+                return ['neg'] + ExpressionTree._ast_to_prefix(node.operand)
+            elif op_type == ast.UAdd:
+                 return ExpressionTree._ast_to_prefix(node.operand)
+
+        elif isinstance(node, ast.Call):
+            # Functions like sin(x)
+            func_id = node.func.id
+            if func_id in ['sin', 'cos', 'tan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma']:
+                tokens = [func_id]
+                for arg in node.args:
+                    tokens.extend(ExpressionTree._ast_to_prefix(arg))
+                return tokens
+        
+        elif isinstance(node, ast.Name):
+            return [node.id]
+        
+        elif isinstance(node, ast.Constant): # Python 3.8+
+            return [str(node.value)]
+        elif isinstance(node, ast.Num): # Older python
+            return [str(node.n)]
+
+        raise ValueError(f"Unsupported AST node: {node}")
+
 
     def _build_tree(self, tokens):
         if not tokens:
@@ -148,6 +236,10 @@ class ExpressionTree:
         constants: optional dict mapping path tuples to constant values
         Returns a numpy array of results.
         """
+        # Ensure x_values is a numpy array
+        if not isinstance(x_values, np.ndarray):
+            x_values = np.array(x_values, dtype=np.float64)
+        
         if not self.is_valid:
             return np.full_like(x_values, np.nan, dtype=np.float64)
         return self._eval_node(self.root, x_values, constants, path=[])
@@ -206,12 +298,18 @@ class ExpressionTree:
             if val == 'ceil':
                 return np.ceil(args[0])
             if val == 'gamma':
-                # Safe gamma (clip to avoid overflow)
-                clipped = np.clip(args[0], -50, 50)
-                result = np.zeros_like(clipped)
-                valid = clipped > 0
-                result[valid] = scipy_gamma(clipped[valid])
-                return result
+                # Match C++ Protected Gamma/Factorial: tgamma(|x| + 1)
+                # This ensures consistent evaluation for formulas from C++ engine (which uses !)
+                arg = np.abs(args[0]) + 1.0
+                clipped = np.clip(arg, 0.1, 50) # Clip upper bound to avoid overflow
+                return scipy_gamma(clipped)
+            if val == 'lgamma':
+                # Protected lgamma: lgamma(|x| + 1)
+                arg = np.abs(args[0]) + 1.0
+                # gammaln is safe for large positive numbers, so less aggressive clipping needed for overflow,
+                # but we clip for consistency and to avoid extremely large outputs if followed by exp
+                clipped = np.clip(arg, 0.1, 1000) 
+                return gammaln(clipped)
             if val == 'neg':
                 return -args[0]
             if val == 'sign':

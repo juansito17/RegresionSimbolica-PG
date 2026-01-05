@@ -152,7 +152,9 @@ const double WEIGHTED_FITNESS_EXPONENT = 0.25;
 // Parámetros de Características Avanzadas
 // ----------------------------------------
 const int STAGNATION_LIMIT_ISLAND = 50;
-const int GLOBAL_STAGNATION_LIMIT = 5000;
+// Lowered from 5000 to allow faster early termination in Hybrid Search mode.
+// If best fitness doesn't improve for N generations, terminate early.
+const int GLOBAL_STAGNATION_LIMIT = 200;
 const double STAGNATION_RANDOM_INJECT_PERCENT = 0.1;
 const int PARAM_MUTATE_INTERVAL = 50;
 const double PATTERN_RECORD_FITNESS_THRESHOLD = 10.0;

@@ -85,6 +85,7 @@ public:
                        const std::vector<double>& x_values_ref,
                        int total_pop,
                        int gens,
+                       const std::vector<std::string>& seeds = {}, // Optional: Initial population seeds
                        int n_islands = NUM_ISLANDS); // Usar valor de Globals.h por defecto
     ~GeneticAlgorithm(); // Destructor para liberar memoria de la GPU
 

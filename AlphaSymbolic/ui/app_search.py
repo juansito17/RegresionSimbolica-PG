@@ -10,6 +10,7 @@ import gradio as gr
 from core.grammar import ExpressionTree
 from search.beam_search import BeamSearch
 from search.mcts import MCTS
+from search.hybrid_search import hybrid_solve
 from utils.simplify import simplify_tree
 from search.pareto import ParetoFront
 from utils.detect_pattern import detect_pattern
@@ -69,7 +70,37 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     
     results = []
     
-    if search_method == "Beam Search":
+    if search_method == "Alpha-GP Hybrid":
+        # Using hybrid search
+        progress(0.4, desc="Fase 1: Neural Beam Search...")
+        # Note: Hybrid search handles its own phases printing, but we want UI updates.
+        # We pass beam_width. gp_timeout is increased to 30s to allow convergence on complex problems.
+        hybrid_res = hybrid_solve(x, y, MODEL, DEVICE, beam_width=int(beam_width), gp_timeout=30)
+        
+        if hybrid_res:
+            progress(0.9, desc="Procesando resultados GP...")
+            # Convert infix string back to tokens for consistency
+            tree = ExpressionTree.from_infix(hybrid_res['formula'])
+            if tree.is_valid:
+                 # Evaluate RMSE roughly (GP result should be good, but let's confirm)
+                 # Optimization is already done by GP, but we might want to fine-tune 
+                 # or at least extract constants if they are numbers in the string.
+                 # The string from GP has numbers like 2.345 embedded.
+                 # optimize_constants expects a tree with 'C' placeholders if we want to re-optimize.
+                 # But GP output is fully instantiated.
+                 # So we just evaluate.
+                 
+                 y_pred_check = tree.evaluate(x)
+                 rmse_check = np.sqrt(np.mean((y_pred_check - y)**2))
+                 
+                 results = [{
+                     'tokens': tree.tokens,
+                     'formula': tree.get_infix(),
+                     'rmse': rmse_check,
+                     'constants': {} # Constants are baked into the formula string
+                 }]
+    
+    elif search_method == "Beam Search":
         searcher = BeamSearch(MODEL, DEVICE, beam_width=int(beam_width), max_length=25)
         results = searcher.search(x, y)
     else:  # MCTS
