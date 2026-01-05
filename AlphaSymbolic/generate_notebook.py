@@ -71,13 +71,22 @@ notebook = {
     "nbformat_minor": 5
 }
 
-# 1. Header & Installation
+# 1. Header & Google Drive Mount
 install_source = [
     "# AlphaSymbolic - Unified Hybrid System\n",
     "# -------------------------------------\n",
     "# Instructions:\n",
     "# 1. Runtime -> Change runtime type -> T4 GPU\n",
-    "# 2. Run All\n",
+    "# 2. Mount Google Drive to PERSIST models\n",
+    "# 3. Run All\n",
+    "\n",
+    "try:\n",
+    "    from google.colab import drive\n",
+    "    drive.mount('/content/drive')\n",
+    "    os.makedirs('/content/drive/MyDrive/AlphaSymbolic_Models', exist_ok=True)\n",
+    "    print(\"✅ Google Drive mounted correctly\")\n",
+    "except Exception as e:\n",
+    "    print(\"⚠️ Google Drive NOT mounted. Models will be LOST after session ends.\")\n",
     "\n",
     "!nvidia-smi\n",
     "\n",

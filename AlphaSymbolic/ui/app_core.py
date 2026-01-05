@@ -113,9 +113,21 @@ def load_model(force_reload=False, preset_name=None):
     filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
     status = f"Nuevo modelo ({CURRENT_PRESET})" # Default status
     
+    # Check Drive for backup IF on colab and main file doesn't exist or is older?
+    # Simple strategy: prioritize local, but if local missing, check Drive.
+    drive_path = "/content/drive/MyDrive/AlphaSymbolic_Models"
+    drive_filename = os.path.join(drive_path, filename)
+    
+    source_file = None
     if os.path.exists(filename):
+        source_file = filename
+    elif os.path.exists(drive_filename):
+        print(f"📦 Local model missing. Loading from Drive: {drive_filename}")
+        source_file = drive_filename
+
+    if source_file:
         try:
-            state_dict = torch.load(filename, map_location=DEVICE, weights_only=True)
+            state_dict = torch.load(source_file, map_location=DEVICE, weights_only=True)
             
             # Check for NaNs
             has_nans = False
@@ -125,9 +137,9 @@ def load_model(force_reload=False, preset_name=None):
                     break
             
             if has_nans:
-                print(f"⚠️ Modelo corrupto detectado (NaNs) en {filename}. Eliminando y esperando reinicio.")
+                print(f"⚠️ Modelo corrupto detectado (NaNs) en {source_file}. Eliminando.")
                 try:
-                    os.remove(filename)
+                    os.remove(source_file)
                     print("✅ Archivo corrupto eliminado.")
                 except OSError as e:
                     print(f"Error al eliminar archivo: {e}")
@@ -159,3 +171,14 @@ def save_model():
     if MODEL is not None:
         filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
         torch.save(MODEL.state_dict(), filename)
+        
+        # Backup to Google Drive if available
+        drive_path = "/content/drive/MyDrive/AlphaSymbolic_Models"
+        if os.path.exists("/content/drive"):
+            try:
+                os.makedirs(drive_path, exist_ok=True)
+                drive_filename = os.path.join(drive_path, filename)
+                torch.save(MODEL.state_dict(), drive_filename)
+                print(f"✅ Modelo respaldado en Drive: {drive_filename}")
+            except Exception as e:
+                print(f"⚠️ Error al respaldar en Drive: {e}")
