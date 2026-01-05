@@ -11,10 +11,32 @@ from collections import deque
 import random
 import time
 
-from core.grammar import VOCABULARY, TOKEN_TO_ID
+from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES
 from data.synthetic_data import DataGenerator
-from ui.app_core import get_model, save_model, TRAINING_STATUS
+from ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
 from core.loss import QuantileLoss
+
+
+def get_allowed_token_mask(stage, vocab_size, device):
+    """
+    Creates a mask tensor for token logits.
+    Allowed tokens = 1.0, Disallowed = 0.0 (for multiplication mask)
+    Or returns indices of allowed tokens for -inf masking.
+    """
+    allowed_ops = OPERATOR_STAGES.get(stage, list(OPERATORS.keys()))
+    
+    # All terminals are always allowed
+    allowed_tokens = set(['x', 'C', '0', '1', '2', '3', '5', '10', 'pi', 'e'])
+    allowed_tokens.update(allowed_ops)
+    
+    # Build mask
+    mask = torch.zeros(vocab_size + 1, device=device)  # +1 for SOS token
+    for token in allowed_tokens:
+        if token in TOKEN_TO_ID:
+            mask[TOKEN_TO_ID[token]] = 1.0
+    mask[vocab_size] = 1.0  # SOS always allowed
+    
+    return mask
 
 
 def normalize_batch(x_list, y_list):
@@ -263,6 +285,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         return "Entrenamiento ya en progreso", None
     
     TRAINING_STATUS["running"] = True
+    reset_stop_flag()  # Reset stop flag at start
     
     try:
         MODEL, DEVICE = get_model()
@@ -299,6 +322,10 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         start_time = time.time()
         
         for iteration in range(int(iterations)):
+            # Check for stop request
+            if should_stop_training():
+                print("⏹️ Training stopped by user")
+                break
             # ETA Calculation
             elapsed = time.time() - start_time
             if iteration > 0:
@@ -319,11 +346,11 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
             # Adaptive Curriculum Check
             # Stages: 0=Arithmetic, 1=Poly, 2=Trig, 3=Adv, 4=Complex
             CURRICULUM_LEVELS = [
+                {'depth': 1, 'ops': ['+', '-', '*', '/']},
                 {'depth': 2, 'ops': ['+', '-', '*', '/']},
-                {'depth': 3, 'ops': ['+', '-', '*', '/', 'pow']},
-                {'depth': 4, 'ops': ['+', '-', '*', '/', 'pow', 'sin', 'cos']},
-                {'depth': 5, 'ops': ['+', '-', '*', '/', 'pow', 'sin', 'cos', 'exp', 'log']},
-                {'depth': 6, 'ops': None} # All
+                {'depth': 3, 'ops': ['+', '-', '*', '/', 'pow', 'sqrt']},
+                {'depth': 4, 'ops': ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos']},
+                {'depth': 5, 'ops': None} # All
             ]
             
             # Initialize state if not present
@@ -428,7 +455,50 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
             top_loss = np.mean([p[0] for p in hard_problems[:n_hard]]) if n_hard > 0 else 0
             
             print(f"Active Learning: Pool Loss {avg_pool_loss:.3f} -> Selected Mix (Hard:{top_loss:.3f})")
-            
+
+            # --- HALL OF SHAME CAPTURE ---
+            # Capture what the model predicts for the top 3 hardest failures
+            try:
+                top_failures = hard_problems[:3]
+                x_fail = [p[1]['x'].astype(np.float64) for p in top_failures]
+                y_fail = [p[1]['y'].astype(np.float64) for p in top_failures]
+                target_formulas = [p[1]['infix'] for p in top_failures]
+                fail_losses = [p[0] for p in top_failures]
+                
+                # Simple Greedy Decode to see what it predicts
+                from search.beam_search import BeamSearch
+                # Use beam search with width 1 (Greedy) for speed, with curriculum mask
+                bs = BeamSearch(MODEL, DEVICE, beam_width=1, max_length=20, curriculum_stage=curriculum_stage)
+                
+                for i in range(len(top_failures)):
+                    try:
+                        # Decode
+                        # Enable return_partial to see what the model is thinking if it fails
+                        res = bs.search(x_fail[i], y_fail[i], return_partial=True)
+                        if not res:
+                            pred_formula = "Search Empty (No Tokens)"
+                        else:
+                            pred_formula = res[0]['formula']
+                        
+                        add_training_error(
+                            target=target_formulas[i],
+                            predicted=pred_formula,
+                            loss=fail_losses[i],
+                            stage=stage_name
+                        )
+                    except Exception as e:
+                        print(f"HoS Inner Error: {e}")
+                        add_training_error(
+                            target=target_formulas[i],
+                            predicted=f"CRASH: {str(e)[:20]}",
+                            loss=fail_losses[i],
+                            stage=stage_name
+                        )
+            except Exception as e:
+                import traceback
+                print(f"HoS Outer Error: {e}")
+                traceback.print_exc()
+
             # --- MCTS SOLVE ---
             for prob in selected_problems:
                 x_data = prob['x'].astype(np.float64)
@@ -612,3 +682,119 @@ def create_selfplay_plot(losses, rmses):
     
     plt.tight_layout()
     return fig
+
+def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Progress()):
+    """
+    Massive Supervised Pre-training (Warmup).
+    Focus: Syntax, Basic Arithmetic, Overcoming "Collapse to Constant".
+    Speed: High (No MCTS, just random generation + CrossEntropy).
+    """
+    global TRAINING_STATUS
+    
+    if TRAINING_STATUS["running"]:
+        return "Entrenamiento ya en progreso", None
+    
+    TRAINING_STATUS["running"] = True
+    reset_stop_flag()  # Reset stop flag at start
+    
+    try:
+        MODEL, DEVICE = get_model()
+        
+        MODEL.train()
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
+        # Slower decay: T_max = iterations * 2 keeps LR higher for longer
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(iterations*2), eta_min=1e-6)
+        ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
+        
+        VOCAB_SIZE = len(VOCABULARY)
+        SOS_ID = VOCAB_SIZE
+        
+        # Start extremely simple (Depth 1: x+1, x*x, etc.)
+        allowed_ops = OPERATOR_STAGES[0]
+        data_gen = DataGenerator(max_depth=1, allowed_operators=allowed_ops) 
+        allowed_mask = get_allowed_token_mask(0, VOCAB_SIZE, DEVICE) # Stage 0 mask
+        losses = []
+        
+        start_time = time.time()
+        
+        for i in range(int(iterations)):
+            # Check for stop request
+            if should_stop_training():
+                print("⏹️ Pre-training stopped by user")
+                break
+            # ETA
+            elapsed = time.time() - start_time
+            if i > 0:
+                iter_per_sec = i / elapsed
+                remaining = int(iterations) - i
+                eta = remaining / iter_per_sec
+                eta_str = f"{eta:.0f}s"
+            else:
+                eta_str = "..."
+                
+            current_lr = optimizer.param_groups[0]['lr']
+            msg = f"Iter {i+1}/{int(iterations)} Loss:{np.mean(losses[-50:]) if losses else 0:.3f} LR:{current_lr:.1e} ETA:{eta_str}"
+            progress((i + 1) / iterations, desc=msg)
+            
+            # Generate Random Batch (High Speed)
+            batch = data_gen.generate_batch(int(batch_size), point_count=int(point_count))
+            
+            if not batch:
+                continue
+            
+            x_list = [d['x'] for d in batch]
+            y_list = [d['y'] for d in batch]
+            x_list, y_list = normalize_batch(x_list, y_list)
+            
+            token_lists = [[TOKEN_TO_ID.get(t, TOKEN_TO_ID['C']) for t in d['tokens']] for d in batch]
+            
+            max_len = max(len(s) for s in token_lists)
+            decoder_input = torch.full((len(batch), max_len + 1), SOS_ID, dtype=torch.long)
+            targets = torch.full((len(batch), max_len + 1), -1, dtype=torch.long)
+            
+            for j, seq in enumerate(token_lists):
+                decoder_input[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
+                targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+                
+            x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+            y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+            decoder_input = decoder_input.to(DEVICE)
+            targets = targets.to(DEVICE)
+            
+            optimizer.zero_grad()
+            logits, _ = MODEL(x_tensor, y_tensor, decoder_input)
+            
+            # Apply Stage 0 mask to bridge Pre-training with Curriculum
+            # Use a more stable value (-1e4 instead of -1e9) to avoid overflow
+            logits = logits + (1 - allowed_mask.view(1, 1, -1)) * -1e4
+            
+            loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+            
+            if not (torch.isnan(loss) or torch.isinf(loss)):
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+                losses.append(loss.item())
+                
+            if (i+1) % 100 == 0:
+                save_model()
+                
+        save_model()
+        MODEL.eval()
+        TRAINING_STATUS["running"] = False
+        
+        fig = create_loss_plot(losses, "Pre-Entrenamiento Supervisado")
+        
+        result = f"""
+        <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 15px; border: 2px solid #ffd93d;">
+            <h2 style="color: #ffd93d; margin: 0;">Escuela Primaria (Warmup) Completada</h2>
+            <p style="color: white;">Iteraciones: {int(iterations)} | Loss Final: {losses[-1]:.4f}</p>
+            <p style="color: #888;">El modelo ha aprendido sintaxis basica.</p>
+        </div>
+        """
+        return result, fig
+        
+    except Exception as e:
+        TRAINING_STATUS["running"] = False
+        return f"Error: {str(e)}", None

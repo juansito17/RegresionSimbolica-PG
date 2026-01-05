@@ -6,16 +6,53 @@ import os
 from core.model import AlphaSymbolicModel
 from core.grammar import VOCABULARY
 
+from collections import deque
+import time
+
 # Global state
 MODEL = None
 DEVICE = None
 TRAINING_STATUS = {"running": False, "epoch": 0, "loss": 0, "message": "Listo"}
+STOP_TRAINING = False  # Flag to request training stop
+
+def request_stop_training():
+    """Request training to stop gracefully."""
+    global STOP_TRAINING
+    STOP_TRAINING = True
+    return "⏹️ Deteniendo entrenamiento..."
+
+def should_stop_training():
+    """Check if training should stop."""
+    return STOP_TRAINING
+
+def reset_stop_flag():
+    """Reset the stop flag (call at start of training)."""
+    global STOP_TRAINING
+    STOP_TRAINING = False
+
+# Hall of Shame: Rolling buffer of recent failures
+# Format: {'time': str, 'target': str, 'predicted': str, 'loss': float, 'stage': str}
+TRAINING_ERRORS = deque(maxlen=20)
+
+def add_training_error(target, predicted, loss, stage):
+    """Add an error to the Hall of Shame."""
+    TRAINING_ERRORS.append({
+        'time': time.strftime("%H:%M:%S"),
+        'target': target,
+        'predicted': predicted,
+        'loss': float(loss),
+        'stage': stage
+    })
+
+def get_training_errors():
+    """Get list of errors for the UI."""
+    return list(TRAINING_ERRORS)
 
 MODEL_PRESETS = {
     'lite': {'d_model': 128, 'nhead': 4, 'num_encoder_layers': 3, 'num_decoder_layers': 3},
     'pro': {'d_model': 256, 'nhead': 8, 'num_encoder_layers': 6, 'num_decoder_layers': 6}
 }
-CURRENT_PRESET = 'pro'
+CURRENT_PRESET = 'lite'
 
 def get_device(force_cpu=False):
     """Get the best available device (CUDA > MPS > CPU)."""

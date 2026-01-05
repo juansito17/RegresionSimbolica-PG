@@ -5,8 +5,8 @@ With GPU/CPU toggle and search method selection.
 import gradio as gr
 import torch
 
-from ui.app_core import load_model, get_device, get_device_info, set_device
-from ui.app_training import train_basic, train_curriculum, train_self_play
+from ui.app_core import load_model, get_device, get_device_info, set_device, get_training_errors, request_stop_training
+from ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised
 from ui.app_search import solve_formula, generate_example
 from ui.app_benchmark import get_benchmark_tab
 
@@ -104,12 +104,18 @@ def create_app():
                         
                         def delete_model_action():
                             import os
-                            if os.path.exists("alpha_symbolic_model.pth"):
-                                os.remove("alpha_symbolic_model.pth")
-                                return '<div style="color: #ff6b6b; padding: 5px;">✅ Modelo eliminado. Reinicia la app para usar pesos nuevos.</div>'
-                            return '<div style="color: #888; padding: 5px;">No hay modelo guardado.</div>'
+                            from ui.app_core import CURRENT_PRESET
+                            filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
+                            if os.path.exists(filename):
+                                os.remove(filename)
+                                return f'<div style="color: #4ade80; padding: 5px;">✅ Modelo [{CURRENT_PRESET}] eliminado. Reinicia la app para usar pesos nuevos.</div>'
+                            return f'<div style="color: #888; padding: 5px;">No hay modelo [{CURRENT_PRESET}] guardado.</div>'
                         
                         delete_model_btn.click(delete_model_action, outputs=[delete_status])
+                        
+                        stop_train_btn = gr.Button("⏹️ Detener Entrenamiento", variant="stop", size="sm")
+                        stop_status = gr.HTML()
+                        stop_train_btn.click(request_stop_training, outputs=[stop_status])
                 
                 with gr.Tabs():
                     # Basic
@@ -163,6 +169,38 @@ def create_app():
                                 result_sp = gr.HTML()
                                 plot_sp = gr.Plot()
                         train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
+                
+                # --- PRE-TRAINING (Warmup) ---
+                with gr.Accordion("🎓 Escuela Primaria (Pre-Entrenamiento)", open=False):
+                    gr.Markdown("Entrenamiento masivo supervisado de alta velocidad para aprender sintaxis basica. **Recomendado al inicio.**")
+                    with gr.Row():
+                        with gr.Column():
+                            epochs_pre = gr.Slider(100, 10000, value=2000, step=100, label="Iteraciones Rápidas")
+                            train_pre_btn = gr.Button("Iniciar Pre-Entrenamiento", variant="primary")
+                        with gr.Column():
+                            result_pre = gr.HTML()
+                            plot_pre = gr.Plot()
+                    train_pre_btn.click(train_supervised, [epochs_pre], [result_pre, plot_pre])
+
+                # --- HALL OF SHAME (Error Analysis) ---
+                with gr.Accordion("🕵️‍♂️ Hall of Shame (Analisis de Errores)", open=False):
+                    gr.Markdown("Aquí se muestran los problemas donde el modelo falló drásticamente hoy.")
+                    error_table = gr.DataFrame(
+                        headers=["Time", "Target Formula", "Predicted", "Loss", "Stage"],
+                        datatype=["str", "str", "str", "number", "str"],
+                        interactive=False
+                    )
+                    refresh_errors_btn = gr.Button("🔄 Actualizar Errores", size="sm")
+                    
+                    def update_errors():
+                        errors = get_training_errors()
+                        # Reverse to show newest first
+                        data = [[
+                            e['time'], e['target'], e['predicted'], round(e['loss'], 2), e['stage']
+                        ] for e in reversed(errors)]
+                        return data
+                    
+                    refresh_errors_btn.click(update_errors, outputs=[error_table])
             
             # TAB 4: Benchmark
             get_benchmark_tab()

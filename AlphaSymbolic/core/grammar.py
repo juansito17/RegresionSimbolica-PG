@@ -3,29 +3,44 @@ from scipy.special import gamma as scipy_gamma
 import math
 
 # Supported operators and their arity (number of arguments)
+# Organized by curriculum stage for progressive unlocking
 OPERATORS = {
-    # Binary
+    # === STAGE 0: Pure Arithmetic ===
     '+': 2,
     '-': 2,
     '*': 2,
     '/': 2,
+    
+    # === STAGE 1: Powers ===
     'pow': 2,
-    'mod': 2,
-    # Unary
+    'sqrt': 1,
+    
+    # === STAGE 2: Trigonometry ===
     'sin': 1,
     'cos': 1,
     'tan': 1,
+    
+    # === STAGE 3: Transcendental ===
     'exp': 1,
     'log': 1,
-    'sqrt': 1,
+    
+    # === STAGE 4: Advanced ===
     'abs': 1,
+    'neg': 1,
+    'sign': 1,
     'floor': 1,
     'ceil': 1,
-    'gamma': 1,  # Gamma function (for combinatorics)
-    'neg': 1,    # Negation
-    'sign': 1,
-    'max': 2,
-    'min': 2,
+    'mod': 2,
+    'gamma': 1,
+}
+
+# Operator groups for curriculum control
+OPERATOR_STAGES = {
+    0: ['+', '-', '*', '/'],
+    1: ['+', '-', '*', '/', 'pow', 'sqrt'],
+    2: ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos', 'tan'],
+    3: ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos', 'tan', 'exp', 'log'],
+    4: list(OPERATORS.keys()),  # All operators
 }
 
 # Terminal tokens
@@ -201,10 +216,6 @@ class ExpressionTree:
                 return -args[0]
             if val == 'sign':
                 return np.sign(args[0])
-            if val == 'max':
-                return np.maximum(args[0], args[1])
-            if val == 'min':
-                return np.minimum(args[0], args[1])
                 
         return np.zeros_like(x, dtype=np.float64)
 

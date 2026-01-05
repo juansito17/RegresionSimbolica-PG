@@ -17,8 +17,11 @@ class DataGenerator:
 
     def generate_random_tree(self, max_depth, current_depth=0):
         if current_depth >= max_depth:
-            # Must return a terminal
-            return [random.choice(self.terminals)]
+            # Balanced Terminal Selection: 50% x, 50% constant
+            if random.random() < 0.5:
+                return ['x']
+            else:
+                return [random.choice(CONSTANTS)]
         
         # Decide if terminal or operator
         # Higher probability of operator at shallow depths
@@ -30,7 +33,14 @@ class DataGenerator:
                 tokens.extend(self.generate_random_tree(max_depth, current_depth + 1))
             return tokens
         else:
-            return [random.choice(self.terminals)]
+            # Balanced Terminal Selection: 40% x, 30% C, 30% numbers
+            r = random.random()
+            if r < 0.4:
+                return ['x']
+            elif r < 0.7:
+                return ['C']
+            else:
+                return [random.choice([c for c in CONSTANTS if c != 'C'])]
 
     def generate_batch(self, batch_size, point_count=10, x_range=(-10, 10)):
         """
@@ -45,14 +55,26 @@ class DataGenerator:
             
             if not tree.is_valid:
                 continue
+            
+            # Ensure 'x' is present in the formula (90% of the time)
+            if 'x' not in tokens and random.random() < 0.9:
+                continue
                 
             # Generate random X points
             x_values = np.random.uniform(x_range[0], x_range[1], point_count)
             # Sort X for cleaner visualization/learning
             x_values.sort()
             
-            # Calculate Y
-            y_values = tree.evaluate(x_values)
+            # Randomize 'C' values if present
+            c_positions = tree.root.get_constant_positions()
+            constant_vals = {}
+            for pos in c_positions:
+                # Expanded range: -20 to 20. Favor 1.0 occasionally
+                val = random.uniform(-20, 20) if random.random() > 0.1 else 1.0
+                constant_vals[tuple(pos)] = val
+            
+            # Calculate Y with randomized constants
+            y_values = tree.evaluate(x_values, constants=constant_vals)
             
             # Check for validity (no NaNs, Infs, or extremely large values)
             if np.any(np.isnan(y_values)) or np.any(np.isinf(y_values)):
@@ -79,7 +101,11 @@ class DataGenerator:
         """
         # Base cases
         if complexity <= 0:
-            return input_node if isinstance(input_node, list) else [input_node]
+            # Randomly choose between x, C and constants
+            r = random.random()
+            if r < 0.4: return ['x']
+            if r < 0.7: return ['C']
+            return [random.choice([c for c in CONSTANTS if c != 'C'])]
             
         # Filter available structures based on allowed operators
         available_structures = []
@@ -163,8 +189,8 @@ class DataGenerator:
         
         while len(data) < batch_size and attempts < batch_size * 5:
             attempts += 1
-            # Random complexity 1 to 3
-            complexity = random.randint(1, 3)
+            # Random complexity capped by max_depth
+            complexity = random.randint(1, max(1, self.max_depth - 1))
             
             try:
                 tokens = self.generate_structured_tree(complexity, 'x')
@@ -204,6 +230,10 @@ class DataGenerator:
                 if not tree.is_valid:
                     continue
                 
+                # Ensure 'x' is present (90% of the time)
+                if 'x' not in final_tokens and random.random() < 0.9:
+                    continue
+                    
                 # Check constraints (depth, length)
                 if len(final_tokens) > 30: # Limit length
                     continue
@@ -218,7 +248,15 @@ class DataGenerator:
                 else:
                     x_safe = np.linspace(x_range[0], x_range[1], point_count)
                 
-                y_values = tree.evaluate(x_safe)
+                # Randomize 'C' values if present
+                c_positions = tree.root.get_constant_positions()
+                constant_vals = {}
+                for pos in c_positions:
+                    # Expanded range: -20 to 20
+                    val = random.uniform(-20, 20) if random.random() > 0.1 else 1.0
+                    constant_vals[tuple(pos)] = val
+                
+                y_values = tree.evaluate(x_safe, constants=constant_vals)
                 
                 # Quality Control
                 if np.any(np.isnan(y_values)) or np.any(np.isinf(y_values)):

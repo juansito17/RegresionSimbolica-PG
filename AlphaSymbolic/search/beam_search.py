@@ -4,11 +4,11 @@ Explores multiple formula candidates in parallel, keeping top-K at each step.
 """
 import torch
 import numpy as np
-from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree
+from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree, OPERATOR_STAGES
 from utils.optimize_constants import optimize_constants
 
 class BeamSearch:
-    def __init__(self, model, device, beam_width=10, max_length=30):
+    def __init__(self, model, device, beam_width=10, max_length=30, curriculum_stage=None):
         self.model = model
         self.device = device
         self.beam_width = beam_width
@@ -16,7 +16,21 @@ class BeamSearch:
         self.vocab_size = len(VOCABULARY)
         self.sos_id = self.vocab_size  # SOS token ID
         
-    def search(self, x_values, y_values):
+        # Build token mask based on curriculum stage
+        self.token_mask = None
+        if curriculum_stage is not None:
+            allowed_ops = OPERATOR_STAGES.get(curriculum_stage, list(OPERATORS.keys()))
+            allowed_tokens = set(['x', 'C', '0', '1', '2', '3', '5', '10', 'pi', 'e'])
+            allowed_tokens.update(allowed_ops)
+            
+            # Create mask: 0 for allowed, -inf for disallowed
+            mask = torch.full((self.vocab_size,), float('-inf'), device=device)
+            for token in allowed_tokens:
+                if token in TOKEN_TO_ID:
+                    mask[TOKEN_TO_ID[token]] = 0.0
+            self.token_mask = mask
+        
+    def search(self, x_values, y_values, return_partial=False):
         """
         Beam Search to find the best formula structure.
         """
@@ -59,6 +73,11 @@ class BeamSearch:
             # Logits shape: [batch, seq_len, vocab_size]
             # We want the last token's probabilities
             last_token_logits = logits[:, -1, :self.vocab_size]
+            
+            # Apply curriculum mask if set
+            if self.token_mask is not None:
+                last_token_logits = last_token_logits + self.token_mask
+            
             log_probs = torch.log_softmax(last_token_logits, dim=-1) # [batch, vocab]
             
             # We need to find the top-K candidates ACROSS current beams?
@@ -113,9 +132,6 @@ class BeamSearch:
                  # Optional: early exit if we found enough good candidates
                  pass
 
-        # Add any partial completions that happen to be valid (unlikely if open > 0)
-        # But maybe we ran out of steps?
-        
         # Evaluate results
         scored_results = []
         for beam in completed:
@@ -131,6 +147,21 @@ class BeamSearch:
                 })
         
         scored_results.sort(key=lambda x: x['rmse'])
+        
+        # If no results and return_partial is requested, return the best incomplete beam
+        if not scored_results and return_partial and beams:
+            # Take the beam with highest probability
+            best_beam = beams[0] 
+            # Construct a partial result
+            # We can't optimize constants or get a valid infix easily, but we can show tokens
+            scored_results.append({
+                'tokens': best_beam['seq'],
+                'log_prob': best_beam['log_prob'],
+                'rmse': float('inf'),
+                'constants': {},
+                'formula': "Partial: " + " ".join(best_beam['seq']) + "..."
+            })
+            
         return scored_results
 
 
