@@ -12,23 +12,61 @@ class GPEngine:
             # Assuming we are in AlphaSymbolic/.. root or similar.
             # Adjust path relative to this file: alphasybolic/core/gp_bridge.py
             # So binary is at ../../Code/build/Release/SymbolicRegressionGP.exe
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            possible_paths = [
-                os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP.exe"),
-                os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP.exe"),
-                # Linux/Mac support (no .exe)
-                os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP"),
-                os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP")
-            ]
+            # Improved Project Root Detection
+            # We look for the "Code" directory by walking up from this file.
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = None
+            
+            # Walk up up to 5 levels
+            d = current_dir
+            for _ in range(5):
+                if os.path.exists(os.path.join(d, "Code")):
+                    project_root = d
+                    break
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+            
+            if project_root:
+                base_dir = project_root
+            else:
+                # Fallback
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+            # Define candidates based on OS
+            is_windows = os.name == 'nt'
+            search_paths = []
+            
+            if is_windows:
+                 search_paths = [
+                    os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP.exe"),
+                    os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP.exe"),
+                    # Fallbacks
+                     os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP"),
+                 ]
+            else:
+                 # Linux/Mac (Colab) - Prioritize no extension
+                 search_paths = [
+                    os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP"),
+                    os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP"),
+                    # Fallbacks
+                    os.path.join(base_dir, "Code", "build", "Release", "SymbolicRegressionGP.exe"),
+                    os.path.join(base_dir, "Code", "build", "SymbolicRegressionGP.exe"),
+                 ]
+
             self.binary_path = None
-            for p in possible_paths:
+            for p in search_paths:
                 if os.path.exists(p):
                     self.binary_path = p
                     break
             
             if self.binary_path is None:
-                # Fallback to default for error message
-                self.binary_path = possible_paths[0]
+                print(f"[Warning] GP Binary not found. Checked locations:")
+                for p in search_paths:
+                    print(f" - {p}")
+                # Fallback to the most likely one for the current OS
+                self.binary_path = search_paths[0]
         else:
             self.binary_path = binary_path
 

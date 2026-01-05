@@ -13,6 +13,7 @@ CPP_FILES = [
     'GeneticAlgorithm.cpp', 'GeneticAlgorithm.h',
     'GeneticOperators.cpp', 'GeneticOperators.h',
     'main.cpp',
+    'TestOperators.cpp',
     'Globals.h' # Embedding the local Globals.h directly
 ]
 
@@ -121,8 +122,15 @@ for filename in CPP_FILES:
     else:
         print(f"Warning: C++ file {local_path} not found.")
 
-# 3. Create CMakeLists.txt (Hardcoded simplified version for Colab)
-cmake_content = """
+# 3. Create CMakeLists.txt (Using local file content)
+cmake_local_path = "../Code/CMakeLists.txt"
+if os.path.exists(cmake_local_path):
+    with open(cmake_local_path, 'r', encoding='utf-8') as f:
+        cmake_content = f.read()
+else:
+    # Fallback if reading failed
+    print("Warning: Local ../Code/CMakeLists.txt not found. Using fallback simplified version.")
+    cmake_content = """
 cmake_minimum_required(VERSION 3.10)
 project(SymbolicRegressionGP)
 
@@ -185,6 +193,10 @@ notebook["cells"].append({
         "%cd Code\n",
         "!cmake -B build -S . -DCMAKE_BUILD_TYPE=Release\n",
         "!cmake --build build -j $(nproc)\n",
+        "import os\n",
+        "if not os.path.exists('build/SymbolicRegressionGP') and not os.path.exists('build/Release/SymbolicRegressionGP'):\n",
+        "    print('BUILD FAILURE? Binary not found in expected locations. Listing build dir:')\n",
+        "    !ls -R build\n",
         "%cd .."
     ]
 })
