@@ -75,18 +75,40 @@ class DataGenerator:
     def generate_structured_tree(self, complexity=1, input_node='x'):
         """
         Recursively builds a structured, human-like formula.
-        complexity: Level of nesting/combination (1=Basic, 3=Complex)
-        input_node: The token representing the input (default 'x', or a subtree)
+        Respects self.operators.
         """
         # Base cases
         if complexity <= 0:
             return input_node if isinstance(input_node, list) else [input_node]
             
-        # Types of structures we can build
-        structures = ['poly', 'trig', 'exp_log', 'arithmetic', 'composition']
-        # Weights depend on complexity? 
-        # For low complexity, prefer poly/trig. For high, prefer composition/arithmetic.
-        choice = random.choice(structures)
+        # Filter available structures based on allowed operators
+        available_structures = []
+        
+        # Arithmetic needed: +, -, *
+        if any(op in self.operators for op in ['+', '-', '*']):
+            available_structures.append('arithmetic')
+            
+        # Poly needed: pow
+        if 'pow' in self.operators:
+            available_structures.append('poly')
+            
+        # Trig needed: sin, cos
+        if 'sin' in self.operators or 'cos' in self.operators:
+            available_structures.append('trig')
+            
+        # Exp/Log needed
+        if 'exp' in self.operators or 'log' in self.operators:
+            available_structures.append('exp_log')
+            
+        # Composition needs enough variety
+        if len(self.operators) > 4 and complexity > 1:
+             available_structures.append('composition')
+        
+        # Fallback if nothing allowed matches (shouldn't happen with proper init)
+        if not available_structures:
+            return input_node if isinstance(input_node, list) else [input_node]
+
+        choice = random.choice(available_structures)
         
         if choice == 'poly':
             # a*x + b or a*x^2 + b
@@ -94,42 +116,40 @@ class DataGenerator:
             b = str(random.randint(-5, 5))
             power = random.choice(['1', '2', '3'])
             if power == '1':
-                # a*x + b -> ['+', '*', a, input, b]
                 term = ['*', a] + (input_node if isinstance(input_node, list) else [input_node])
                 return ['+', ] + term + [b]
             else:
-                # a*x^n + b
-                # pow(x, n)
                 base = input_node if isinstance(input_node, list) else [input_node]
                 pow_term = ['pow'] + base + [power]
                 term = ['*', a] + pow_term
                 return ['+', ] + term + [b]
                 
         elif choice == 'trig':
-            # sin(input) or cos(input)
-            func = random.choice(['sin', 'cos'])
+            # Filter trig ops that are allowed
+            ops = [op for op in ['sin', 'cos'] if op in self.operators]
+            if not ops: return input_node # Should be caught by structure check
+            func = random.choice(ops)
             val = input_node if isinstance(input_node, list) else [input_node]
             return [func] + val
             
         elif choice == 'exp_log':
-            # exp(input) or log(abs(input))
-            # Only if allowed? We assume all are allowed for "Smart" mode.
-            func = random.choice(['exp']) # safe ones
+            ops = [op for op in ['exp', 'log'] if op in self.operators]
+            if not ops: return input_node
+            func = random.choice(ops)
             val = input_node if isinstance(input_node, list) else [input_node]
             return [func] + val
             
         elif choice == 'arithmetic':
-            # f(x) op g(x)
-            # Reduce complexity for children to avoid explosion
             left = self.generate_structured_tree(complexity - 1, input_node)
             right = self.generate_structured_tree(complexity - 1, input_node)
-            op = random.choice(['+', '-', '*']) # Limit to safe ops
+            ops = [op for op in ['+', '-', '*'] if op in self.operators]
+            if not ops: return input_node
+            op = random.choice(ops)
             return [op] + left + right
             
         elif choice == 'composition':
-            # f(g(x))
             inner = self.generate_structured_tree(complexity - 1, input_node)
-            outer = self.generate_structured_tree(1, inner) # Outer is simple wrapper
+            outer = self.generate_structured_tree(1, inner)
             return outer
             
         return [input_node]
@@ -190,9 +210,13 @@ class DataGenerator:
 
                 # Generate X points
                 # Use safer range for complex funcs
-                x_safe = np.linspace(x_range[0], x_range[1], point_count)
-                if 'log' in final_tokens or 'sqrt' in final_tokens:
-                    x_safe = np.linspace(0.1, x_range[1], point_count)
+                # Exp/Pow grow very fast, so we constrain X to avoid float overflow
+                if 'exp' in final_tokens or 'pow' in final_tokens:
+                    x_safe = np.linspace(-2, 2, point_count)
+                elif 'log' in final_tokens or 'sqrt' in final_tokens:
+                    x_safe = np.linspace(0.1, 5, point_count)
+                else:
+                    x_safe = np.linspace(x_range[0], x_range[1], point_count)
                 
                 y_values = tree.evaluate(x_safe)
                 

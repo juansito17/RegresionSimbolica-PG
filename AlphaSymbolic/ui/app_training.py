@@ -270,6 +270,8 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         from search.mcts import MCTS
         
         optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
+        # Scheduler: Reduce LR when plateauing to help convergence
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=15, min_lr=1e-6)
         
         # Losses for AlphaZero
         # Policy: KLDiv (comparing distributions)
@@ -315,34 +317,130 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                 eta_str = "Calculando..."
 
             # Adaptive Curriculum Check
-            # If average RMSE of last 20 episodes is very low (< 0.05), increase difficulty
-            recent_rmse = np.mean(rmses[-20:]) if len(rmses) >= 20 else 1.0
-            if len(rmses) > 20 and recent_rmse < 0.1 and current_depth < 7:
-                current_depth += 1
-                data_gen = DataGenerator(max_depth=current_depth)
-                print(f"Curriculum Level Up! New Depth: {current_depth}")
-                
-            progress((iteration + 1) / iterations, desc=f"Iter {iteration+1}/{int(iterations)} [D:{current_depth}] RMSE:{recent_rmse:.3f} | ETA: {eta_str}")
+            # Stages: 0=Arithmetic, 1=Poly, 2=Trig, 3=Adv, 4=Complex
+            CURRICULUM_LEVELS = [
+                {'depth': 2, 'ops': ['+', '-', '*', '/']},
+                {'depth': 3, 'ops': ['+', '-', '*', '/', 'pow']},
+                {'depth': 4, 'ops': ['+', '-', '*', '/', 'pow', 'sin', 'cos']},
+                {'depth': 5, 'ops': ['+', '-', '*', '/', 'pow', 'sin', 'cos', 'exp', 'log']},
+                {'depth': 6, 'ops': None} # All
+            ]
             
-            # Self-play phase
+            # Initialize state if not present
+            if 'curriculum_stage' not in locals():
+                curriculum_stage = 0
+            
+            recent_rmse = np.mean(rmses[-20:]) if len(rmses) >= 20 else 1.0
+            
+            # Graduation condition: RMSE < 0.1 stable
+            if len(rmses) > 20 and recent_rmse < 0.1 and curriculum_stage < len(CURRICULUM_LEVELS) - 1:
+                curriculum_stage += 1
+                stage_info = CURRICULUM_LEVELS[curriculum_stage]
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                print(f"*** Curriculum Level Up! Stage {curriculum_stage} ({stage_info['depth']}, {stage_info['ops']}) ***")
+                # Clear buffer to avoid training on old easy data? Maybe keep some for replay.
+            
+            # Ensure data_gen is initialized at start
+            if iteration == 0:
+                 stage_info = CURRICULUM_LEVELS[0]
+                 data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+
+            stage_name = ["Arithmetic", "Polynomials", "Trigonometry", "Advanced", "Complex"][curriculum_stage]
+            
+            # Safe access to current_lr
+            curr_lr_disp = optimizer.param_groups[0]['lr']
+            msg = f"Iter {iteration+1}/{int(iterations)} [{stage_name}] RMSE:{recent_rmse:.3f} LR:{curr_lr_disp:.1e} | ETA: {eta_str}"
+            progress((iteration + 1) / iterations, desc=msg)
+            
+            # Active Learning / Hard Mining Phase
             MODEL.eval()
             
-            # Generate mix of problems: 70% inverse (solvable), 30% random
-            n_inverse = int(problems_per_iter * 0.7)
-            n_random = int(problems_per_iter) - n_inverse
+            # Generate a large pool of candidates candidates to find the "hard" ones
+            pool_size = problems_per_iter * 3  # Generate 3x more than we need
+            candidates = data_gen.generate_inverse_batch(pool_size, point_count=int(point_count))
             
-            probs_inv = data_gen.generate_inverse_batch(n_inverse, point_count=int(point_count)) if n_inverse > 0 else []
-            probs_rnd = data_gen.generate_batch(n_random, point_count=int(point_count)) if n_random > 0 else []
-            problems = probs_inv + probs_rnd
+            if not candidates:
+                continue
+                
+            # Quick forward pass to estimate difficulty (Loss)
+            # We want to train on problems where the model currently FAILS (High Loss)
+            hard_problems = []
             
-            for prob in problems:
+            with torch.no_grad():
+                # Process in chunks to avoid OOM
+                chunk_size = 32
+                for i in range(0, len(candidates), chunk_size):
+                    chunk = candidates[i:i+chunk_size]
+                    
+                    x_list = [d['x'] for d in chunk]
+                    y_list = [d['y'] for d in chunk]
+                    x_list, y_list = normalize_batch(x_list, y_list)
+                    
+                    token_lists = [[TOKEN_TO_ID.get(t, TOKEN_TO_ID['C']) for t in d['tokens']] for d in chunk]
+                    max_len = max(len(s) for s in token_lists)
+                    
+                    # Prepare tensors
+                    dec_in = torch.full((len(chunk), max_len + 1), SOS_ID, dtype=torch.long).to(DEVICE)
+                    targets = torch.full((len(chunk), max_len + 1), -1, dtype=torch.long).to(DEVICE)
+                    
+                    for j, seq in enumerate(token_lists):
+                        dec_in[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
+                        targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+                        
+                    x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+                    y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+                    
+                    logits, _ = MODEL(x_tensor, y_tensor, dec_in)
+                    
+                    # Calculate loss per item
+                    # CrossEntropy usually aggregates, so we use reduction='none'
+                    loss_f = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction='none')
+                    raw_losses = loss_f(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
+                    
+                    # Reshape back to [Batch, Seq] to sum/mean per sample
+                    raw_losses = raw_losses.view(len(chunk), -1)
+                    # Average loss per non-padded token
+                    mask = (targets != -1)
+                    sample_losses = (raw_losses * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
+                    
+                    for j, loss_val in enumerate(sample_losses):
+                        # Store (Loss, Problem)
+                        hard_problems.append((loss_val.item(), chunk[j]))
+            
+            # Sort by difficulty (Loss descending)
+            hard_problems.sort(key=lambda x: x[0], reverse=True)
+            
+            # Stabilization: Mix Hardest (70%) + Random Examples (30%)
+            # This prevents "Catastrophic Forgetting" of simpler patterns
+            n_hard = int(problems_per_iter * 0.7)
+            n_random = int(problems_per_iter) - n_hard
+            
+            # Top K hardest
+            selected_hard = [p[1] for p in hard_problems[:n_hard]]
+            
+            # Random selection from the rest of the pool (to keep variety)
+            remaining_pool = [p[1] for p in hard_problems[n_hard:]]
+            selected_random = random.sample(remaining_pool, min(n_random, len(remaining_pool))) if remaining_pool else []
+            
+            selected_problems = selected_hard + selected_random
+            
+            avg_pool_loss = np.mean([p[0] for p in hard_problems])
+            top_loss = np.mean([p[0] for p in hard_problems[:n_hard]]) if n_hard > 0 else 0
+            
+            print(f"Active Learning: Pool Loss {avg_pool_loss:.3f} -> Selected Mix (Hard:{top_loss:.3f})")
+            
+            # --- MCTS SOLVE ---
+            for prob in selected_problems:
                 x_data = prob['x'].astype(np.float64)
                 y_data = prob['y'].astype(np.float64)
                 
                 try:
+                    # Use MCTS to find the solution (or improve upon it)
+                    # For inverse problems, we KNOW the solution, but MCTS helps explore variations
+                    # and generates the policy distribution we want to learn.
                     result = searcher.search(x_data, y_data)
                     
-                    # 1. Store Training Examples (State, Policy, Value)
+                    # 1. Store Training Examples
                     if 'root' in result:
                         examples = searcher.get_training_examples(result['root'])
                         for (tokens, policy, value) in examples:
@@ -434,6 +532,13 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
                         torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
                         optimizer.step()
                         losses.append(loss.item())
+            
+            # Step Scheduler based on recent Loss
+            if losses:
+                current_loss = np.mean(losses[-10:])
+                scheduler.step(current_loss)
+            
+            current_lr = optimizer.param_groups[0]['lr']
             
             # Periodic save
             if (iteration + 1) % 10 == 0:
