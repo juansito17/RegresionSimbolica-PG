@@ -3,23 +3,23 @@
 > **Deep Reinforcement Learning para Regresión Simbólica**
 > *Inspirado en AlphaZero y AlphaTensor*
 
-AlphaSymbolic es una inteligencia artificial autónoma capaz de **descubrir fórmulas matemáticas** a partir de datos. No utiliza fuerza bruta; aprende a "jugar" con las matemáticas usando una red neuronal y búsqueda de árbol de Monte Carlo (MCTS).
+AlphaSymbolic es una inteligencia artificial autónoma capaz de **descubrir fórmulas matemáticas** a partir de datos. Utiliza un enfoque **Híbrido Neuro-Evolutivo** que combina la intuición de una Red Neuronal (Transformer) con la precisión de un Motor Genético (GP) en C++.
 
 ## 🚀 Características Principales
 
-### 🧠 Arquitectura AlphaZero
-- **Red Neuronal Transformer**: Codifica los datos (X, Y) y decodifica la fórmula token a token.
-- **Value Head**: Intuye si una fórmula parcial va por buen camino antes de terminarla.
-- **MCTS Híbrido**: Combina la "imaginación" de la red neuronal con la precisión de la búsqueda por árbol.
+### 🧠 Arquitectura Híbrida (Neuro-Symbolic)
+- **Red Neuronal Transformer**: Actúa como la "Intuición". Genera hipótesis rápidas (Beam Search) sobre la estructura de la fórmula.
+- **Motor Genético (C++)**: Actúa como el "Maestro". Refina las hipótesis de la red, ajusta constantes y resuelve los casos difíciles.
+- **Hybrid Feedback Loop**: Un ciclo de mejora continua donde la red aprende de las correcciones del motor genético (Teacher-Student Distillation).
 
 ### ⚡ Potencia Ajustable (Nuevo)
 - **Modo Lite (Laptop)**: Rápido y ligero (128 dim, 3 capas). Funciona en cualquier CPU/GPU básica. Ideal para desarrollo local.
 - **Modo Pro (Colab/Cloud)**: Cerebro gigante (256 dim, 6 capas). Requiere GPU potente (T4/A100). Capaz de entender conceptos más profundos.
 
-### 🎓 Aprendizaje Continuo
-- **Self-Play**: La IA se inventa sus propios problemas para practicar, como un estudiante estudiando para un examen.
-- **Curriculum Learning**: Empieza con sumas simples y avanza hasta trigonometría y exponentes.
-- **Benchmark IQ**: Un examen estandarizado de 10 problemas (Feynman, Nguyen) para medir su coeficiente intelectual matemático.
+### 🎓 Aprendizaje y Curriculum
+- **Hard Mining**: El sistema identifica activamente los problemas donde la red falla y desafía al Motor GP a resolverlos.
+- **Teacher-Student**: La red neuronal (Alumno) se entrena replicando las soluciones exitosas del GP (Maestro).
+- **Benchmarks Científicos**: Validado con el dataset de Feynman (Física) para redescubrir leyes fundamentales.
 
 ### ☁️ Listo para la Nube
 - **Google Colab**: Incluye un script generador (`AlphaSymbolic_Colab.ipynb`) para correr todo el proyecto gratis en la nube de Google con un solo click.
@@ -62,16 +62,20 @@ Ve a la pestaña `Entrenamiento` y activa el **Self-Play Loop**.
 - La IA generará datos, intentará resolverlos, y aprenderá de sus errores.
 - **Tip**: Déjalo correr 1000 iteraciones para ver resultados mágicos.
 
-### 3. Búsqueda (El Examen)
+### 3. Búsqueda Híbrida
 Ve a `Buscar Fórmula`.
 - Escribe tus datos X e Y (ej: `1,2,3` y `2,4,6`).
 - Dale a **Buscar Fórmula**.
-- El sistema usará **MCTS** para navegar el espacio de posibilidades y encontrar la ecuación exacta.
+- El sistema lanzará un **Neural Beam Search** para generar candidatos y el **Motor GP** los refinará en milisegundos.
 
 ### 4. Benchmark (El Test de CI)
 Ve a `Benchmark (IQ Test)`.
 - Dale a **Iniciar Examen**.
 - La IA se enfrentará a 10 problemas clásicos de regresión simbólica sin haberlos visto antes.
+
+### 5. Herramientas Avanzadas (Scripts)
+- **Benchmark Físico**: Ejecuta `python run_benchmark_feynman.py` para probar el modelo con leyes físicas reales (Gravedad, Relatividad, etc.).
+- **Rescate de Datos**: Si cierras la app, usa `python rescue_data.py` para extraer las fórmulas aprendidas de los logs de la consola y guardarlas en CSV.
 
 ---
 
