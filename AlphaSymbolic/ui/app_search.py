@@ -77,7 +77,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
         # We pass beam_width. gp_timeout is increased to 30s to allow convergence on complex problems.
         hybrid_res = hybrid_solve(x, y, MODEL, DEVICE, beam_width=int(beam_width), gp_timeout=30)
         
-        if hybrid_res:
+        if hybrid_res and hybrid_res.get('formula'):
             progress(0.9, desc="Procesando resultados GP...")
             # Convert infix string back to tokens for consistency
             tree = ExpressionTree.from_infix(hybrid_res['formula'])
