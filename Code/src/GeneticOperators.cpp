@@ -32,11 +32,11 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
         // Crear operador
         auto node = std::make_shared<Node>(NodeType::Operator);
         // Match the weights in Globals.h: +, -, *, /, ^, %, s, c, l, e, !, _, g
-        const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
+        const std::vector<char> ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g', 'S', 'C', 'T'};
         std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
         node->op = ops[op_dist(rng)];
 
-        bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
+        bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 'S' || node->op == 'C' || node->op == 'T');
 
         // Generar hijos recursivamente
         node->left = generate_random_tree(max_depth, current_depth + 1);
@@ -326,7 +326,7 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                  // Esto asegura que si 'g' tiene peso alto, sea elegido frecuentemente.
                  // Asumimos que OPERATOR_WEIGHTS tiene 0.0 para operadores deshabilitados.
                  
-                 const std::vector<char> all_ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
+                 const std::vector<char> all_ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g', 'S', 'C', 'T'};
                  std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
                  
                  // Verificar si hay al menos 2 operadores habilitados para evitar bucle infinito
@@ -346,7 +346,7 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                          char new_op = all_ops[new_op_idx];
                          
                          bool was_unary = (old_op == 's' || old_op == 'c' || old_op == 'l' || old_op == 'e' || old_op == '!' || old_op == '_' || old_op == 'g');
-                         bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_' || new_op == 'g');
+                         bool is_unary = (new_op == 's' || new_op == 'c' || new_op == 'l' || new_op == 'e' || new_op == '!' || new_op == '_' || new_op == 'g' || new_op == 'S' || new_op == 'C' || new_op == 'T');
 
                          if (was_unary && !is_unary) {
                              current_node.right = generate_replacement(1);
@@ -368,13 +368,13 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
             {
                 auto new_op_node = std::make_shared<Node>(NodeType::Operator);
                 // Usar distribución ponderada
-                const std::vector<char> all_ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g'};
+                const std::vector<char> all_ops = {'+', '-', '*', '/', '^', '%', 's', 'c', 'l', 'e', '!', '_', 'g', 'S', 'C', 'T'};
                 std::discrete_distribution<int> op_dist(OPERATOR_WEIGHTS.begin(), OPERATOR_WEIGHTS.end());
                 
                 int new_op_idx = op_dist(rng); // Siempre elegirá uno habilitado
                 new_op_node->op = all_ops[new_op_idx];
 
-                bool is_unary = (new_op_node->op == 's' || new_op_node->op == 'c' || new_op_node->op == 'l' || new_op_node->op == 'e' || new_op_node->op == '!' || new_op_node->op == '_' || new_op_node->op == 'g');
+                bool is_unary = (new_op_node->op == 's' || new_op_node->op == 'c' || new_op_node->op == 'l' || new_op_node->op == 'e' || new_op_node->op == '!' || new_op_node->op == '_' || new_op_node->op == 'g' || new_op_node->op == 'S' || new_op_node->op == 'C' || new_op_node->op == 'T');
 
                 new_op_node->left = current_node_ptr_ref;
 

@@ -51,7 +51,7 @@ double evaluate_tree(const NodePtr& node, double x) {
         case NodeType::Variable: return x;
         case NodeType::Operator: {
             // Determine arity
-            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u');
+            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u' || node->op == 'S' || node->op == 'C' || node->op == 'T');
 
             double leftVal = evaluate_tree(node->left, x);
             double rightVal = 0.0;
@@ -110,6 +110,15 @@ double evaluate_tree(const NodePtr& node, double x) {
                     case 'g':
                         result = std::lgamma(std::abs(leftVal) + 1.0); 
                         break;
+                    case 'S': 
+                        // Protected Asin: asin(clip(x, -1, 1))
+                        result = std::asin(std::max(-1.0, std::min(1.0, leftVal))); 
+                        break;
+                    case 'C': 
+                        // Protected Acos: acos(clip(x, -1, 1))
+                        result = std::acos(std::max(-1.0, std::min(1.0, leftVal))); 
+                        break;
+                    case 'T': result = std::atan(leftVal); break;
                     default: return std::nan("");
                 }
             } catch (const std::exception& e) { return INF; }
@@ -132,7 +141,7 @@ std::string tree_to_string(const NodePtr& node) {
             std::string left_str = tree_to_string(left_node);
             
             // Check arity
-            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u');
+            bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u' || node->op == 'S' || node->op == 'C' || node->op == 'T');
 
             if (is_unary) {
                 switch(node->op) {
@@ -148,6 +157,9 @@ std::string tree_to_string(const NodePtr& node) {
                     case '_': return "floor(" + left_str + ")";
                     case 'u': return "ceil(" + left_str + ")";
                     case 'g': return "lgamma(" + left_str + ")";
+                    case 'S': return "asin(" + left_str + ")";
+                    case 'C': return "acos(" + left_str + ")";
+                    case 'T': return "atan(" + left_str + ")";
                     default: return "op(" + left_str + ")";
                 }
             }
@@ -341,6 +353,7 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
         // --- B. Parsear Funciones Unarias y Constantes ---
         std::unordered_map<std::string, char> func_map = {
             {"sin", 's'}, {"cos", 'c'}, {"tan", 't'}, 
+            {"asin", 'S'}, {"acos", 'C'}, {"atan", 'T'},
             {"log", 'l'}, {"exp", 'e'}, {"sqrt", 'q'},
             {"floor", '_'}, {"ceil", '^'}, {"abs", 'a'}, {"sign", 'n'},
             {"gamma", '!'}, {"lgamma", 'g'}, {"g", 'g'}

@@ -118,8 +118,8 @@ class DataGenerator:
         if 'pow' in self.operators:
             available_structures.append('poly')
             
-        # Trig needed: sin, cos
-        if 'sin' in self.operators or 'cos' in self.operators:
+        # Trig needed: sin, cos, asin, acos, atan
+        if any(op in self.operators for op in ['sin', 'cos', 'asin', 'acos', 'atan']):
             available_structures.append('trig')
             
         # Exp/Log needed
@@ -152,7 +152,7 @@ class DataGenerator:
                 
         elif choice == 'trig':
             # Filter trig ops that are allowed
-            ops = [op for op in ['sin', 'cos'] if op in self.operators]
+            ops = [op for op in ['sin', 'cos', 'asin', 'acos', 'atan'] if op in self.operators]
             if not ops: return input_node # Should be caught by structure check
             func = random.choice(ops)
             val = input_node if isinstance(input_node, list) else [input_node]

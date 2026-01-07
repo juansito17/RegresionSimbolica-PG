@@ -19,6 +19,9 @@ OPERATORS = {
     'sin': 1,
     'cos': 1,
     'tan': 1,
+    'asin': 1,
+    'acos': 1,
+    'atan': 1,
     
     # === STAGE 3: Transcendental ===
     'exp': 1,
@@ -39,8 +42,8 @@ OPERATORS = {
 OPERATOR_STAGES = {
     0: ['+', '-', '*', '/'],
     1: ['+', '-', '*', '/', 'pow', 'sqrt'],
-    2: ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos', 'tan'],
-    3: ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos', 'tan', 'exp', 'log'],
+    2: ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan'],
+    3: ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log'],
     4: list(OPERATORS.keys()),  # All operators
 }
 
@@ -189,7 +192,7 @@ class ExpressionTree:
         elif isinstance(node, ast.Call):
             # Functions like sin(x)
             func_id = node.func.id
-            if func_id in ['sin', 'cos', 'tan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma']:
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma']:
                 tokens = [func_id]
                 for arg in node.args:
                     tokens.extend(ExpressionTree._ast_to_prefix(arg))
@@ -285,6 +288,13 @@ class ExpressionTree:
             if val == 'sin': return np.sin(args[0])
             if val == 'cos': return np.cos(args[0])
             if val == 'tan': return np.tan(args[0])
+            if val == 'asin': 
+                # Protected asin: asin(clip(x, -1, 1))
+                return np.arcsin(np.clip(args[0], -1 + 1e-7, 1 - 1e-7))
+            if val == 'acos': 
+                # Protected acos: acos(clip(x, -1, 1))
+                return np.arccos(np.clip(args[0], -1 + 1e-7, 1 - 1e-7))
+            if val == 'atan': return np.arctan(args[0])
             if val == 'exp': 
                 return np.exp(np.clip(args[0], -100, 100))
             if val == 'log': 

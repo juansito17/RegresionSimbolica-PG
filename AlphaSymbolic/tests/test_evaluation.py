@@ -23,6 +23,10 @@ def test_evaluation():
         (['sin', 'pow', 'x', '2'], lambda x: np.sin(x**2), "sin(x^2)"),
         # Log (handle domain safety manually for test inputs, but implementation handles it)
         (['log', 'x'], lambda x: np.log(np.abs(x) + 1e-10), "log(|x|)"),
+        # Inverse Trigonometry
+        (['asin', 'x'], lambda x: np.arcsin(np.clip(x, -1+1e-7, 1-1e-7)), "asin(x)"),
+        (['acos', 'x'], lambda x: np.arccos(np.clip(x, -1+1e-7, 1-1e-7)), "acos(x)"),
+        (['atan', 'x'], lambda x: np.arctan(x), "atan(x)"),
     ]
 
     all_passed = True

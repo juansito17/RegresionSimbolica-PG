@@ -91,6 +91,9 @@ const bool USE_OP_EXP      = true; // e
 const bool USE_OP_FACT     = true; // !
 const bool USE_OP_FLOOR    = true; // _
 const bool USE_OP_GAMMA    = true; // g
+const bool USE_OP_ASIN     = true; // S
+const bool USE_OP_ACOS     = true; // C
+const bool USE_OP_ATAN     = true; // T
 
 // Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
 // Los pesos se multiplican por el flag (0 o 1) para habilitar/deshabilitar.
@@ -107,7 +110,10 @@ const std::vector<double> OPERATOR_WEIGHTS = {
     0.02 * (USE_OP_EXP   ? 1.0 : 0.0), // e
     0.05 * (USE_OP_FACT  ? 1.0 : 0.0), // !
     0.05 * (USE_OP_FLOOR ? 1.0 : 0.0), // _
-    0.20 * (USE_OP_GAMMA ? 1.0 : 0.0)  // g
+    0.20 * (USE_OP_GAMMA ? 1.0 : 0.0), // g
+    0.01 * (USE_OP_ASIN  ? 1.0 : 0.0), // S
+    0.01 * (USE_OP_ACOS  ? 1.0 : 0.0), // C
+    0.01 * (USE_OP_ATAN  ? 1.0 : 0.0)  // T
 };
 
 // ----------------------------------------
