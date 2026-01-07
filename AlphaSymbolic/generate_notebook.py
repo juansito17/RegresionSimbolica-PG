@@ -28,6 +28,7 @@ PYTHON_FILES = [
     "data/synthetic_data.py",
     "data/benchmark_data.py",
     "data/augmentation.py",
+    "data/expanded_benchmarks.py",
     "data/__init__.py",
     "search/mcts.py",
     "search/beam_search.py",
@@ -45,7 +46,13 @@ PYTHON_FILES = [
     "utils/benchmark_comparison.py",
     "utils/simplify.py",
     "utils/__init__.py",
+    "run_benchmark_feynman.py",
     "app.py"
+]
+
+DATA_FILES = [
+    "example_data/FeynmanEquations.csv",
+    "example_data/BonusEquations.csv"
 ]
 
 notebook = {
@@ -98,6 +105,7 @@ install_source = [
     "os.makedirs('Code/src', exist_ok=True)\n",
     "os.makedirs('Code/build', exist_ok=True)\n",
     "os.makedirs('AlphaSymbolic', exist_ok=True)\n",
+    "os.makedirs('AlphaSymbolic/example_data', exist_ok=True)\n",
     "directories = ['core', 'data', 'search', 'ui', 'utils']\n",
     "for d in directories:\n",
     "    os.makedirs(os.path.join('AlphaSymbolic', d), exist_ok=True)\n"
@@ -228,6 +236,25 @@ for rel_path in PYTHON_FILES:
         })
     else:
         print(f"Warning: Python file {rel_path} not found.")
+
+# 6. Embed Data Files
+for rel_path in DATA_FILES:
+    if os.path.exists(rel_path):
+        with open(rel_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        colab_path = f"AlphaSymbolic/{rel_path}"
+        cell_source = [f"%%writefile {colab_path}\n", content]
+        
+        notebook["cells"].append({
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {"collapsed": True},
+            "outputs": [],
+            "source": cell_source
+        })
+    else:
+        print(f"Warning: Data file {rel_path} not found.")
 
 # 6. Run App
 notebook["cells"].append({

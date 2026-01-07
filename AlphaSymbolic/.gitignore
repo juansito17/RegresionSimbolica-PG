@@ -18,3 +18,31 @@ test_output.txt
 # System
 .DS_Store
 Thumbs.db
+
+# Data & Results
+learned_formulas.csv
+feynman_*_results.csv
+feynman_results.csv
+pattern_memory.json
+*.csv
+
+# Exceptions for required data
+!data/*.csv
+!example_data/*.csv
+
+# Large Data Files
+example_data/*.txt
+*.txt
+!requirements.txt
+
+# Tests (Root temporary scripts only)
+/test_*.py
+/test_result.txt
+/test_output.txt
+/test_log.txt
+/reproduce_hos.py
+/debug_hall_of_shame.py
+
+# Keep the official tests directory
+!tests/
+/tests/__pycache__/

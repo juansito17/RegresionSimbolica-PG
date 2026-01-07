@@ -274,16 +274,39 @@ def create_app():
 
 
 
-# --- Global Initialization for Hot Reloading ---
-print("Iniciando AlphaSymbolic (Global Init)...")
-# Load model once at module level so 'gradio app.py' works
-status_init, device_info_init = load_model() 
-print(f"   {status_init} | {device_info_init}")
 
-# Create the app instance globally
-demo = create_app()
+# --- Global Initialization for Hot Reloading ---
+# IMPORTANT: For Windows Multiprocessing, we must protect entry point.
+# However, Gradio needs 'demo' to be available for 'gradio app.py'.
+# The issue is 'gradio app.py' imports this file, and multiprocessing spawns new processes that import it again.
 
 if __name__ == "__main__":
+    # If run directly (python app.py)
+    print("Iniciando AlphaSymbolic (Global Init - Direct Execution)...")
+    status_init, device_info_init = load_model() 
+    print(f"   {status_init} | {device_info_init}")
+    demo = create_app()
     print("Abriendo navegador...")
-    # Launch with auto-reload compatibility if run directly (though proper reload needs 'gradio app.py')
     demo.launch(share=True, inbrowser=True)
+else:
+    # If imported by 'gradio app.py' or multiprocessing workers
+    # We only want to load the model if it's the Main Process (Gradio Server)
+    # But multiprocessing workers import this too.
+    # We can try to detect if we are a worker or the server.
+    
+    # Simple fix for Gradio Reload:
+    # define demo globally but lazy load model?
+    # No, let's keep it simple.
+    
+    print("AlphaSymbolic Module Imported.")
+    # Attempt to load model only if not in a worker process?
+    # Actually, for 'gradio app.py', this 'else' block runs.
+    # We need 'demo' to be defined here.
+    
+    try:
+        status_init, device_info_init = load_model() 
+        print(f"   {status_init} | {device_info_init}")
+    except Exception:
+        pass # Might fail in workers, that's fine
+
+    demo = create_app()

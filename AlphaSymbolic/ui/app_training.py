@@ -10,6 +10,8 @@ import gradio as gr
 from collections import deque
 import random
 import time
+import csv
+import datetime
 
 from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES
 from data.synthetic_data import DataGenerator
@@ -972,6 +974,8 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
             progress((iteration + 1) / iterations, 
                      desc=f"Iter {iteration+1}/{int(iterations)} | GP Success: {gp_successes}/{gp_attempts} | Loss: {np.mean(losses[-10:]) if losses else 0:.3f}")
             
+            start_time_loop = time.time()
+            
             # --- PHASE 1: HARD MINING ---
             MODEL.eval()
             
@@ -1028,6 +1032,22 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
             for prob in problems_to_solve:
                 gp_attempts += 1
                 try:
+                    # Construct Live HTML
+                    status_html = f"""
+                    <div style="background: #1a1a2e; padding: 15px; border-radius: 10px; border: 1px solid #4ade80;">
+                        <h3 style="color: #4ade80; margin:0;">🚀 Training Hybrid Loop (Live)</h3>
+                        <p style="color:#ddd;">Iteracion: <strong>{iteration+1}/{iterations}</strong> | Problema: <strong>{gp_attempts % int(problems_per_iter) + 1}/{int(problems_per_iter)}</strong></p>
+                        <p style="color:#ddd;">GP Exitos: <strong>{gp_successes}</strong></p>
+                        <p style="color:#ffd93d;">⏳ Tiempo Restante (ETA): <strong>{locals().get('eta_str', 'Calculando...')}</strong></p>
+                        {locals().get('seeds_html', '')}
+                    </div>
+                    """
+                    if len(losses) > 0:
+                         fig = create_loss_plot(losses, f"Loss: {losses[-1]:.4f}")
+                    else:
+                         fig = None
+                    yield status_html, fig
+                    
                     # Run Hybrid Search (Quick Mode)
                     # We pass the model so beam search can seed the GP
                     res = hybrid_solve(
@@ -1037,8 +1057,29 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                         DEVICE, 
                         beam_width=10,     # Faster beam
                         gp_timeout=gp_timeout,
-                        gp_binary_path=None 
+                        gp_binary_path=None,
+                        max_workers=6      # Parallel Workers (Mission 1)
                     )
+                    
+                    # --- UI UPDATE: LIVE STATS ---
+                    elapsed_total = time.time() - start_time_loop
+                    full_loop_problems = iterations * problems_per_iter
+                    solved_problems_count = (iteration * int(problems_per_iter)) + gp_attempts
+                    if solved_problems_count > 0:
+                        avg_time = elapsed_total / solved_problems_count
+                        remaining = full_loop_problems - solved_problems_count
+                        eta_seconds = remaining * avg_time
+                        eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                    else:
+                        eta_str = "Calculando..."
+
+                    seeds_html = ""
+                    if res and 'seeds_tried' in res and res['seeds_tried']:
+                        seeds_html = "<h4 style='color:#ccc; margin-bottom:5px;'>🔎 Top Seeds per Worker:</h4>"
+                        seeds_html += "<div style='display:flex; flex-wrap:wrap; gap:5px; font-size:12px; color:#888;'>"
+                        for i, s in enumerate(res['seeds_tried']):
+                            seeds_html += f"<span style='background:#222; padding:3px 6px; border-radius:4px;'>Worker {i+1}: {s[:30]}...</span>"
+                        seeds_html += "</div>"
                     
                     if res and res.get('formula') and res.get('rmse', 1e6) < 0.01:
                         # SUCCESS!
@@ -1051,12 +1092,48 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                             # 2. Get tokens
                             tokens = tree.tokens
                             
+                            # Calculate Efficiency Reward
+                            # If time < 5s -> Reward 1.0 (Gold Standard)
+                            # If time > 5s -> Linear Decay down to 0.5 at 30s
+                            taken_time = res.get('time', 10.0)
+                            efficiency_reward = 1.0
+                            if taken_time > 5.0:
+                                # Decay: 5s=1.0, 30s=0.5
+                                # Formula: 1.0 - ((time - 5) / 25) * 0.5
+                                decay = ((taken_time - 5.0) / 25.0) * 0.5
+                                efficiency_reward = max(0.5, 1.0 - decay)
+
                             replay_buffer.append({
                                 'x': prob['x'],
                                 'y': prob['y'],
                                 'tokens': tokens,
-                                'source': 'GP_Teacher'
+                                'source': 'GP_Teacher',
+                                'reward': efficiency_reward
                             })
+
+                            # --- MISSION 2: PERSISTENCE ---
+                            try:
+                                log_file = "learned_formulas.csv"
+                                file_exists = os.path.isfile(log_file)
+                                
+                                with open(log_file, "a", newline="", encoding="utf-8") as csvfile:
+                                    fieldnames = ["timestamp", "formula", "rmse", "complexity", "source", "time_taken"]
+                                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                                    
+                                    if not file_exists:
+                                        writer.writeheader()
+                                        
+                                    writer.writerow({
+                                        "timestamp": datetime.datetime.now().isoformat(),
+                                        "formula": res['formula'],
+                                        "rmse": res.get('rmse', 0.0),
+                                        "complexity": len(tokens),
+                                        "source": "GP_Teacher",
+                                        "time_taken": res.get('time', 0.0)
+                                    })
+                            except Exception as e:
+                                print(f"Failed to log formula to CSV: {e}")
+                            # -------------------------------
                             
                         except Exception as e:
                             print(f"Failed to tokenize GP result: {e}")
@@ -1102,8 +1179,11 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                     # We trust the GP solution is "Correct" (Value=1.0)
                     loss_ce = torch.nn.CrossEntropyLoss(ignore_index=-1)(logits.view(-1, VOCAB_SIZE+1), targets.view(-1))
                     
-                    # Value Loss
-                    value_targets = torch.ones_like(value_pred) # GP solutions are always valid
+                    # Value Loss (Time-Aware Reward)
+                    # We extract the specific reward for each sample in the batch
+                    # Default to 1.0 (legacy data) if 'reward' is missing
+                    batch_rewards = [d.get('reward', 1.0) for d in batch]
+                    value_targets = torch.tensor(batch_rewards, dtype=torch.float32).to(DEVICE).unsqueeze(1)
                     loss_val = torch.nn.functional.mse_loss(value_pred, value_targets)
                     
                     loss = loss_ce + 0.1 * loss_val
@@ -1132,6 +1212,9 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
             <p style="color: #bbb;">Nuevos Ejemplos Generados: {len(replay_buffer)}</p>
         </div>
         """
+        
+        # Intermediate Yield for Live Updates
+        yield result_html, fig
         return result_html, fig
 
     except Exception as e:
