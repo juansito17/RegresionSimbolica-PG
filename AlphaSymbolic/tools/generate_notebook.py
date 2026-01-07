@@ -2,9 +2,9 @@
 import json
 import os
 
-# Define file paths relative to the script location (AlphaSymbolic/)
-# We want to pull C++ files from ../Code/src
-CPP_SOURCE_DIR = "../Code/src"
+# Define file paths relative to the script location (AlphaSymbolic/tools/)
+# We want to pull C++ files from ../../Code/src
+CPP_SOURCE_DIR = "../../Code/src"
 CPP_FILES = [
     'AdvancedFeatures.cpp', 'AdvancedFeatures.h',
     'ExpressionTree.cpp', 'ExpressionTree.h',
@@ -51,8 +51,8 @@ PYTHON_FILES = [
 ]
 
 DATA_FILES = [
-    "example_data/FeynmanEquations.csv",
-    "example_data/BonusEquations.csv"
+    "data/benchmarks/FeynmanEquations.csv",
+    "data/benchmarks/BonusEquations.csv"
 ]
 
 notebook = {
@@ -105,8 +105,8 @@ install_source = [
     "os.makedirs('Code/src', exist_ok=True)\n",
     "os.makedirs('Code/build', exist_ok=True)\n",
     "os.makedirs('AlphaSymbolic', exist_ok=True)\n",
-    "os.makedirs('AlphaSymbolic/example_data', exist_ok=True)\n",
-    "directories = ['core', 'data', 'search', 'ui', 'utils']\n",
+    "os.makedirs('AlphaSymbolic/data/benchmarks', exist_ok=True)\n",
+    "directories = ['core', 'data', 'search', 'ui', 'utils', 'models', 'results', 'tools', 'logs', 'notebooks']\n",
     "for d in directories:\n",
     "    os.makedirs(os.path.join('AlphaSymbolic', d), exist_ok=True)\n"
 ]
@@ -282,7 +282,7 @@ notebook["cells"].append({
         "import time\n",
         "\n",
         "try:\n",
-        "    src = 'learned_formulas.csv'\n",
+        "    src = 'results/learned_formulas.csv'\n",
         "    dst = '/content/drive/MyDrive/AlphaSymbolic_Models/learned_formulas.csv'\n",
         "    if os.path.exists(src):\n",
         "        shutil.copy(src, dst)\n",

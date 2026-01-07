@@ -27,7 +27,7 @@ def run_benchmark():
     print("Loading Feynman Dataset (FULL)...")
     problems = load_expanded_feynman_subset(limit=None) 
     if not problems:
-        print("No problems loaded. Check example_data/FeynmanEquations.csv")
+        print("No problems loaded. Check data/benchmarks/FeynmanEquations.csv")
         return
 
     presets_to_test = ['lite', 'pro']

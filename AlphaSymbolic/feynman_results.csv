@@ -1,7 +1,0 @@
-ID,Name,Target,Prediction,RMSE,Time,Status
-I.6.20a,Gaussian Probability,exp(-(x * x) / 2),((3.33482722^(x*-0.41524836))^x),4.801996617311118e-05,53.04530620574951,✅ SOLVED
-I.29.16,Damped Oscillation,exp(-x) * sin(x),(sin(x)/exp(x)),7.621563411809558e-18,11.358700275421143,✅ SOLVED
-II.35.21,Maxwell Boltzmann,x * x * exp(-(x * x)),((x*x)/exp((x*x))),1.2794688166302259e-17,7.062521934509277,✅ SOLVED
-Bonus.1,Growth Decay,1 - exp(-x),(x/(x+(2.17817275^((x/(2.10015319+x))-x)))),0.002037790232151934,45.30005097389221,✅ SOLVED
-Bonus.2,Sigmoid,1 / (1 + exp(-x)),(0.41933126^sin((0.3703422^x))),0.007560431530468443,38.69842767715454,✅ SOLVED
-Bonus.3,Sinc Function,sin(x) / x,(sin(x)/x),0.0,13.406267881393433,✅ SOLVED

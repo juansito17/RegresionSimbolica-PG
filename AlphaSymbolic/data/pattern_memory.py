@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 
 class PatternMemory:
+    DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "benchmarks", "pattern_memory.json")
     def __init__(self, path="pattern_memory.json", max_patterns=500):
         self.path = path
         self.max_patterns = max_patterns

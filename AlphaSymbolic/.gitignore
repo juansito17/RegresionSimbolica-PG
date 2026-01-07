@@ -4,22 +4,28 @@ __pycache__/
 *$py.class
 
 # Models
-*.pth
-*.pt
+models/*.pth
+models/*.pt
 alpha_symbolic_model_*.pth
 
 # Logs
+logs/test_log.txt
+logs/test_output.txt
 test_log.txt
 test_output.txt
 
 # Jupyter
 .ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
 
 # System
 .DS_Store
 Thumbs.db
 
 # Data & Results
+results/learned_formulas.csv
+results/feynman_*_results.csv
+results/feynman_results.csv
 learned_formulas.csv
 feynman_*_results.csv
 feynman_results.csv
@@ -35,7 +41,7 @@ example_data/*.txt
 *.txt
 !requirements.txt
 
-# Tests (Root temporary scripts only)
+# Tests & Tools (Root temporary scripts only)
 /test_*.py
 /test_result.txt
 /test_output.txt
@@ -43,6 +49,8 @@ example_data/*.txt
 /reproduce_hos.py
 /debug_hall_of_shame.py
 
-# Keep the official tests directory
+# Keep the official tests and tools directories
 !tests/
+!tools/
 /tests/__pycache__/
+/tools/__pycache__/

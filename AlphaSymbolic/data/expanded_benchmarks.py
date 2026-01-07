@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 
-def load_expanded_feynman_subset(csv_path="example_data/FeynmanEquations.csv", limit=50):
+def load_expanded_feynman_subset(csv_path="data/benchmarks/FeynmanEquations.csv", limit=50):
     """
     Loads equations from the Feynman dataset and projects them to 1D.
     Strategies for projection:

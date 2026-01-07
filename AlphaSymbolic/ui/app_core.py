@@ -118,8 +118,12 @@ def load_model(force_reload=False, preset_name=None):
     drive_path = "/content/drive/MyDrive/AlphaSymbolic_Models"
     drive_filename = os.path.join(drive_path, filename)
     
+    local_path = os.path.join("models", filename)
+    
     source_file = None
-    if os.path.exists(filename):
+    if os.path.exists(local_path):
+        source_file = local_path
+    elif os.path.exists(filename): # Legacy location
         source_file = filename
     elif os.path.exists(drive_filename):
         print(f"📦 Local model missing. Loading from Drive: {drive_filename}")
@@ -170,7 +174,8 @@ def save_model():
     global MODEL, CURRENT_PRESET
     if MODEL is not None:
         filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
-        torch.save(MODEL.state_dict(), filename)
+        local_path = os.path.join("models", filename)
+        torch.save(MODEL.state_dict(), local_path)
         
         # Backup to Google Drive if available
         drive_path = "/content/drive/MyDrive/AlphaSymbolic_Models"
