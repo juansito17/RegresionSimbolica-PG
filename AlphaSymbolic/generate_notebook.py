@@ -270,6 +270,30 @@ notebook["cells"].append({
     ]
 })
 
+# 7. Backup Learned Data
+notebook["cells"].append({
+    "cell_type": "code",
+    "execution_count": None,
+    "metadata": {},
+    "outputs": [],
+    "source": [
+        "# Backup Learned Formulas to Drive (Run manually or keep active)\n",
+        "import shutil\n",
+        "import time\n",
+        "\n",
+        "try:\n",
+        "    src = 'learned_formulas.csv'\n",
+        "    dst = '/content/drive/MyDrive/AlphaSymbolic_Models/learned_formulas.csv'\n",
+        "    if os.path.exists(src):\n",
+        "        shutil.copy(src, dst)\n",
+        "        print(f\"✅ Backup successful: {dst}\")\n",
+        "    else:\n",
+        "        print(\"⚠️ No learned formulas found yet.\")\n",
+        "except Exception as e:\n",
+        "    print(f\"❌ Backup failed: {e}\")\n"
+    ]
+})
+
 # Save
 output_filename = "AlphaSymbolic_Unified_Colab.ipynb"
 with open(output_filename, "w", encoding="utf-8") as f:
