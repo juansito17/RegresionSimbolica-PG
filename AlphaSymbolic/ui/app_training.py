@@ -1222,7 +1222,7 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
 
                             # --- MISSION 2: PERSISTENCE ---
                             try:
-                                log_file = "learned_formulas.csv"
+                                log_file = os.path.join("results", "learned_formulas.csv")
                                 file_exists = os.path.isfile(log_file)
                                 
                                 with open(log_file, "a", newline="", encoding="utf-8") as csvfile:
