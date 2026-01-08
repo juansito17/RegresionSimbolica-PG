@@ -75,6 +75,13 @@ def main():
         
         print(f"\n[Iter {iteration}] Sampling {k} points...")
         
+        # Prepare Seeds (Evolutionary Feedback)
+        extra_seeds = []
+        if top_formulas and len(top_formulas) > 0:
+            best_formula = top_formulas[0]['formula']
+            extra_seeds.append(best_formula)
+            print(f"Feedback: Injecting best formula as seed: {best_formula[:50]}...")
+
         # 2. Search
         try:
             # We use a relatively small beam width for speed, relying on many iterations
@@ -84,7 +91,8 @@ def main():
                 beam_width=10, 
                 gp_timeout=10, # Keep it snappy
                 max_workers=4,
-                num_variables=1
+                num_variables=1,
+                extra_seeds=extra_seeds
             )
         except Exception as e:
             print(f"Search failed: {e}")

@@ -47,7 +47,8 @@ def hybrid_solve(
     gp_timeout: int = 10,
     gp_binary_path: Optional[str] = None,
     max_workers: int = 4,
-    num_variables: int = 1
+    num_variables: int = 1,
+    extra_seeds: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
     Solves Symbolic Regression using a Hybrid Neuro-Evolutionary approach with Parallel GP.
@@ -61,6 +62,12 @@ def hybrid_solve(
     neural_results = beam_solve(x_values, y_values, model, device, beam_width=beam_width, num_variables=num_variables)
     
     seeds = []
+    
+    # Inject Extra Seeds (Feedback Loop)
+    if extra_seeds:
+        print(f"[Phase 1] Injecting {len(extra_seeds)} external seeds (Feedback Loop).")
+        seeds.extend(extra_seeds)
+        
     if neural_results:
         print(f"[Phase 1] Found {len(neural_results)} candidates.")
         seen_formulas = set()
