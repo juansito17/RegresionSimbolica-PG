@@ -13,12 +13,13 @@ import time
 import csv
 import datetime
 
-from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES
+from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES, VARIABLES
 from data.synthetic_data import DataGenerator
 from ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
 from core.loss import QuantileLoss
 from search.hybrid_search import hybrid_solve
 from core.grammar import ExpressionTree, simplify_formula
+from utils.data_utils import normalize_batch
 
 
 def get_allowed_token_mask(stage, vocab_size, device):
@@ -29,8 +30,9 @@ def get_allowed_token_mask(stage, vocab_size, device):
     """
     allowed_ops = OPERATOR_STAGES.get(stage, list(OPERATORS.keys()))
     
-    # All terminals are always allowed
-    allowed_tokens = set(['x', 'C', '0', '1', '2', '3', '5', '10', 'pi', 'e'])
+    # All terminals are always allowed + VARIABLES
+    allowed_tokens = set(['C', '0', '1', '2', '3', '5', '10', 'pi', 'e'])
+    allowed_tokens.update(VARIABLES) # IMPORTANT! Don't forget variables
     allowed_tokens.update(allowed_ops)
     
     # Build mask
@@ -43,30 +45,8 @@ def get_allowed_token_mask(stage, vocab_size, device):
     return mask
 
 
-def normalize_batch(x_list, y_list):
-    """Normalize X and Y values to prevent numerical instability."""
-    normalized_x = []
-    normalized_y = []
-    
-    for x, y in zip(x_list, y_list):
-        # Normalize X to [-1, 1]
-        x_min, x_max = x.min(), x.max()
-        if x_max - x_min > 1e-6:
-            x_norm = 2 * (x - x_min) / (x_max - x_min) - 1
-        else:
-            x_norm = np.zeros_like(x)
-        
-        # Normalize Y to [-1, 1] 
-        y_min, y_max = y.min(), y.max()
-        if y_max - y_min > 1e-6:
-            y_norm = 2 * (y - y_min) / (y_max - y_min) - 1
-        else:
-            y_norm = np.zeros_like(y)
-        
-        normalized_x.append(x_norm)
-        normalized_y.append(y_norm)
-    
-    return normalized_x, normalized_y
+# Normalization moved to utils.data_utils
+
 
 
 def train_basic(epochs, batch_size, point_count=10, num_variables=1, progress=gr.Progress()):
@@ -182,6 +162,7 @@ def train_curriculum(epochs, batch_size, point_count=10, num_variables=1, progre
         
         VOCAB_SIZE = len(VOCABULARY)
         SOS_ID = VOCAB_SIZE
+        quantile_loss_fn = QuantileLoss().to(DEVICE)
         losses = []
         
         for epoch in range(int(epochs)):
@@ -241,9 +222,9 @@ def train_curriculum(epochs, batch_size, point_count=10, num_variables=1, progre
             loss_policy = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
             
             # Value Loss
-            # For supervised learning, these are "perfect" solutions, so Value Target = 1.0
-            value_targets = torch.ones_like(value_pred)
-            loss_value = torch.nn.functional.mse_loss(value_pred, value_targets)
+            # For supervised learning, these are "perfect" solutions, so Value Target = 1.0 (as a scalar per batch item)
+            value_targets = torch.ones((len(batch), 1), device=DEVICE)
+            loss_value = quantile_loss_fn(value_pred, value_targets)
             
             # Combined Loss
             loss = loss_policy + 0.5 * loss_value
@@ -319,7 +300,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
         # Adjusted for RTX 3050/i5: Batch 64 is smoother (less CPU wait)
         # Initialize with Stage 0 (Arithmetic only)
         curriculum_stage = 0
-        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage)
+        searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage, num_variables=int(num_variables))
         
         rmses = []
         losses = []
@@ -369,7 +350,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                 stage_info = CURRICULUM_LEVELS[curriculum_stage]
                 data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
                 # Recreate MCTS with new curriculum stage for operator filtering
-                searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage)
+                searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage, num_variables=int(num_variables))
                 print(f"*** Curriculum Level Up! Stage {curriculum_stage} ({stage_info['depth']}, {stage_info['ops']}) ***")
                 # Clear buffer to avoid training on old easy data? Maybe keep some for replay.
             
@@ -474,7 +455,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                 # Simple Greedy Decode to see what it predicts
                 from search.beam_search import BeamSearch
                 # Use beam search with width 1 (Greedy) for speed, with curriculum mask
-                bs = BeamSearch(MODEL, DEVICE, beam_width=1, max_length=20, curriculum_stage=curriculum_stage)
+                bs = BeamSearch(MODEL, DEVICE, beam_width=1, max_length=20, curriculum_stage=curriculum_stage, num_variables=int(num_variables))
                 
                 for i in range(len(top_failures)):
                     try:
@@ -552,7 +533,8 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                             gp_result = hybrid_solve(
                                 x_data, y_data, MODEL, DEVICE,
                                 beam_width=20,  # Small beam for speed
-                                gp_timeout=5    # Short timeout
+                                gp_timeout=5,    # Short timeout
+                                num_variables=int(num_variables)
                             )
                             
                             if gp_result and gp_result.get('formula'):
@@ -738,11 +720,22 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
 
 def create_loss_plot(losses, title):
     """Create a loss plot with dark theme."""
+    plt.close('all')
     fig, ax = plt.subplots(figsize=(8, 4), facecolor='#1a1a2e')
     ax.set_facecolor('#1a1a2e')
-    ax.plot(losses, color='#00d4ff', linewidth=2)
-    ax.set_xlabel('Epoca', color='white')
-    ax.set_ylabel('Loss', color='white')
+    
+    if losses and len(losses) > 0:
+        ax.plot(losses, color='#00d4ff', linewidth=2)
+        ax.set_xlabel('Paso', color='white')
+        ax.set_ylabel('Loss', color='white')
+    else:
+        # Placeholder when no data
+        ax.text(0.5, 0.5, 'Esperando datos...', 
+                transform=ax.transAxes, fontsize=16, color='#888',
+                ha='center', va='center')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+    
     ax.set_title(title, color='white', fontweight='bold')
     ax.tick_params(colors='white')
     ax.grid(True, alpha=0.2)
@@ -754,6 +747,7 @@ def create_loss_plot(losses, title):
 
 def create_selfplay_plot(losses, rmses):
     """Create dual plot for self-play results."""
+    plt.close('all')
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor='#1a1a2e')
     
     ax1.set_facecolor('#1a1a2e')
@@ -784,7 +778,7 @@ def create_selfplay_plot(losses, rmses):
     plt.tight_layout()
     return fig
 
-def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, progress=gr.Progress()):
+def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Progress()):
     """
     Massive Supervised Pre-training (Warmup).
     Focus: Syntax, Basic Arithmetic, Overcoming "Collapse to Constant".
@@ -812,7 +806,7 @@ def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, pr
         
         # Progressive Curriculum Stages for Pre-training
         PRE_CURRICULUM = [
-            {'depth': 1, 'ops': ['+', '-', '*', '/'], 'stage': 0},           # 0-20%: Very basic
+            {'depth': 2, 'ops': ['+', '-', '*', '/'], 'stage': 0},           # 0-20%: Basic arithmetic (depth 2 for variety)
             {'depth': 2, 'ops': ['+', '-', '*', '/'], 'stage': 0},           # 20-40%: Deeper arithmetic
             {'depth': 2, 'ops': ['+', '-', '*', '/', 'pow', 'sqrt'], 'stage': 1},  # 40-60%: Powers
             {'depth': 3, 'ops': ['+', '-', '*', '/', 'pow', 'sqrt', 'sin', 'cos'], 'stage': 2},  # 60-80%: Trig
@@ -821,8 +815,10 @@ def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, pr
         
         losses = []
         current_stage_idx = 0
+        # Curriculum for variables: start simple, add complexity
+        VARS_BY_STAGE = [1, 1, 2, 3, 5]  # Max vars per stage
         stage_info = PRE_CURRICULUM[0]
-        data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
+        data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=1)
         allowed_mask = get_allowed_token_mask(stage_info['stage'] if stage_info['stage'] is not None else 4, VOCAB_SIZE, DEVICE)
         
         start_time = time.time()
@@ -840,11 +836,14 @@ def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, pr
             if new_stage_idx != current_stage_idx:
                 current_stage_idx = new_stage_idx
                 stage_info = PRE_CURRICULUM[current_stage_idx]
-                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
+                # Progressive variable curriculum: stages 0-1 use 1 var, 2 uses 1-2, 3 uses 1-3, 4 uses 1-5
+                max_vars_this_stage = VARS_BY_STAGE[current_stage_idx]
+                iter_num_vars = random.randint(1, max_vars_this_stage)
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=iter_num_vars)
                 stage_id = stage_info['stage'] if stage_info['stage'] is not None else 4
                 allowed_mask = get_allowed_token_mask(stage_id, VOCAB_SIZE, DEVICE)
                 stage_name = ['Arithmetic', 'Polynomials', 'Trigonometry', 'Advanced', 'Complex'][new_stage_idx]
-                print(f"📚 Pre-training: {stage_name} (depth={stage_info['depth']})")
+                print(f"📚 Pre-training: {stage_name} (depth={stage_info['depth']}, max_vars={max_vars_this_stage})")
             
             # ETA
             elapsed = time.time() - start_time
@@ -860,6 +859,14 @@ def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, pr
             stage_name = ['Arithmetic', 'Polynomials', 'Trigonometry', 'Advanced', 'Complex'][current_stage_idx]
             msg = f"[{stage_name}] Iter {i+1}/{int(iterations)} Loss:{np.mean(losses[-50:]) if losses else 0:.3f} LR:{current_lr:.1e} ETA:{eta_str}"
             progress((i + 1) / iterations, desc=msg)
+            
+            # Variable curriculum: use appropriate range for current stage
+            # IMPORTANT: Set num_variables BEFORE generating batch to ensure uniform dimensions
+            max_vars_this_stage = VARS_BY_STAGE[current_stage_idx]
+            batch_num_vars = random.randint(1, max_vars_this_stage)
+            data_gen.num_variables = batch_num_vars
+            data_gen.active_variables = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9'][:batch_num_vars]
+            data_gen.terminals = data_gen.active_variables + ['C', '0', '1', '2', '3', '5', '10', 'pi', 'e']
             
             # Generate Random Batch (High Speed)
             batch = data_gen.generate_batch(int(batch_size), point_count=int(point_count))
@@ -881,10 +888,15 @@ def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, pr
                 decoder_input[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
                 targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
                 
-            x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
-            y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+            # Prepare tensors: x is (batch, points, vars), y is (batch, points, 1)
+            x_tensor = torch.tensor(np.stack(x_list), dtype=torch.float32).to(DEVICE)
+            y_tensor = torch.tensor(np.stack(y_list), dtype=torch.float32).to(DEVICE)
+            if y_tensor.dim() == 2:
+                y_tensor = y_tensor.unsqueeze(-1)
             decoder_input = decoder_input.to(DEVICE)
             targets = targets.to(DEVICE)
+            
+
             
             optimizer.zero_grad()
             logits, _ = MODEL(x_tensor, y_tensor, decoder_input)
@@ -924,7 +936,7 @@ def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, pr
         return f"Error: {str(e)}", None
 
 
-def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, num_variables=1, progress=gr.Progress()):
+def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, progress=gr.Progress()):
     """
     Teacher-Student Distillation Loop.
     1. Find problems where model has high loss.
@@ -950,9 +962,10 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
         
         # Replay buffer for "Gold Standard" examples found by GP
         replay_buffer = deque(maxlen=5000)
+        quantile_loss_fn = QuantileLoss().to(DEVICE)
         
-        # Start with simple problems and grow
-        data_gen = DataGenerator(max_depth=3, num_variables=int(num_variables))
+        # Randomize num_variables each iteration (see loop)
+        # data_gen will be created per-iteration
         
         losses = []
         gp_successes = 0
@@ -979,12 +992,20 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
             # --- PHASE 1: HARD MINING ---
             MODEL.eval()
             
+            # Randomize number of variables for this iteration (1-10)
+            iter_num_vars = random.randint(1, 10)
+            data_gen = DataGenerator(max_depth=3, num_variables=iter_num_vars)
+            
             # Generate candidates
             pool_size = 50 
             candidates = data_gen.generate_inverse_batch(pool_size, point_count=10)
             
             hard_problems = []
             
+            # Skip if no valid candidates
+            if not candidates:
+                continue
+                
             with torch.no_grad():
                 # We want to find problems with HIGH LOSS (model failure)
                 # Quick batch forward
@@ -993,23 +1014,51 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                 x_list, y_list = normalize_batch(x_list, y_list)
                 
                 token_lists = [[TOKEN_TO_ID.get(t, TOKEN_TO_ID['C']) for t in d['tokens']] for d in candidates]
+                
+                # Filter out empty token lists
+                valid_indices = [i for i, tl in enumerate(token_lists) if len(tl) > 0]
+                if not valid_indices:
+                    continue
+                    
+                token_lists = [token_lists[i] for i in valid_indices]
+                candidates = [candidates[i] for i in valid_indices]
+                x_list = [x_list[i] for i in valid_indices]
+                y_list = [y_list[i] for i in valid_indices]
+                actual_pool_size = len(valid_indices)
+
+                # Sync candidates with normalized/filtered values
+                for k_sync in range(actual_pool_size):
+                    candidates[k_sync]['x'] = x_list[k_sync]
+                    candidates[k_sync]['y'] = y_list[k_sync]
+                
                 max_len = max(len(s) for s in token_lists)
                 
-                dec_in = torch.full((pool_size, max_len + 1), SOS_ID, dtype=torch.long).to(DEVICE)
-                targets = torch.full((pool_size, max_len + 1), -1, dtype=torch.long).to(DEVICE)
+                dec_in = torch.full((actual_pool_size, max_len + 1), SOS_ID, dtype=torch.long).to(DEVICE)
+                targets = torch.full((actual_pool_size, max_len + 1), -1, dtype=torch.long).to(DEVICE)
                 
                 for j, seq in enumerate(token_lists):
                     dec_in[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
                     targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
-                    
-                x_tensor = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
-                y_tensor = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
                 
-                logits, value_pred = MODEL(x_tensor, y_tensor, dec_in)
+                # Ensure uniform array shapes
+                try:
+                    x_tensor = torch.tensor(np.stack(x_list), dtype=torch.float32).to(DEVICE)
+                    y_tensor = torch.tensor(np.stack(y_list), dtype=torch.float32).to(DEVICE)
+                    if y_tensor.dim() == 2:
+                        y_tensor = y_tensor.unsqueeze(-1)
+                except Exception as e:
+                    print(f"Skipping batch due to shape error: {e}")
+                    continue
+                
+                try:
+                    logits, value_pred = MODEL(x_tensor, y_tensor, dec_in)
+                except Exception as e:
+                    print(f"Skipping batch due to model error: {e}")
+                    continue
                 
                 loss_f = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction='none')
                 raw_losses = loss_f(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
-                raw_losses = raw_losses.view(pool_size, -1)
+                raw_losses = raw_losses.view(actual_pool_size, -1)
                 
                 mask = (targets != -1)
                 sample_losses = (raw_losses * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-6)
@@ -1024,6 +1073,8 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
             problems_to_solve = hard_problems[:int(problems_per_iter)]
             
             if not problems_to_solve:
+                if (iteration + 1) % 5 == 0 or iteration == 0:
+                    print(f"Iter {iteration}: Looking for hard problems (found 0 in pool of {actual_pool_size})...")
                 continue
 
             # --- PHASE 2: TEACHER SOLVES (GP) ---
@@ -1032,20 +1083,62 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
             for prob in problems_to_solve:
                 gp_attempts += 1
                 try:
-                    # Construct Live HTML
+                    # Calculate current stats
+                    current_prob = (gp_attempts % int(problems_per_iter)) + 1
+                    success_rate = (gp_successes / gp_attempts * 100) if gp_attempts > 0 else 0
+                    loss_display = f"{losses[-1]:.4f}" if losses else "---"
+                    
+                    # Construct Live HTML with glassmorphism design
                     status_html = f"""
-                    <div style="background: #1a1a2e; padding: 15px; border-radius: 10px; border: 1px solid #4ade80;">
-                        <h3 style="color: #4ade80; margin:0;">🚀 Training Hybrid Loop (Live)</h3>
-                        <p style="color:#ddd;">Iteracion: <strong>{iteration+1}/{iterations}</strong> | Problema: <strong>{gp_attempts % int(problems_per_iter) + 1}/{int(problems_per_iter)}</strong></p>
-                        <p style="color:#ddd;">GP Exitos: <strong>{gp_successes}</strong></p>
-                        <p style="color:#ffd93d;">⏳ Tiempo Restante (ETA): <strong>{locals().get('eta_str', 'Calculando...')}</strong></p>
+                    <div style="background: linear-gradient(135deg, rgba(26,26,46,0.95) 0%, rgba(22,33,62,0.95) 100%); 
+                                padding: 20px; border-radius: 16px; 
+                                border: 1px solid rgba(74,222,128,0.3);
+                                box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                                backdrop-filter: blur(10px);">
+                        
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                            <span style="font-size: 28px;">🚀</span>
+                            <div>
+                                <h3 style="color: #4ade80; margin: 0; font-size: 18px; font-weight: 600;">Training Hybrid Loop</h3>
+                                <span style="color: #888; font-size: 12px;">Teacher-Student Distillation</span>
+                            </div>
+                            <div style="margin-left: auto; background: rgba(74,222,128,0.2); padding: 4px 12px; border-radius: 20px;">
+                                <span style="color: #4ade80; font-size: 14px; font-weight: 500;">LIVE</span>
+                            </div>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+                                <div style="color: #888; font-size: 11px; text-transform: uppercase;">Iteración</div>
+                                <div style="color: #fff; font-size: 20px; font-weight: 600;">{iteration+1}<span style="color:#666; font-size:14px;">/{iterations}</span></div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+                                <div style="color: #888; font-size: 11px; text-transform: uppercase;">Problema</div>
+                                <div style="color: #fff; font-size: 20px; font-weight: 600;">{current_prob}<span style="color:#666; font-size:14px;">/{int(problems_per_iter)}</span></div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+                                <div style="color: #888; font-size: 11px; text-transform: uppercase;">GP Éxitos</div>
+                                <div style="color: #4ade80; font-size: 20px; font-weight: 600;">{gp_successes}</div>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+                                <div style="color: #888; font-size: 11px; text-transform: uppercase;">Loss</div>
+                                <div style="color: #00d4ff; font-size: 20px; font-weight: 600;">{loss_display}</div>
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; align-items: center; gap: 8px; padding: 10px; background: rgba(255,217,61,0.1); border-radius: 8px;">
+                            <span style="font-size: 16px;">⏳</span>
+                            <span style="color: #ffd93d; font-size: 14px;">ETA: <strong>{locals().get('eta_str', 'Calculando...')}</strong></span>
+                            <div style="flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-left: 12px;">
+                                <div style="width: {((iteration * int(problems_per_iter) + gp_attempts) / (iterations * problems_per_iter) * 100):.0f}%; height: 100%; background: linear-gradient(90deg, #ffd93d, #4ade80); border-radius: 2px;"></div>
+                            </div>
+                        </div>
+                        
                         {locals().get('seeds_html', '')}
                     </div>
                     """
-                    if len(losses) > 0:
-                         fig = create_loss_plot(losses, f"Loss: {losses[-1]:.4f}")
-                    else:
-                         fig = None
+                    # Always create a graph (placeholder if empty)
+                    fig = create_loss_plot(losses, "Training Loss")
                     yield status_html, fig
                     
                     # Run Hybrid Search (Quick Mode)
@@ -1058,7 +1151,8 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                         beam_width=10,     # Faster beam
                         gp_timeout=gp_timeout,
                         gp_binary_path=None,
-                        max_workers=6      # Parallel Workers (Mission 1)
+                        max_workers=6,      # Parallel Workers (Mission 1)
+                        num_variables=iter_num_vars
                     )
                     
                     # --- UI UPDATE: LIVE STATS ---
@@ -1140,6 +1234,22 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                             
                 except Exception as e:
                     print(f"GP Hybrid Error: {e}")
+                
+                # --- FALLBACK: If GP failed, use Original Ground Truth ---
+                # This ensures the model always learns something and the graph updates
+                found_gp_solution = (res and res.get('formula') and res.get('rmse', 1e6) < 0.01)
+                
+                if not found_gp_solution:
+                    # Clean tokens
+                    original_tokens = [t for t in prob['tokens'] if t in TOKEN_TO_ID]
+                    if len(original_tokens) > 0:
+                        replay_buffer.append({
+                            'x': prob['x'],
+                            'y': prob['y'],
+                            'tokens': original_tokens,
+                            'source': 'Original',
+                            'reward': 1.0  # It is the ground truth
+                        })
                     
             # --- PHASE 3: STUDENT TRAINS (NN) ---
             if len(replay_buffer) > 10:
@@ -1184,7 +1294,7 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                     # Default to 1.0 (legacy data) if 'reward' is missing
                     batch_rewards = [d.get('reward', 1.0) for d in batch]
                     value_targets = torch.tensor(batch_rewards, dtype=torch.float32).to(DEVICE).unsqueeze(1)
-                    loss_val = torch.nn.functional.mse_loss(value_pred, value_targets)
+                    loss_val = quantile_loss_fn(value_pred, value_targets)
                     
                     loss = loss_ce + 0.1 * loss_val
                     
@@ -1222,3 +1332,157 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
         import traceback
         traceback.print_exc()
         return f"Error CRITICO: {str(e)}", None
+
+
+def train_from_memory(epochs=10, batch_size=32, num_variables=1, progress=gr.Progress()):
+    """
+    Train from 'learned_formulas.csv' (Offline RL / Imitation Learning).
+    Re-trains the model on the "Gold Standard" discoveries.
+    """
+    global TRAINING_STATUS
+    
+    if TRAINING_STATUS["running"]:
+        return "Entrenamiento ya en progreso", None
+        
+    log_file = os.path.join("results", "learned_formulas.csv")
+    if not os.path.exists(log_file):
+        return "No se encontró el archivo 'learned_formulas.csv'. Ejecuta primero el Feedback Loop.", None
+        
+    TRAINING_STATUS["running"] = True
+    
+    try:
+        MODEL, DEVICE = get_model()
+        
+        # Load Data
+        import pandas as pd
+        df = pd.read_csv(log_file)
+        
+        if len(df) < 5:
+             TRAINING_STATUS["running"] = False
+             return f"Muy pocos datos para entrenar ({len(df)} ejemplos). Necesitas al menos 5.", None
+             
+        progress(0.1, desc=f"Cargando {len(df)} fórmulas maestras...")
+        
+        # Parse formulas to tokens
+        valid_data = []
+        for _, row in df.iterrows():
+            try:
+                formula = row['formula']
+                # Re-parse to get clean tokens
+                tree = ExpressionTree.from_infix(formula)
+                if tree.is_valid:
+                    # Generate fresh data points for this formula to train robustly
+                    # We generate dynamic X to prevent overfitting to specific points
+                    # But we can also use fixed points?
+                    # Better: Generate random X, evaluate Y.
+                    
+                    # Generate X (Multi-var support)
+                    # We don't know if formula is 1D or ND from CSV easily without checking vars
+                    # But we can just assume 10 features and let the formula pick what it needs?
+                    # Yes, ExpressionTree handles x0..x9.
+                    
+                    x_val = np.random.uniform(-5, 5, (10, 10)) # 10 points, 10 feats
+                    y_val = tree.evaluate(x_val)
+                    
+                    if np.any(np.isnan(y_val)) or np.any(np.isinf(y_val)) or np.std(y_val) < 1e-6:
+                        continue
+                        
+                    valid_data.append({
+                        'tokens': tree.tokens,
+                        'tree': tree # Store tree to generate fresh data each epoch? Or pre-gen?
+                    })
+            except:
+                continue
+        
+        if not valid_data:
+             TRAINING_STATUS["running"] = False
+             return "No se pudieron parsear fórmulas válidas del CSV.", None
+             
+        # Training Setup
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4)
+        ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
+        VOCAB_SIZE = len(VOCABULARY)
+        SOS_ID = VOCAB_SIZE
+        
+        losses = []
+        MODEL.train()
+        
+        for epoch in range(int(epochs)):
+            # Shuffle
+            random.shuffle(valid_data)
+            
+            # Create Batches
+            epoch_loss = 0
+            count = 0
+            
+            for i in range(0, len(valid_data), int(batch_size)):
+                batch = valid_data[i:i+int(batch_size)]
+                
+                # Generate fresh X/Y for this batch (Data Augmentation on the fly)
+                x_list = []
+                y_list = []
+                token_lists = []
+                
+                for item in batch:
+                    # Generate random points
+                    x = np.random.uniform(-3, 3, (20, 10)) # 20 points
+                    y = item['tree'].evaluate(x)
+                    
+                    # Sanity check
+                    if np.any(np.isnan(y)) or np.max(np.abs(y)) > 1e4:
+                        continue
+                        
+                    x_list.append(x)
+                    y_list.append(y)
+                    token_lists.append([TOKEN_TO_ID.get(t, TOKEN_TO_ID['C']) for t in item['tokens']])
+                
+                if not x_list: continue
+                
+                x_list, y_list = normalize_batch(x_list, y_list)
+                
+                # Tensors
+                max_len = max(len(s) for s in token_lists)
+                dec_in = torch.full((len(x_list), max_len + 1), SOS_ID, dtype=torch.long).to(DEVICE)
+                tgt = torch.full((len(x_list), max_len + 1), -1, dtype=torch.long).to(DEVICE)
+                
+                for j, seq in enumerate(token_lists):
+                    dec_in[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
+                    tgt[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+                    
+                x_t = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+                y_t = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+                
+                optimizer.zero_grad()
+                logits, _ = MODEL(x_t, y_t, dec_in)
+                loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), tgt.view(-1))
+                
+                loss.backward()
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                count += 1
+            
+            avg_loss = epoch_loss / max(1, count)
+            losses.append(avg_loss)
+            
+            progress((epoch + 1) / epochs, desc=f"Epoca {epoch+1}/{epochs} | Loss: {avg_loss:.4f}")
+            
+        save_model()
+        MODEL.eval()
+        TRAINING_STATUS["running"] = False
+        
+        fig = create_loss_plot(losses, "Offline Memory Training")
+        
+        return f"""
+        <div style="background: #1a1a2e; padding: 20px; border-radius: 10px; border: 2px solid #a855f7;">
+            <h2 style="color: #a855f7;">Entrenamiento de Memoria Completado</h2>
+            <p style="color:white;">Fórmulas aprendidas: {len(valid_data)}</p>
+            <p style="color:white;">Loss Final: {losses[-1]:.4f}</p>
+        </div>
+        """, fig
+        
+    except Exception as e:
+        TRAINING_STATUS["running"] = False
+        import traceback
+        traceback.print_exc()
+        return f"Error: {str(e)}", None

@@ -4,6 +4,7 @@ import torch
 import copy
 from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES, OPERATOR_STAGES
 from utils.optimize_constants import optimize_constants
+from utils.data_utils import normalize_batch
 
 class MCTSNode:
     def __init__(self, tokens, parent=None, prior=0.0):
@@ -44,11 +45,12 @@ class MCTSNode:
         return len(self.tokens)
 
 class MCTS:
-    def __init__(self, model, device, grammar=None, c_puct=1.0, n_simulations=100, max_simulations=None, max_depth=50, complexity_lambda=0.1, max_len=200, batch_size=8, curriculum_stage=None):
+    def __init__(self, model, device, grammar=None, c_puct=1.0, n_simulations=100, max_simulations=None, max_depth=50, complexity_lambda=0.1, max_len=200, batch_size=8, curriculum_stage=None, num_variables=1):
         self.model = model
         self.device = device
         self.grammar = grammar
         self.c_puct = c_puct
+        self.num_variables = num_variables
         
         # Handle backwards compatibility for max_simulations
         if max_simulations is not None:
@@ -76,9 +78,15 @@ class MCTS:
         self.v_loss_const = 3.0
     
     def _build_allowed_tokens(self):
-        """Build set of allowed token indices based on curriculum stage."""
-        # Terminals are always allowed
-        allowed = {'x', 'C', '0', '1', '2', '3', '5', '10', 'pi', 'e'}
+        """Build set of allowed token indices based on curriculum stage and num_variables."""
+        # Terminals are always allowed, but respect num_variables
+        allowed = set(['C', '0', '1', '2', '3', '5', '10', 'pi', 'e'])
+        
+        # Determine allowed variables
+        if self.num_variables == 1:
+            allowed.update(['x', 'x0'])
+        else:
+            allowed.update(VARIABLES[:self.num_variables])
         
         # Add operators based on curriculum stage
         if self.curriculum_stage is not None and self.curriculum_stage in OPERATOR_STAGES:
@@ -299,8 +307,23 @@ class MCTS:
             return []
             
         # Prepare inputs
-        x_tensor = torch.tensor(x_values, dtype=torch.float32).unsqueeze(0).to(self.device)
-        y_tensor = torch.tensor(y_values, dtype=torch.float32).unsqueeze(0).to(self.device)
+        # CRITICAL: Normalize data before feeding to model (Model expects [-1, 1] range)
+        # We need to wrap single items in list to use normalize_batch, then unpack or use directly if batch logic allows.
+        # normalize_batch takes lists of arrays.
+        
+        # NOTE: normalize_batch expects list of numpy arrays. _expand_batch takes single x_values/y_values which are reused across batch?
+        # x_values is passed to search(). 
+        # If search() was called with raw data, we must normalize it here for the MODEL only.
+        # But optimize_constants expects RAW data. 
+        # So we keep x_values raw, and create normalized tensors for the model.
+        
+        # normalize_batch input: list of arrays. output: list of arrays.
+        norm_x_list, norm_y_list = normalize_batch([x_values], [y_values])
+        norm_x = norm_x_list[0]
+        norm_y = norm_y_list[0]
+        
+        x_tensor = torch.tensor(norm_x, dtype=torch.float32).unsqueeze(0).to(self.device)
+        y_tensor = torch.tensor(norm_y, dtype=torch.float32).unsqueeze(0).to(self.device)
         
         # Repeat X/Y for batch
         batch_size = len(nodes)

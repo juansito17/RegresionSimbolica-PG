@@ -107,7 +107,8 @@ def load_model(force_reload=False, preset_name=None):
         d_model=config['d_model'], 
         nhead=config['nhead'],
         num_encoder_layers=config['num_encoder_layers'], 
-        num_decoder_layers=config['num_decoder_layers']
+        num_decoder_layers=config['num_decoder_layers'],
+        input_dim=11
     ).to(DEVICE)
     
     filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"

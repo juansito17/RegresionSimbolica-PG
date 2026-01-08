@@ -10,7 +10,7 @@ class DataGenerator:
         self.num_variables = num_variables
         self.vocab = VOCABULARY
         # Use subset of variables based on num_variables
-        self.active_variables = VARIABLES[:num_variables] if num_variables > 1 else ['x']
+        self.active_variables = VARIABLES[:num_variables]
         
         # Pre-compute terminal vs operator lists
         self.terminals = self.active_variables + CONSTANTS
@@ -106,7 +106,7 @@ class DataGenerator:
             
         return data
 
-    def generate_structured_tree(self, complexity=1, input_node='x'):
+    def generate_structured_tree(self, complexity=1, input_node='x0'):
         """
         Recursively builds a structured, human-like formula.
         Respects self.operators.
@@ -178,8 +178,11 @@ class DataGenerator:
             return [func] + val
             
         elif choice == 'arithmetic':
-            left = self.generate_structured_tree(complexity - 1, input_node)
-            right = self.generate_structured_tree(complexity - 1, input_node)
+            # Allow mixing variables in arithmetic nodes
+            left_input = input_node if random.random() < 0.6 else random.choice(self.active_variables)
+            right_input = input_node if random.random() < 0.6 else random.choice(self.active_variables)
+            left = self.generate_structured_tree(complexity - 1, left_input)
+            right = self.generate_structured_tree(complexity - 1, right_input)
             ops = [op for op in ['+', '-', '*'] if op in self.operators]
             if not ops: return input_node
             op = random.choice(ops)

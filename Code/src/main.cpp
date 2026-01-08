@@ -84,26 +84,44 @@ int main(int argc, char* argv[]) {
              };
              
              std::string line;
-             std::vector<double> flat_x;
-             if (std::getline(dfile, line)) flat_x = parse_line(line);
-             if (std::getline(dfile, line)) targets = parse_line(line);
-             
+             std::vector<std::vector<double>> all_lines;
+             while (std::getline(dfile, line)) {
+                 if(!line.empty()) {
+                     all_lines.push_back(parse_line(line));
+                 }
+             }
              dfile.close();
              
-             if (flat_x.size() != targets.size()) {
-                 std::cerr << "[Error] Mismatch in data size: X(" << flat_x.size() 
-                           << ") vs Y(" << targets.size() << ")" << std::endl;
+             if (all_lines.size() < 2) {
+                 std::cerr << "[Error] Insufficient data in file (Need at least 1 feature line and 1 target line)." << std::endl;
                  return 1;
              }
              
-             // Convert flat X to vector<vector> (1 variable)
-             final_x_values.reserve(flat_x.size());
-             for(double v : flat_x) {
-                 final_x_values.push_back({v});
+             targets = all_lines.back();
+             all_lines.pop_back(); // Now all_lines contains only features as rows
+             
+             size_t n_samples = targets.size();
+             size_t n_vars = all_lines.size();
+             NUM_VARIABLES = (int)n_vars;
+             
+             // Transpose: from [n_vars][n_samples] to [n_samples][n_vars]
+             final_x_values.clear();
+             final_x_values.reserve(n_samples);
+             
+             for (size_t s = 0; s < n_samples; ++s) {
+                 std::vector<double> sample_vars;
+                 sample_vars.reserve(n_vars);
+                 for (size_t v = 0; v < n_vars; ++v) {
+                     if (s < all_lines[v].size()) {
+                         sample_vars.push_back(all_lines[v][s]);
+                     } else {
+                         sample_vars.push_back(0.0); // Fallback for mismatched lines
+                     }
+                 }
+                 final_x_values.push_back(sample_vars);
              }
-             NUM_VARIABLES = 1;
 
-             std::cout << "Loaded " << final_x_values.size() << " data points (Univariable from file)." << std::endl;
+             std::cout << "Loaded " << final_x_values.size() << " data points with " << NUM_VARIABLES << " variables from file." << std::endl;
          } else {
              std::cerr << "[Error] Could not open data file: " << data_file_path << std::endl;
              return 1;

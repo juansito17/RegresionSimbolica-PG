@@ -15,6 +15,8 @@ def _run_gp_worker(args):
     args: (x_list, y_list, seeds_chunk, gp_timeout, gp_binary_path)
     """
     x_list, y_list, seeds, timeout, binary_path = args
+    import numpy as np
+    from core.grammar import ExpressionTree
     engine = GPEngine(binary_path=binary_path)
     # Give each worker a slight timeout variance to avoid file lock collisions if using temp files
     # or just to spread load. But GPEngine handles unique tmp files so it should be fine.
@@ -44,18 +46,19 @@ def hybrid_solve(
     beam_width: int = 50,
     gp_timeout: int = 10,
     gp_binary_path: Optional[str] = None,
-    max_workers: int = 4
+    max_workers: int = 4,
+    num_variables: int = 1
 ) -> Dict[str, Any]:
     """
     Solves Symbolic Regression using a Hybrid Neuro-Evolutionary approach with Parallel GP.
     """
     
-    print(f"--- Starting Alpha-GP Hybrid Search (Parallel Workers={max_workers}) ---")
+    print(f"--- Starting Alpha-GP Hybrid Search (Parallel Workers={max_workers}, Vars={num_variables}) ---")
     start_time = time.time()
     
     # 1. Neural Beam Search (Phase 1)
     print(f"[Phase 1] Neural Beam Search (Width={beam_width})...")
-    neural_results = beam_solve(x_values, y_values, model, device, beam_width=beam_width)
+    neural_results = beam_solve(x_values, y_values, model, device, beam_width=beam_width, num_variables=num_variables)
     
     seeds = []
     if neural_results:
@@ -120,6 +123,8 @@ def hybrid_solve(
                 if res['status'] == 'success' or res['status'] == 'eval_error':
                     results.append(res)
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(f"Worker generated an exception: {e}")
 
     total_time = time.time() - start_time

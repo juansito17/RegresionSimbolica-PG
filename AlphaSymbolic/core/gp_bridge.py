@@ -5,6 +5,7 @@ import re
 import time
 import sys
 from typing import List, Optional
+import numpy as np
 
 # Windows: Disable crash dialog boxes for child processes
 if sys.platform == 'win32':

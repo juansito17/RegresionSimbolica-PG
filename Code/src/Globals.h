@@ -47,12 +47,11 @@ const bool USE_GPU_ACCELERATION = false;
 // Ajustamos el tamaño de la población para una GPU con 4GB de VRAM (RTX 3050),
 // buscando un equilibrio entre el aprovechamiento de la GPU y el uso de memoria.
 // Para hacer un uso aún más intensivo de la GPU y acelerar el algoritmo,
-// aumentamos el número de islas para fomentar más paralelismo, manteniendo la población total.
-// Esto distribuye la carga de trabajo de evaluación de fitness en más unidades de procesamiento concurrentes.
-const int TOTAL_POPULATION_SIZE = 50000; // Mantenemos este tamaño, ajustado para 4GB VRAM
-const int GENERATIONS = 500000;           // Mantenemos las generaciones altas
-const int NUM_ISLANDS = 10;               // Aumentado para mayor paralelismo
-const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas con población mínima
+// OPTIMIZADO para Hybrid Search: Población más pequeña = convergencia más rápida en timeouts cortos
+const int TOTAL_POPULATION_SIZE = 5000; // Reducido de 50000 para convergencia rápida
+const int GENERATIONS = 50000;           // Reducido (timeout domina de todas formas)
+const int NUM_ISLANDS = 5;               // Menos islas = más foco por isla
+const int MIN_POP_PER_ISLAND = 10;        
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
@@ -101,19 +100,19 @@ const bool USE_OP_ATAN     = true; // T
 // Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
 // Los pesos se multiplican por el flag (0 o 1) para habilitar/deshabilitar.
 const std::vector<double> OPERATOR_WEIGHTS = {
-    0.10 * (USE_OP_PLUS  ? 1.0 : 0.0), // +
-    0.15 * (USE_OP_MINUS ? 1.0 : 0.0), // -
-    0.10 * (USE_OP_MULT  ? 1.0 : 0.0), // *
-    0.10 * (USE_OP_DIV   ? 1.0 : 0.0), // /
-    0.05 * (USE_OP_POW   ? 1.0 : 0.0), // ^
-    0.01 * (USE_OP_MOD   ? 1.0 : 0.0), // %
-    0.01 * (USE_OP_SIN   ? 1.0 : 0.0), // s
-    0.01 * (USE_OP_COS   ? 1.0 : 0.0), // c
-    0.15 * (USE_OP_LOG   ? 1.0 : 0.0), // l
-    0.02 * (USE_OP_EXP   ? 1.0 : 0.0), // e
-    0.05 * (USE_OP_FACT  ? 1.0 : 0.0), // !
-    0.05 * (USE_OP_FLOOR ? 1.0 : 0.0), // _
-    0.20 * (USE_OP_GAMMA ? 1.0 : 0.0), // g
+    0.20 * (USE_OP_PLUS  ? 1.0 : 0.0), // +
+    0.20 * (USE_OP_MINUS ? 1.0 : 0.0), // -
+    0.20 * (USE_OP_MULT  ? 1.0 : 0.0), // *
+    0.15 * (USE_OP_DIV   ? 1.0 : 0.0), // /
+    0.10 * (USE_OP_POW   ? 1.0 : 0.0), // ^
+    0.02 * (USE_OP_MOD   ? 1.0 : 0.0), // %
+    0.10 * (USE_OP_SIN   ? 1.0 : 0.0), // s
+    0.10 * (USE_OP_COS   ? 1.0 : 0.0), // c
+    0.05 * (USE_OP_LOG   ? 1.0 : 0.0), // l
+    0.05 * (USE_OP_EXP   ? 1.0 : 0.0), // e
+    0.01 * (USE_OP_FACT  ? 1.0 : 0.0), // !
+    0.01 * (USE_OP_FLOOR ? 1.0 : 0.0), // _
+    0.01 * (USE_OP_GAMMA ? 1.0 : 0.0), // g
     0.01 * (USE_OP_ASIN  ? 1.0 : 0.0), // S
     0.01 * (USE_OP_ACOS  ? 1.0 : 0.0), // C
     0.01 * (USE_OP_ATAN  ? 1.0 : 0.0)  // T
@@ -138,8 +137,8 @@ const double MUTATE_INSERT_CONST_FLOAT_MAX = 5.0;
 // ----------------------------------------
 // Reducimos ligeramente la penalización por complejidad para permitir que fórmulas más complejas
 // (y computacionalmente más intensivas para la GPU) sean favorecidas por el algoritmo.
-// MODIFICADO: Aumentado para penalizar bloat (Strategy 3).
-const double COMPLEXITY_PENALTY_FACTOR = 0.05; // Was 0.005. Increased significantly to fight bloat.
+// MODIFICADO: Ajustado para ser menos agresivo y permitir multivariable.
+const double COMPLEXITY_PENALTY_FACTOR = 0.01; // Was 0.05. Reduced to 0.01.
 const bool USE_RMSE_FITNESS = true;
 const double FITNESS_ORIGINAL_POWER = 1.3;
 const double FITNESS_PRECISION_THRESHOLD = 0.001;
@@ -163,7 +162,7 @@ const double WEIGHTED_FITNESS_EXPONENT = 0.25;
 const int STAGNATION_LIMIT_ISLAND = 50;
 // Lowered from 5000 to allow faster early termination in Hybrid Search mode.
 // If best fitness doesn't improve for N generations, terminate early.
-const int GLOBAL_STAGNATION_LIMIT = 200;
+const int GLOBAL_STAGNATION_LIMIT = 100; // Reducido para terminar más rápido si no mejora
 const double STAGNATION_RANDOM_INJECT_PERCENT = 0.1;
 const int PARAM_MUTATE_INTERVAL = 50;
 const double PATTERN_RECORD_FITNESS_THRESHOLD = 10.0;

@@ -3,14 +3,14 @@ import torch.nn as nn
 import numpy as np
 
 class AlphaSymbolicModel(nn.Module):
-    def __init__(self, vocab_size, d_model=128, nhead=4, num_encoder_layers=2, num_decoder_layers=2, max_seq_len=50):
+    def __init__(self, vocab_size, d_model=128, nhead=4, num_encoder_layers=2, num_decoder_layers=2, max_seq_len=50, input_dim=2):
         super(AlphaSymbolicModel, self).__init__()
         
         self.d_model = d_model
+        self.input_dim = input_dim
         
-        # 1. Point Encoder: Processes pairs of (x, y)
-        # Input dim: 2 (x value, y value)
-        self.point_embedding = nn.Linear(2, d_model)
+        # 1. Point Encoder: Processes pairs/tuples of (x..., y)
+        self.point_embedding = nn.Linear(input_dim, d_model)
         
         # We use a standard Transformer Encoder for the "Problem Embedding"
         # Since points are a set, we don't necessarily need positional encoding, 
@@ -40,11 +40,23 @@ class AlphaSymbolicModel(nn.Module):
         formula_input: [batch, seq_len] (Token IDs)
         formula_mask: Optional mask for the decoder (causal mask)
         """
-        batch_size, num_points = x_values.shape
-        
         # -- Problem Encoding --
-        # Stack x and y: [batch, num_points, 2]
-        points = torch.stack([x_values, y_values], dim=2)
+        # 1. Ensure dimensions
+        if x_values.dim() == 2:
+            x_values = x_values.unsqueeze(-1) # [batch, num_points, 1]
+        
+        if y_values.dim() == 2:
+            y_values = y_values.unsqueeze(-1) # [batch, num_points, 1]
+            
+        # 2. Stack x and y: [batch, num_points, n_vars + 1]
+        points = torch.cat([x_values, y_values], dim=-1)
+        
+        # 3. Pad to match input_dim (e.g., 11)
+        curr_dim = points.shape[-1]
+        if curr_dim < self.input_dim:
+            pad_size = self.input_dim - curr_dim
+            padding = torch.zeros(points.shape[0], points.shape[1], pad_size, device=points.device)
+            points = torch.cat([points, padding], dim=-1)
         
         # Project to d_model
         points_emb = self.point_embedding(points) # [batch, num_points, d_model]

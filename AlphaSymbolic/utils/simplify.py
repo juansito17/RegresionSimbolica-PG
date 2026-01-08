@@ -5,8 +5,10 @@ Uses SymPy for symbolic math simplification.
 import sympy as sp
 from core.grammar import Node, ExpressionTree, OPERATORS
 
-# SymPy symbol for x
+# SymPy symbols
 x_sym = sp.Symbol('x')
+# Multi-variable support (x0 through x9)
+x_syms = {f'x{i}': sp.Symbol(f'x{i}') for i in range(10)}
 
 def tree_to_sympy(node):
     """Convert an ExpressionTree Node to a SymPy expression."""
@@ -18,6 +20,8 @@ def tree_to_sympy(node):
     # Terminals
     if val == 'x':
         return x_sym
+    if val in x_syms:
+        return x_syms[val]
     if val == 'pi':
         return sp.pi
     if val == 'e':
@@ -44,9 +48,6 @@ def tree_to_sympy(node):
     if val == 'sin': return sp.sin(args[0])
     if val == 'cos': return sp.cos(args[0])
     if val == 'tan': return sp.tan(args[0])
-    if val == 'asin': return sp.asin(args[0])
-    if val == 'acos': return sp.acos(args[0])
-    if val == 'atan': return sp.atan(args[0])
     if val == 'exp': return sp.exp(args[0])
     if val == 'log': return sp.log(args[0])
     if val == 'sqrt': return sp.sqrt(args[0])

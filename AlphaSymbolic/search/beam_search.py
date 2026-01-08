@@ -8,27 +8,47 @@ from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree, OPE
 from utils.optimize_constants import optimize_constants
 
 class BeamSearch:
-    def __init__(self, model, device, beam_width=10, max_length=30, curriculum_stage=None):
+    def __init__(self, model, device, beam_width=10, max_length=30, curriculum_stage=None, num_variables=1):
         self.model = model
         self.device = device
         self.beam_width = beam_width
         self.max_length = max_length
+        self.num_variables = num_variables
         self.vocab_size = len(VOCABULARY)
         self.sos_id = self.vocab_size  # SOS token ID
         
-        # Build token mask based on curriculum stage
-        self.token_mask = None
-        if curriculum_stage is not None:
-            allowed_ops = OPERATOR_STAGES.get(curriculum_stage, list(OPERATORS.keys()))
-            allowed_tokens = set(['x', 'C', '0', '1', '2', '3', '5', '10', 'pi', 'e'])
-            allowed_tokens.update(allowed_ops)
+        # Build token mask
+        # 1. Start with everything allowed (mask = 0)
+        # 2. disallow variables outside num_variables range
+        mask = torch.zeros(self.vocab_size, device=device)
+        
+        # Determine allowed variables
+        from core.grammar import VARIABLES
+        if num_variables == 1:
+            allowed_vars = set(['x', 'x0'])
+        else:
+            allowed_vars = set(VARIABLES[:num_variables])
             
-            # Create mask: 0 for allowed, -inf for disallowed
-            mask = torch.full((self.vocab_size,), float('-inf'), device=device)
-            for token in allowed_tokens:
-                if token in TOKEN_TO_ID:
-                    mask[TOKEN_TO_ID[token]] = 0.0
+        disallowed_vars = [v for v in VARIABLES if v not in allowed_vars]
+        if 'x' not in allowed_vars: disallowed_vars.append('x')
+
+        for v in disallowed_vars:
+            if v in TOKEN_TO_ID:
+                mask[TOKEN_TO_ID[v]] = float('-inf')
+
+        # 3. Apply curriculum limits if set
+        if curriculum_stage is not None:
+            allowed_ops = set(OPERATOR_STAGES.get(curriculum_stage, list(OPERATORS.keys())))
+            # Disallow operators not in the current stage
+            for op in OPERATORS:
+                if op not in allowed_ops:
+                    mask[TOKEN_TO_ID[op]] = float('-inf')
+        
+        # Only set self.token_mask if there are actually restricted tokens
+        if torch.any(mask != 0):
             self.token_mask = mask
+        else:
+            self.token_mask = None
         
     def search(self, x_values, y_values, return_partial=False):
         """
@@ -186,11 +206,11 @@ class BeamSearch:
         return scored_results
 
 
-def beam_solve(target_x, target_y, model, device, beam_width=20, max_length=25):
+def beam_solve(target_x, target_y, model, device, beam_width=20, max_length=25, num_variables=1):
     """
     Solve symbolic regression using beam search.
     """
-    searcher = BeamSearch(model, device, beam_width=beam_width, max_length=max_length)
+    searcher = BeamSearch(model, device, beam_width=beam_width, max_length=max_length, num_variables=num_variables)
     results = searcher.search(target_x, target_y)
     
     if not results:

@@ -19,15 +19,50 @@ from ui.app_core import get_model
 
 
 def parse_data(x_str, y_str):
-    """Parse comma-separated input strings."""
+    """
+    Parse input strings.
+    Supports:
+    1. 1D Comma-separated: "1, 2, 3"
+    2. 2D Multi-line/Semi-colon: "1,2; 3,4" or "1 2\n3 4"
+    """
     try:
-        x = np.array([float(v.strip()) for v in x_str.split(',')], dtype=np.float64)
-        y = np.array([float(v.strip()) for v in y_str.split(',')], dtype=np.float64)
+        # Pre-process: standardize separators
+        x_str = x_str.strip()
+        y_str = y_str.strip()
+        
+        # Check for multi-line or semi-colon (Multi-Variable)
+        is_multivar = '\n' in x_str or ';' in x_str
+        
+        if is_multivar:
+            # Split into rows
+            rows = [r.strip() for r in x_str.replace(';', '\n').split('\n') if r.strip()]
+            # Parse each row
+            x_data = []
+            for r in rows:
+                # Handle comma or space
+                vals = [float(v) for v in r.replace(',', ' ').split()]
+                x_data.append(vals)
+            x = np.array(x_data, dtype=np.float64)
+            
+            # Y should also be checked, usually 1D but input might be multi-line
+            y_data = [float(v) for v in y_str.replace(';', '\n').replace(',', ' ').split()]
+            y = np.array(y_data, dtype=np.float64)
+            
+        else:
+            # Legacy 1D
+            x = np.array([float(v.strip()) for v in x_str.split(',')], dtype=np.float64)
+            y = np.array([float(v.strip()) for v in y_str.split(',')], dtype=np.float64)
+            
+            # Ensure X is (N, 1) or (N,) depending on usage. 
+            # Logic mostly expects (N,) for 1D, but model needs (N, 1).
+            # Let's keep (N,) for 1D to not break existing plots, handling shape later.
+        
         if len(x) != len(y):
-            return None, None, "Error: X e Y deben tener igual longitud"
+            return None, None, f"Error: Cantidad de muestras X ({len(x)}) != Y ({len(y)})"
+            
         return x, y, None
     except Exception as e:
-        return None, None, f"Error: {str(e)}"
+        return None, None, f"Error parseando datos: {str(e)}"
 
 
 def create_fit_plot(x, y, y_pred, formula):
@@ -35,15 +70,35 @@ def create_fit_plot(x, y, y_pred, formula):
     fig, ax = plt.subplots(figsize=(8, 5), facecolor='#1a1a2e')
     ax.set_facecolor('#1a1a2e')
     
-    ax.scatter(x, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1)
-    
-    sort_idx = np.argsort(x)
-    ax.plot(x[sort_idx], y_pred[sort_idx], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
-    
-    ax.set_xlabel('X', color='white', fontsize=12)
-    ax.set_ylabel('Y', color='white', fontsize=12)
-    ax.set_title('Ajuste de la Formula', color='white', fontsize=14, fontweight='bold')
-    ax.legend(facecolor='#16213e', edgecolor='#00d4ff', labelcolor='white')
+    # Check dimensions
+    if x.ndim > 1 and x.shape[1] > 1:
+        # Multi-Variable: Parity Plot (Real vs Predicted)
+        ax.scatter(y, y_pred, color='#4ade80', s=100, edgecolors='white', alpha=0.7)
+        
+        # Perfect fit line
+        min_val = min(y.min(), y_pred.min())
+        max_val = max(y.max(), y_pred.max())
+        ax.plot([min_val, max_val], [min_val, max_val], '--', color='white', alpha=0.5, label='Ideal')
+        
+        ax.set_xlabel('Valor Real (Target)', color='white')
+        ax.set_ylabel('Prediccion', color='white')
+        ax.set_title(f'Multi-Variable: {x.shape[1]} Features', color='white', fontweight='bold')
+        
+    else:
+        # 1D: Standard X vs Y
+        # Flatten if needed
+        if x.ndim > 1: x = x.flatten()
+        
+        ax.scatter(x, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1)
+        
+        sort_idx = np.argsort(x)
+        ax.plot(x[sort_idx], y_pred[sort_idx], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
+        
+        ax.set_xlabel('X', color='white', fontsize=12)
+        ax.set_ylabel('Y', color='white', fontsize=12)
+        ax.set_title('Ajuste de la Formula', color='white', fontsize=14, fontweight='bold')
+        ax.legend(facecolor='#16213e', edgecolor='#00d4ff', labelcolor='white')
+
     ax.tick_params(colors='white')
     ax.grid(True, alpha=0.2, color='white')
     
@@ -70,12 +125,14 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     
     results = []
     
+    num_vars = 1 if x.ndim == 1 else x.shape[1]
+    
     if search_method == "Alpha-GP Hybrid":
         # Using hybrid search
         progress(0.4, desc="Fase 1: Neural Beam Search...")
         # Note: Hybrid search handles its own phases printing, but we want UI updates.
         # We pass beam_width. gp_timeout is increased to 30s to allow convergence on complex problems.
-        hybrid_res = hybrid_solve(x, y, MODEL, DEVICE, beam_width=int(beam_width), gp_timeout=30)
+        hybrid_res = hybrid_solve(x, y, MODEL, DEVICE, beam_width=int(beam_width), gp_timeout=30, num_variables=num_vars)
         
         if hybrid_res and hybrid_res.get('formula'):
             progress(0.9, desc="Procesando resultados GP...")
@@ -101,10 +158,10 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
                  }]
     
     elif search_method == "Beam Search":
-        searcher = BeamSearch(MODEL, DEVICE, beam_width=int(beam_width), max_length=25)
+        searcher = BeamSearch(MODEL, DEVICE, beam_width=int(beam_width), max_length=25, num_variables=num_vars)
         results = searcher.search(x, y)
     else:  # MCTS
-        mcts = MCTS(MODEL, DEVICE, max_simulations=int(beam_width) * 10)
+        mcts = MCTS(MODEL, DEVICE, max_simulations=int(beam_width) * 10, num_variables=num_vars)
         result = mcts.search(x, y)
         if result and result.get('tokens'):
             tokens = result['tokens']
@@ -131,30 +188,46 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     if not best:
         return "Error en optimizacion", None, "", "", ""
     
-    progress(0.9, desc="Simplificando...")
+    progress(0.9, desc="Procesando...") 
     tree = ExpressionTree(best.tokens)
-    simplified = simplify_tree(tree)
-    y_pred = tree.evaluate(x, constants=best.constants)
     
-    # Substitute constants for display
-    substituted_formula = simplified
+    # Use the stored formula string directly (this is what GP/search found)
+    display_formula = best.formula
+    
+    # If we have constants to substitute (Beam Search / MCTS with C placeholders)
     if best.constants:
         try:
             positions = tree.root.get_constant_positions()
-            # We use the raw infix for substitution to ensure matching C positions
             raw_infix = tree.get_infix()
-            substituted_formula = substitute_constants(raw_infix, best.constants, positions)
+            display_formula = substitute_constants(raw_infix, best.constants, positions)
         except:
-            substituted_formula = simplified
+            pass
     
-    fig = create_fit_plot(x, y, y_pred, simplified)
+    # Try to simplify algebraically (x0 + x0 -> 2*x0, etc.)
+    try:
+        simplified = simplify_tree(tree)
+        # Only use simplified if it:
+        # 1. Is valid (not just a number, not "Invalid")
+        # 2. Still contains a variable (x or x0-x9)  
+        # 3. Is shorter or similar length
+        if simplified and simplified != "Invalid":
+            has_variable = any(v in simplified for v in ['x', 'x0', 'x1', 'x2', 'x3'])
+            is_not_just_number = not simplified.replace('.', '').replace('-', '').isdigit()
+            if has_variable and is_not_just_number:
+                display_formula = simplified
+    except:
+        pass
+    
+    y_pred = tree.evaluate(x, constants=best.constants)
+    
+    fig = create_fit_plot(x, y, y_pred, display_formula)
     
     # Format results
     result_html = f"""
     <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 15px; border: 2px solid #00d4ff;">
         <h2 style="color: #00d4ff; margin: 0; font-size: 24px;">Formula Encontrada</h2>
         <div style="background: #0f0f23; padding: 15px; border-radius: 10px; margin: 15px 0; border-left: 4px solid #ff6b6b;">
-            <code style="color: #ff6b6b; font-size: 28px; font-weight: bold;">{substituted_formula}</code>
+            <code style="color: #ff6b6b; font-size: 28px; font-weight: bold;">{display_formula}</code>
         </div>
         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
             <div style="background: #0f0f23; padding: 10px; border-radius: 8px; text-align: center;">
@@ -205,10 +278,19 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
     # Predictions table
     pred_html = '<table style="width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 10px; overflow: hidden;">'
     pred_html += '<tr style="background: #16213e;"><th style="padding: 10px; color: #00d4ff;">X</th><th style="color: #00d4ff;">Pred</th><th style="color: #00d4ff;">Real</th><th style="color: #00d4ff;">Delta</th></tr>'
-    for i in range(min(50, len(x))):
+    for i in range(min(50, len(y))):
         delta = abs(y_pred[i] - y[i])
         color = "#4ade80" if delta < 0.1 else "#fbbf24" if delta < 1 else "#ef4444"
-        pred_html += f'<tr style="border-bottom: 1px solid #333;"><td style="padding: 8px; color: white; text-align: center;">{x[i]:.2f}</td><td style="color: white; text-align: center;">{y_pred[i]:.4f}</td><td style="color: white; text-align: center;">{y[i]:.4f}</td><td style="color: {color}; text-align: center; font-weight: bold;">{delta:.4f}</td></tr>'
+        
+        # Display X nicely
+        x_val_str = ""
+        if x.ndim > 1 and x.shape[1] > 1:
+             x_val_str = f"[{', '.join([f'{v:.1f}' for v in x[i]])}]"
+        else:
+             xv = x[i] if x.ndim == 1 else x[i,0]
+             x_val_str = f"{xv:.2f}"
+             
+        pred_html += f'<tr style="border-bottom: 1px solid #333;"><td style="padding: 8px; color: white; text-align: center;">{x_val_str}</td><td style="color: white; text-align: center;">{y_pred[i]:.4f}</td><td style="color: white; text-align: center;">{y[i]:.4f}</td><td style="color: {color}; text-align: center; font-weight: bold;">{delta:.4f}</td></tr>'
     pred_html += '</table>'
     
     # Alternatives
@@ -218,7 +300,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, progress=gr.Progress(
         alt_html += f'<div style="padding: 5px 10px; margin: 5px 0; background: #0f0f23; border-radius: 5px; border-left: 3px solid {"#00d4ff" if i == 0 else "#666"};"><code style="color: {"#ff6b6b" if i == 0 else "#888"};">{sol.formula}</code> <span style="color: #666; font-size: 12px;">RMSE: {sol.rmse:.4f}</span></div>'
     alt_html += '</div>'
     
-    return result_html, fig, pred_html, alt_html, simplified
+    return result_html, fig, pred_html, alt_html, display_formula
 
 
 def generate_example(tipo):
