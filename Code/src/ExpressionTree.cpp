@@ -44,19 +44,23 @@ std::string format_constant(double val) {
 }
 
 // --- evaluate_tree ---
-double evaluate_tree(const NodePtr& node, double x) {
+double evaluate_tree(const NodePtr& node, const std::vector<double>& vars) {
     if (!node) return std::nan("");
     switch (node->type) {
         case NodeType::Constant: return node->value;
-        case NodeType::Variable: return x;
+        case NodeType::Variable: 
+            if (node->var_index >= 0 && node->var_index < vars.size()) {
+                return vars[node->var_index];
+            }
+            return std::nan(""); // Index out of bounds
         case NodeType::Operator: {
             // Determine arity
             bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g' || node->op == 't' || node->op == 'q' || node->op == 'a' || node->op == 'n' || node->op == 'u' || node->op == 'S' || node->op == 'C' || node->op == 'T');
 
-            double leftVal = evaluate_tree(node->left, x);
+            double leftVal = evaluate_tree(node->left, vars);
             double rightVal = 0.0;
             if (!is_unary) {
-                rightVal = evaluate_tree(node->right, x);
+                rightVal = evaluate_tree(node->right, vars);
             }
 
             if (std::isnan(leftVal)) return std::nan("");
@@ -130,12 +134,17 @@ double evaluate_tree(const NodePtr& node, double x) {
     }
 }
 
+// Convenience overload for single variable case
+double evaluate_tree(const NodePtr& node, double val) {
+    return evaluate_tree(node, std::vector<double>{val});
+}
+
 // --- tree_to_string ---
 std::string tree_to_string(const NodePtr& node) {
      if (!node) return "NULL";
      switch (node->type) {
         case NodeType::Constant: return format_constant(node->value);
-        case NodeType::Variable: return "x";
+        case NodeType::Variable: return "x" + std::to_string(node->var_index);
         case NodeType::Operator: {
             NodePtr left_node = node->left;
             std::string left_str = tree_to_string(left_node);
@@ -197,13 +206,13 @@ int tree_size(const NodePtr& node) {
 // --- clone_tree ---
 NodePtr clone_tree(const NodePtr& node) {
     if (!node) return nullptr;
-    auto new_node = std::make_shared<Node>();
-    new_node->type = node->type;
-    new_node->value = node->value;
-    new_node->op = node->op;
-    new_node->left = clone_tree(node->left);
-    new_node->right = clone_tree(node->right);
-    return new_node;
+    auto newNode = std::make_shared<Node>(node->type);
+    newNode->value = node->value;
+    newNode->var_index = node->var_index;
+    newNode->op = node->op;
+    newNode->left = clone_tree(node->left);
+    newNode->right = clone_tree(node->right);
+    return newNode;
 }
 
 // --- collect_node_ptrs ---
@@ -464,9 +473,26 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
                  last_token_was_operand = false;
             }
             auto node = std::make_shared<Node>(NodeType::Variable);
+            
+            // Check for digits after 'x' (for x0, x1, x10...)
+            i++;
+            if (i < formula.length() && isdigit(formula[i])) {
+                 std::string idx_str;
+                 while(i < formula.length() && isdigit(formula[i])) {
+                     idx_str += formula[i];
+                     i++;
+                 }
+                 try {
+                     node->var_index = std::stoi(idx_str);
+                 } catch (...) {
+                     node->var_index = 0; // Fallback
+                 }
+            } else {
+                 node->var_index = 0; // Default x -> x0
+            }
+
             operand_stack.push(node);
             last_token_was_operand = true;
-            i++;
             continue;
         }
 

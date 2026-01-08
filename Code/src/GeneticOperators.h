@@ -46,7 +46,7 @@ std::vector<Individual> create_initial_population(int population_size);
 Individual tournament_selection(const std::vector<Individual>& population, int tournament_size);
 
 // Selecciona un individuo usando Epsilon-Lexicase Selection (más inteligente)
-Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<double>& x_values);
+Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values);
 
 // Realiza el cruce (crossover) entre dos individuos y devuelve un nuevo individuo.
 Individual crossover(const Individual& parent1, const Individual& parent2);

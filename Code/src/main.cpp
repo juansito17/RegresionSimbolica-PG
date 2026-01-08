@@ -12,6 +12,9 @@
 #include <string>
 #include <sstream>
 
+// Definición de variable global externa
+int NUM_VARIABLES = 1;
+
 int main(int argc, char* argv[]) {
     // === OPTIMIZACIÓN: Configuración explícita de hilos OpenMP ===
     int num_threads = omp_get_max_threads();
@@ -56,14 +59,15 @@ int main(int argc, char* argv[]) {
     }
 
     std::vector<double> targets;
-    std::vector<double> final_x_values;
+    // MODIFIED: final_x_values is now vector<vector<double>>
+    std::vector<std::vector<double>> final_x_values;
 
     if (!data_file_path.empty()) {
          std::cout << "Loading data from: " << data_file_path << std::endl;
          std::ifstream dfile(data_file_path);
          if (dfile.is_open()) {
              // Format:
-             // Line 1: x1 x2 x3 ...
+             // Line 1: x1 x2 x3 ... (Assumed univariable if using this legacy format)
              // Line 2: y1 y2 y3 ...
              // Values separated by space or comma
              
@@ -80,17 +84,26 @@ int main(int argc, char* argv[]) {
              };
              
              std::string line;
-             if (std::getline(dfile, line)) final_x_values = parse_line(line);
+             std::vector<double> flat_x;
+             if (std::getline(dfile, line)) flat_x = parse_line(line);
              if (std::getline(dfile, line)) targets = parse_line(line);
              
              dfile.close();
              
-             if (final_x_values.size() != targets.size()) {
-                 std::cerr << "[Error] Mismatch in data size: X(" << final_x_values.size() 
+             if (flat_x.size() != targets.size()) {
+                 std::cerr << "[Error] Mismatch in data size: X(" << flat_x.size() 
                            << ") vs Y(" << targets.size() << ")" << std::endl;
                  return 1;
              }
-             std::cout << "Loaded " << final_x_values.size() << " data points." << std::endl;
+             
+             // Convert flat X to vector<vector> (1 variable)
+             final_x_values.reserve(flat_x.size());
+             for(double v : flat_x) {
+                 final_x_values.push_back({v});
+             }
+             NUM_VARIABLES = 1;
+
+             std::cout << "Loaded " << final_x_values.size() << " data points (Univariable from file)." << std::endl;
          } else {
              std::cerr << "[Error] Could not open data file: " << data_file_path << std::endl;
              return 1;
@@ -110,12 +123,25 @@ int main(int argc, char* argv[]) {
              targets = RAW_TARGETS;
              final_x_values = X_VALUES;
         }
+        
+        // Update NUM_VARIABLES based on data
+        if (!final_x_values.empty()) {
+            NUM_VARIABLES = final_x_values[0].size();
+        } else {
+            NUM_VARIABLES = 1; // Default
+        }
     }
 
     std::cout << "Target Function Points (Effective):" << std::endl;
+    std::cout << "NUM_VARIABLES set to: " << NUM_VARIABLES << std::endl;
     // Imprimir los puntos objetivo
     for (size_t i = 0; i < targets.size(); ++i) {
-        std::cout << "  f(" << final_x_values[i] << ") = " << targets[i] << std::endl;
+        std::cout << "  f(";
+        for(size_t v=0; v<final_x_values[i].size(); ++v) {
+            std::cout << final_x_values[i][v];
+            if(v < final_x_values[i].size()-1) std::cout << ", ";
+        }
+        std::cout << ") = " << targets[i] << std::endl;
     }
     std::cout << "----------------------------------------" << std::endl;
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE

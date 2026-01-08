@@ -16,7 +16,7 @@
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
-                             const std::vector<double>& x_values,
+                             const std::vector<std::vector<double>>& x_values,
                              double* d_targets, double* d_x_values) {
     // If GPU pointers are null (FORCE_CPU_MODE), use CPU evaluation
     if (d_targets == nullptr || d_x_values == nullptr) {
@@ -85,7 +85,7 @@ double calculate_raw_fitness(const NodePtr& tree,
 #else
 double calculate_raw_fitness(const NodePtr& tree,
                              const std::vector<double>& targets,
-                             const std::vector<double>& x_values) {
+                             const std::vector<std::vector<double>>& x_values) {
     if (x_values.size() != targets.size() || x_values.empty()) return INF;
 
     double error_sum_pow13 = 0.0; // Solo si USE_RMSE_FITNESS = false
@@ -174,13 +174,13 @@ double calculate_raw_fitness(const NodePtr& tree,
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
-                        const std::vector<double>& x_values,
+                        const std::vector<std::vector<double>>& x_values,
                         double* d_targets, double* d_x_values) {
     double raw_fitness = calculate_raw_fitness(tree, targets, x_values, d_targets, d_x_values);
 #else
 double evaluate_fitness(const NodePtr& tree,
                         const std::vector<double>& targets,
-                        const std::vector<double>& x_values) {
+                        const std::vector<std::vector<double>>& x_values) {
     double raw_fitness = calculate_raw_fitness(tree, targets, x_values);
 #endif
 

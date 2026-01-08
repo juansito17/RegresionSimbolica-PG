@@ -17,8 +17,9 @@
 #include <unordered_set>
 
 // --- Constructor (Modificado para que evaluate_population procese todo) ---
+// --- Constructor (Modificado para que evaluate_population procese todo) ---
 GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
-                                     const std::vector<double>& x_values_ref,
+                                     const std::vector<std::vector<double>>& x_values_ref,
                                      int total_pop,
                                      int gens,
                                      const std::vector<std::string>& seeds,
@@ -59,79 +60,43 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
     // --- INJECT SEEDS ---
     if (!seeds.empty()) {
         std::cout << "Info: Injecting " << seeds.size() << " seed formulas into population..." << std::endl;
-        int seeds_injected = 0;
         int seed_idx = 0;
         
         // Distribute seeds cyclically across islands to promote diversity
         for (int i = 0; i < this->num_islands && seed_idx < seeds.size(); ++i) {
-            // How many seeds for this island?
-            // Simple: just fill sequentially island by island? Or round robin?
-            // Round robin is better.
-            // But for simplicity of implementation inside nested loops:
-            // Let's just iterate over all spots in all islands and fill from seeds until seeds run out
-            
-            // Actually, we want to replace RANDOM individuals, which is what we have now.
             for(size_t j = 0; j < islands[i]->population.size(); ++j) {
                 if (seed_idx >= seeds.size()) break;
 
                 try {
-                    // Spread seeds across islands: Island 0 gets seed 0, Island 1 gets seed 1, etc.
-                    // To do round robin properly:
-                    // We need a different loop structure.
-                    // But here, simply iterating is fine if seeds << total_population.
-                    
-                    // Actually, let's just do a simple linear fill.
                     NodePtr parsed_tree = parse_formula_string(seeds[seed_idx]);
                     if (parsed_tree) {
                         islands[i]->population[j].tree = std::move(parsed_tree);
-                        seeds_injected++;
                     }
                     seed_idx++; 
-                    
-                    // Note: If we have 10 islands and 100 seeds.
-                    // Island 0 gets first 100 seeds?
-                    // That might bias Island 0.
-                    // Better to distribute them.
-                    // But implementing complex distribution here is tricky without more code.
-                    // Given population is huge (50k), minimal bias.
-                    // Let's improve: Distribute evenly.
                 } catch (const std::exception& e) {
                     std::cerr << "[Warning] Failed to parse seed formula: " << seeds[seed_idx] << " | Error: " << e.what() << std::endl;
                     seed_idx++; // Skip this seed
                 }
             }
         }
-        
-        // BETTER DISTRIBUTION : Round Robin
-        /*
-        int current_island = 0;
-        int current_ind_idx = 0; 
-        for(const auto& s : seeds) {
-             try {
-                 NodePtr t = parse_formula_string(s);
-                 if(t) {
-                     islands[current_island]->population[current_ind_idx].tree = std::move(t);
-                     current_island = (current_island + 1) % this->num_islands;
-                     if(current_island == 0) current_ind_idx++; // Move to next slot only after full circle
-                     if(current_ind_idx >= pop_per_island) break; // Full
-                 }
-             } catch(...) {}
-        }
-        */
-       // Sticking to safe linear fill for now as per block replacement. 
-       // If the user provides 100 seeds, island 0 (pop 5000) will take them all.
-       // It's acceptable for now.
     }
-
-    // --- ELIMINADO: Bloque de evaluación especial para fórmula inyectada ---
-    // if (USE_INITIAL_FORMULA) { ... }
 
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     bool gpu_init_failed = false;
     if (!FORCE_CPU_MODE) {
         // Asignar memoria en la GPU y copiar datos
         size_t targets_size = targets.size() * sizeof(double);
-        size_t x_values_size = x_values.size() * sizeof(double);
+        // Multivariable: flatten X values [NUM_SAMPLES * NUM_FEATURES]
+        size_t n_samples = x_values.size();
+        size_t n_features = (n_samples > 0) ? x_values[0].size() : 0;
+        size_t x_values_size = n_samples * n_features * sizeof(double);
+        
+        // Linearize
+        std::vector<double> flattened_x;
+        flattened_x.reserve(n_samples * n_features);
+        for(const auto& row : x_values) {
+            flattened_x.insert(flattened_x.end(), row.begin(), row.end());
+        }
 
         cudaError_t err_t = cudaMalloc(&d_targets, targets_size);
         cudaError_t err_x = cudaMalloc(&d_x_values, x_values_size);
@@ -146,7 +111,7 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
             if (d_x_values) { cudaFree(d_x_values); d_x_values = nullptr; }
         } else {
             cudaMemcpy(d_targets, targets.data(), targets_size, cudaMemcpyHostToDevice);
-            cudaMemcpy(d_x_values, x_values.data(), x_values_size, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_x_values, flattened_x.data(), x_values_size, cudaMemcpyHostToDevice);
             
             // Initialize global GPU buffers for batch evaluation of ALL islands
             init_global_gpu_buffers(global_gpu_buffers);
@@ -469,12 +434,14 @@ void GeneticAlgorithm::evaluate_all_islands() {
 
     int valid_trees = result_mapping.size();
     int num_points = x_values.size();
+    int num_vars = (num_points > 0) ? x_values[0].size() : 0;
     
     // Step 3: Launch GPU evaluation ASYNC (no blocking!)
     // GPU will work while CPU continues with other tasks
     launch_evaluation_async(
         all_nodes, tree_offsets, tree_sizes,
         valid_trees, d_targets, d_x_values, num_points,
+        num_vars,
         double_buffer_gpu
     );
     
@@ -504,8 +471,8 @@ void GeneticAlgorithm::evaluate_all_islands() {
             for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
                 Individual& ind = islands[i]->population[j];
                 if (ind.tree) {
-                    // Pass nullptr for GPU pointers since we're in CPU mode
-                    ind.fitness = evaluate_fitness(ind.tree, targets, x_values, nullptr, nullptr);
+                    // Pass GPU pointers (even if null) to match signature
+                    ind.fitness = evaluate_fitness(ind.tree, targets, x_values, d_targets, d_x_values);
                     ind.fitness_valid = true;
                 } else {
                     ind.fitness = INF;
@@ -832,8 +799,9 @@ NodePtr GeneticAlgorithm::run() {
                           double val = evaluate_tree(overall_best_tree, x_values[j]);
                           double target_val = (j < targets.size()) ? targets[j] : std::nan("");
                           double diff = (!std::isnan(val) && !std::isnan(target_val)) ? std::fabs(val - target_val) : std::nan("");
-                          std::cout << "  x=" << std::setw(8) << x_values[j]
-                                    << ": Pred=" << std::setw(12) << val
+                          std::cout << "  x=(";
+                          for(size_t v=0; v<x_values[j].size(); ++v) std::cout << (v>0?",":"") << x_values[j][v];
+                          std::cout << "): Pred=" << std::setw(12) << val
                                     << ", Target=" << std::setw(12) << target_val
                                     << ", Diff=" << std::setw(12) << diff << std::endl;
                       }
@@ -906,8 +874,9 @@ NodePtr GeneticAlgorithm::run() {
                 double val = evaluate_tree(overall_best_tree, x_values[j]);
                  double target_val = (j < targets.size()) ? targets[j] : std::nan("");
                  double diff = (!std::isnan(val) && !std::isnan(target_val)) ? std::fabs(val - target_val) : std::nan("");
-                 std::cout << "  x=" << std::setw(8) << x_values[j]
-                          << ": Pred=" << std::setw(12) << val
+                 std::cout << "  x=(";
+                 for(size_t v=0; v<x_values[j].size(); ++v) std::cout << (v>0?",":"") << x_values[j][v];
+                 std::cout << "): Pred=" << std::setw(12) << val
                           << ", Target=" << std::setw(12) << target_val
                           << ", Diff=" << std::setw(12) << diff << std::endl;
            }

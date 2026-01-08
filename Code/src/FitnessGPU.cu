@@ -12,7 +12,8 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
     }
     linearize_tree(node->left, linear_tree);
     linearize_tree(node->right, linear_tree);
-    linear_tree.push_back({node->type, node->value, node->op});
+    // Include var_index in the struct initialization
+    linear_tree.push_back({node->type, node->value, node->var_index, node->op});
 }
 
 #if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
@@ -26,12 +27,13 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
 #define GPU_USE_WEIGHTED_FITNESS true
 #define GPU_WEIGHTED_FITNESS_EXPONENT 0.25
 
-// Single Tree Evaluation Kernel (Legacy/Single Use)
+// Single Tree Evaluation Kernel (Updated for Multivariable)
 __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                                              int tree_size,
                                              const double* d_targets,
-                                             const double* d_x_values,
+                                             const double* d_x_values, // Flattened [num_points * num_vars]
                                              size_t num_points,
+                                             int num_vars,
                                              double* d_raw_fitness_results) {
     // Shared memory optimization: Load tree into shared memory
     extern __shared__ LinearGpuNode s_linear_tree[];
@@ -45,7 +47,6 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < num_points) {
-        double x_val = d_x_values[idx];
         double stack[64]; // Max tree depth
         int stack_top = -1;
 
@@ -54,7 +55,10 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
             if (node.type == NodeType::Constant) {
                 stack[++stack_top] = node.value;
             } else if (node.type == NodeType::Variable) {
-                stack[++stack_top] = x_val;
+                // Access correct variable for this sample
+                int var_idx = node.var_index;
+                if (var_idx >= num_vars) var_idx = 0; // Safety fallback
+                stack[++stack_top] = d_x_values[idx * num_vars + var_idx];
             } else if (node.type == NodeType::Operator) {
                 bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
                 double result = 0.0;
@@ -115,7 +119,6 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
             double diff = predicted_val - d_targets[idx];
             double sq_error = diff * diff;
             // --- WEIGHTED FITNESS: Apply exponential weight ---
-            // Los últimos puntos (N altos) pesan mucho más que los primeros.
             if (GPU_USE_WEIGHTED_FITNESS) {
                 double weight = exp((double)idx * GPU_WEIGHTED_FITNESS_EXPONENT);
                 sq_error *= weight;
@@ -150,8 +153,7 @@ __global__ void reduce_sum_kernel(double* d_data, int N) {
 }
 
 
-// --- New Batch Kernel ---
-// Evaluates one tree per thread across all data points
+// --- New Batch Kernel (Updated for Multivariable) ---
 __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                                            const int* d_offsets,
                                            const int* d_sizes,
@@ -159,6 +161,7 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                                            const double* d_targets,
                                            const double* d_x_values,
                                            int num_points,
+                                           int num_vars,
                                            double* d_results) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -170,7 +173,6 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
         bool valid = true;
 
         for (int p = 0; p < num_points; ++p) {
-            double x_val = d_x_values[p];
             double stack[64]; 
             int stack_top = -1;
 
@@ -180,7 +182,9 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                 if (node.type == NodeType::Constant) {
                     stack[++stack_top] = node.value;
                 } else if (node.type == NodeType::Variable) {
-                    stack[++stack_top] = x_val;
+                    int var_idx = node.var_index;
+                    if (var_idx >= num_vars) var_idx = 0;
+                    stack[++stack_top] = d_x_values[p * num_vars + var_idx];
                 } else if (node.type == NodeType::Operator) {
                     bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
                     
@@ -264,7 +268,7 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
 // Host-side wrapper function to launch the CUDA kernel
 double evaluate_fitness_gpu(NodePtr tree,
                             const std::vector<double>& targets,
-                            const std::vector<double>& x_values,
+                            const std::vector<std::vector<double>>& x_values,
                             double* d_targets, double* d_x_values) {
     if (x_values.size() != targets.size() || x_values.empty()) return INF;
 
@@ -278,6 +282,8 @@ double evaluate_fitness_gpu(NodePtr tree,
     }
 
     size_t num_points = x_values.size();
+    int num_vars = (num_points > 0) ? x_values[0].size() : 0;
+    
     LinearGpuNode* d_linear_tree;
     double* d_raw_fitness_results; // This will hold individual errors and then the final sum
 
@@ -292,7 +298,7 @@ double evaluate_fitness_gpu(NodePtr tree,
     // Launch kernel to calculate individual squared errors
     size_t shared_mem_size = tree_size * sizeof(LinearGpuNode);
     calculate_raw_fitness_kernel<<<blocksPerGrid, threadsPerBlock, shared_mem_size>>>(
-        d_linear_tree, tree_size, d_targets, d_x_values, num_points, d_raw_fitness_results
+        d_linear_tree, tree_size, d_targets, d_x_values, num_points, num_vars, d_raw_fitness_results
     );
     cudaDeviceSynchronize(); // Ensure kernel completes before reduction
 
@@ -343,7 +349,7 @@ void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
                              const std::vector<int>& tree_offsets,
                              const std::vector<int>& tree_sizes,
                              const std::vector<double>& targets,
-                             const std::vector<double>& x_values,
+                             const std::vector<std::vector<double>>& x_values,
                              std::vector<double>& results,
                              double* d_targets, double* d_x_values,
                              void*& d_nodes_ptr, size_t& d_nodes_cap,
@@ -354,6 +360,7 @@ void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
 
     size_t total_nodes = all_nodes.size();
     int num_points = x_values.size();
+    int num_vars = (num_points > 0) ? x_values[0].size() : 0;
 
     // Buffer Management for Nodes
     if (total_nodes > d_nodes_cap) {
@@ -389,7 +396,7 @@ void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
     int blocksPerGrid = (pop_size + threadsPerBlock - 1) / threadsPerBlock;
 
     evaluate_population_kernel<<<blocksPerGrid, threadsPerBlock>>>(
-        d_all_nodes, d_offsets, d_sizes, pop_size, d_targets, d_x_values, num_points, d_results
+        d_all_nodes, d_offsets, d_sizes, pop_size, d_targets, d_x_values, num_points, num_vars, d_results
     );
 
     // Synchronize and copy back
@@ -432,8 +439,8 @@ void cleanup_global_gpu_buffers(GlobalGpuBuffers& buffers) {
     buffers.d_pop_capacity = 0;
 }
 
-// Optimized kernel: Process one tree per thread, apply complexity penalty on GPU
-// Uses shared memory for targets and x_values for better memory coalescing
+// Optimized kernel: Process one tree per thread
+// REMOVED SHARED MEMORY FOR DATA to support arbitrary dataset sizes and multivariable
 __global__ void evaluate_all_populations_kernel(
     const LinearGpuNode* __restrict__ d_all_nodes,
     const int* __restrict__ d_offsets,
@@ -442,22 +449,11 @@ __global__ void evaluate_all_populations_kernel(
     const double* __restrict__ d_targets,
     const double* __restrict__ d_x_values,
     int num_points,
+    int num_vars,
     double* __restrict__ d_results,
     double complexity_penalty_factor,
     bool use_rmse) 
 {
-    // Shared memory for targets and x_values (max 64 points supported)
-    __shared__ double s_targets[64];
-    __shared__ double s_x_values[64];
-    
-    // Cooperatively load targets and x_values into shared memory
-    int tid_local = threadIdx.x;
-    if (tid_local < num_points) {
-        s_targets[tid_local] = d_targets[tid_local];
-        s_x_values[tid_local] = d_x_values[tid_local];
-    }
-    __syncthreads();
-    
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < total_trees) {
@@ -469,7 +465,6 @@ __global__ void evaluate_all_populations_kernel(
 
         // Evaluate tree on all data points
         for (int p = 0; p < num_points && valid; ++p) {
-            double x_val = s_x_values[p];
             double stack[64]; 
             int stack_top = -1;
 
@@ -480,7 +475,10 @@ __global__ void evaluate_all_populations_kernel(
                 if (node.type == NodeType::Constant) {
                     stack[++stack_top] = node.value;
                 } else if (node.type == NodeType::Variable) {
-                    stack[++stack_top] = x_val;
+                    // Access global memory directly
+                    int var_idx = node.var_index;
+                    if (var_idx >= num_vars) var_idx = 0;
+                    stack[++stack_top] = d_x_values[p * num_vars + var_idx];
                 } else if (node.type == NodeType::Operator) {
                     bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || 
                                     node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
@@ -532,7 +530,7 @@ __global__ void evaluate_all_populations_kernel(
                 break;
             }
 
-            double diff = predicted_val - s_targets[p];
+            double diff = predicted_val - d_targets[p];
             double sq_error = diff * diff;
             
             // Weighted fitness
@@ -575,7 +573,7 @@ void evaluate_all_populations_gpu(
     const std::vector<int>& tree_complexities,
     int total_trees,
     const std::vector<double>& targets,
-    const std::vector<double>& x_values,
+    const std::vector<std::vector<double>>& x_values,
     std::vector<double>& results,
     double* d_targets, double* d_x_values,
     GlobalGpuBuffers& buffers)
@@ -585,6 +583,7 @@ void evaluate_all_populations_gpu(
     cudaStream_t stream = (cudaStream_t)buffers.cuda_stream;
     size_t total_nodes = all_nodes.size();
     int num_points = x_values.size();
+    int num_vars = (num_points > 0) ? x_values[0].size() : 0;
 
     // Dynamic buffer resizing with growth factor
     if (total_nodes > buffers.d_nodes_capacity) {
@@ -628,7 +627,7 @@ void evaluate_all_populations_gpu(
     // Launch kernel on stream
     evaluate_all_populations_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
         d_all_nodes, d_offsets, d_sizes, total_trees,
-        d_targets, d_x_values, num_points, d_results,
+        d_targets, d_x_values, num_points, num_vars, d_results,
         COMPLEXITY_PENALTY_FACTOR, USE_RMSE_FITNESS
     );
 
@@ -695,6 +694,7 @@ void launch_evaluation_async(
     int total_trees,
     double* d_targets, double* d_x_values,
     int num_points,
+    int num_vars,
     DoubleBufferedGpu& db)
 {
     if (total_trees == 0) return;
@@ -749,7 +749,7 @@ void launch_evaluation_async(
     
     evaluate_all_populations_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
         d_nodes, d_offsets, d_sizes, total_trees,
-        d_targets, d_x_values, num_points, d_results,
+        d_targets, d_x_values, num_points, num_vars, d_results,
         COMPLEXITY_PENALTY_FACTOR, USE_RMSE_FITNESS
     );
     
@@ -780,5 +780,3 @@ void retrieve_results_sync(
 }
 
 #endif // USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-
-

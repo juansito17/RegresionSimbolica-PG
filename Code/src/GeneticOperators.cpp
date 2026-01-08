@@ -19,7 +19,12 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
 
     if (current_depth >= max_depth || prob_dist(rng) < terminal_prob) {
         // Crear terminal
-        if (prob_dist(rng) < TERMINAL_VS_VARIABLE_PROB) { return std::make_shared<Node>(NodeType::Variable); }
+        if (prob_dist(rng) < TERMINAL_VS_VARIABLE_PROB) { 
+             auto var_node = std::make_shared<Node>(NodeType::Variable);
+             std::uniform_int_distribution<int> var_dist(0, NUM_VARIABLES - 1);
+             var_node->var_index = var_dist(rng);
+             return var_node;
+        }
         else {
             auto node = std::make_shared<Node>(NodeType::Constant);
             if (FORCE_INTEGER_CONSTANTS) { std::uniform_int_distribution<int> cd(CONSTANT_INT_MIN_VALUE, CONSTANT_INT_MAX_VALUE); node->value = static_cast<double>(cd(rng)); }
@@ -48,7 +53,12 @@ NodePtr generate_random_tree(int max_depth, int current_depth) {
 
         // Fallback para hijos nulos
         auto generate_random_terminal = [&]() -> NodePtr {
-            if (prob_dist(rng) < TERMINAL_VS_VARIABLE_PROB) { return std::make_shared<Node>(NodeType::Variable); }
+            if (prob_dist(rng) < TERMINAL_VS_VARIABLE_PROB) { 
+                auto var_node = std::make_shared<Node>(NodeType::Variable);
+                std::uniform_int_distribution<int> var_dist(0, NUM_VARIABLES - 1);
+                var_node->var_index = var_dist(rng);
+                return var_node;
+            }
             else {
                 auto const_node = std::make_shared<Node>(NodeType::Constant);
                 if (FORCE_INTEGER_CONSTANTS) { std::uniform_int_distribution<int> cd(CONSTANT_INT_MIN_VALUE, CONSTANT_INT_MAX_VALUE); const_node->value = static_cast<double>(cd(rng)); }
@@ -175,7 +185,7 @@ Individual tournament_selection(const std::vector<Individual>& population, int t
 
 // --- Epsilon-Lexicase Selection Implementation ---
 // Calculates residuals on demand if not present (Lazy Eval)
-void ensure_errors_computed(Individual& ind, const std::vector<double>& targets, const std::vector<double>& x_values) {
+void ensure_errors_computed(Individual& ind, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values) {
     if (!ind.errors.empty()) return; // Already computed
     if (!ind.tree) return;
     
@@ -191,7 +201,7 @@ void ensure_errors_computed(Individual& ind, const std::vector<double>& targets,
     }
 }
 
-Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<double>& x_values) {
+Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values) {
     auto& rng = get_rng();
     
     // 1. Initial Candidates: Random subset (Tournament Size * 2) or Full Population?
@@ -250,21 +260,6 @@ Individual lexicase_selection(std::vector<Individual>& population, const std::ve
     if (candidates.empty()) return population[dist(rng)];
     std::uniform_int_distribution<int> pick(0, candidates.size() - 1);
     return *candidates[pick(rng)];
-}
-
-// Implementación de crossover
-Individual crossover(const Individual& parent1, const Individual& parent2) {
-    NodePtr tree1_clone = clone_tree(parent1.tree);
-    NodePtr tree2_clone = clone_tree(parent2.tree);
-    crossover_trees(tree1_clone, tree2_clone);
-    if (USE_HARD_DEPTH_LIMIT) trim_tree(tree1_clone, MAX_TREE_DEPTH_HARD_LIMIT); // Enforce hard limit
-    return Individual(tree1_clone); // Devolver uno de los hijos, el otro se descarta
-}
-
-// Implementación de mutate
-void mutate(Individual& individual, double mutation_rate) {
-    individual.tree = mutate_tree(individual.tree, mutation_rate, MAX_TREE_DEPTH_MUTATION);
-    individual.fitness_valid = false; // El fitness se invalida al mutar el árbol
 }
 
 // Mutata un árbol (EXPONENTES SIN RESTRICCIÓN en OperatorChange)
@@ -386,9 +381,11 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
                          if (std::fabs(right_child->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) right_child->value = 0.0;
                          new_op_node->right = right_child;
                      } else {
-                         new_op_node->right = std::make_shared<Node>(NodeType::Variable);
+                         auto var_node = std::make_shared<Node>(NodeType::Variable);
+                         std::uniform_int_distribution<int> var_dist(0, NUM_VARIABLES - 1);
+                         var_node->var_index = var_dist(rng);
+                         new_op_node->right = var_node;
                      }
-                     if (!new_op_node->right) new_op_node->right = std::make_shared<Node>(NodeType::Variable);
                 } else {
                     new_op_node->right = nullptr;
                 }
@@ -433,6 +430,21 @@ NodePtr mutate_tree(const NodePtr& tree, double mutation_rate, int max_depth) {
     }
     if (USE_HARD_DEPTH_LIMIT) trim_tree(new_tree, MAX_TREE_DEPTH_HARD_LIMIT); // Enforce hard limit after mutation
     return new_tree;
+}
+
+// Implementación de crossover
+Individual crossover(const Individual& parent1, const Individual& parent2) {
+    NodePtr tree1_clone = clone_tree(parent1.tree);
+    NodePtr tree2_clone = clone_tree(parent2.tree);
+    crossover_trees(tree1_clone, tree2_clone);
+    if (USE_HARD_DEPTH_LIMIT) trim_tree(tree1_clone, MAX_TREE_DEPTH_HARD_LIMIT); // Enforce hard limit
+    return Individual(tree1_clone); // Devolver uno de los hijos, el otro se descarta
+}
+
+// Implementación de mutate
+void mutate(Individual& individual, double mutation_rate) {
+    individual.tree = mutate_tree(individual.tree, mutation_rate, MAX_TREE_DEPTH_MUTATION);
+    individual.fitness_valid = false; // El fitness se invalida al mutar el árbol
 }
 
 // Cruce

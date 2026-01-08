@@ -141,7 +141,7 @@ bool ParetoSolution::dominates(const ParetoSolution& other) const {
     return better_in_one && not_worse_in_any;
 }
 
-void ParetoOptimizer::update(const std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<double>& x_values) {
+void ParetoOptimizer::update(const std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values) {
     std::vector<ParetoSolution> candidates = pareto_front;
     for (const auto& ind : population) {
         if (ind.tree && ind.fitness_valid && ind.fitness < INF) {
@@ -213,7 +213,7 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
     // Fold if binary op with 2 constants OR unary op with 1 constant
     if ((left_is_const && right_is_const) || (is_unary && left_is_const)) {
         try {
-            double result = evaluate_tree(node, 0.0); 
+            double result = evaluate_tree(node, std::vector<double>{0.0}); 
             if (!std::isnan(result) && !std::isinf(result)) {
                 auto cn = std::make_shared<Node>(NodeType::Constant);
                 if (FORCE_INTEGER_CONSTANTS) cn->value = std::round(result); else cn->value = result;
@@ -279,7 +279,7 @@ NodePtr DomainConstraints::fix_or_simplify(NodePtr tree) {
 //---------------------------------
 // Local Improvement
 //---------------------------------
-void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const std::vector<double>& x_values, double* d_targets, double* d_x_values) {
+void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, double* d_targets, double* d_x_values) {
     if (!tree) return;
     
     // 1. Collect constant nodes
@@ -339,7 +339,7 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
 }
 
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts, double* d_targets, double* d_x_values) {
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, int attempts, double* d_targets, double* d_x_values) {
     // 1. First, try to optimize constants of the CURRENT tree
     NodePtr optimized_tree = clone_tree(tree);
     optimize_constants(optimized_tree, targets, x_values, d_targets, d_x_values);
@@ -369,7 +369,7 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double cur
     return {best_neighbor, best_neighbor_fitness};
 }
 #else
-std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts) {
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, int attempts) {
     // 1. First, try to optimize constants of the CURRENT tree
     NodePtr optimized_tree = clone_tree(tree);
     optimize_constants(optimized_tree, targets, x_values, nullptr, nullptr);
@@ -423,7 +423,8 @@ std::pair<std::string, double> detect_target_pattern(const std::vector<double>& 
 //---------------------------------
 NodePtr generate_pattern_based_tree(const std::string& pattern_type, double pattern_value) {
     if (X_VALUES.empty() || RAW_TARGETS.empty()) return nullptr;
-    double a = RAW_TARGETS[0]; double x0 = X_VALUES[0];
+    double a = RAW_TARGETS[0]; 
+    double x0 = (!X_VALUES[0].empty()) ? X_VALUES[0][0] : 0.0;
     if (pattern_type == "arithmetic") {
         double d = pattern_value; auto root = std::make_shared<Node>(NodeType::Operator); root->op = '+';
         auto cp = std::make_shared<Node>(NodeType::Constant); double cv = a - d * x0; if (FORCE_INTEGER_CONSTANTS) cv = std::round(cv); cp->value = (std::fabs(cv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : cv; // Use RAW_TARGETS to avoid "TARGETS" not found

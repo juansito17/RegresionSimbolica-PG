@@ -14,6 +14,7 @@ using NodePtr = std::shared_ptr<Node>;
 struct LinearGpuNode {
     NodeType type;
     double value;
+    int var_index;
     char op;
 };
 
@@ -24,7 +25,7 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
 #if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 double evaluate_fitness_gpu(NodePtr tree,
                             const std::vector<double>& targets,
-                            const std::vector<double>& x_values,
+                            const std::vector<std::vector<double>>& x_values,
                             double* d_targets, double* d_x_values);
 
 // Batch evaluation function with persistent buffers
@@ -32,7 +33,7 @@ void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
                              const std::vector<int>& tree_offsets,
                              const std::vector<int>& tree_sizes,
                              const std::vector<double>& targets,
-                             const std::vector<double>& x_values,
+                             const std::vector<std::vector<double>>& x_values,
                              std::vector<double>& results,
                              double* d_targets, double* d_x_values,
                              void*& d_nodes_ptr, size_t& d_nodes_cap,
@@ -89,6 +90,7 @@ void launch_evaluation_async(
     int total_trees,
     double* d_targets, double* d_x_values,
     int num_points,
+    int num_vars,
     DoubleBufferedGpu& db);
 
 // Wait for GPU work to complete and retrieve results
@@ -111,7 +113,7 @@ void evaluate_all_populations_gpu(
     const std::vector<int>& tree_complexities, // For complexity penalty
     int total_trees,
     const std::vector<double>& targets,
-    const std::vector<double>& x_values,
+    const std::vector<std::vector<double>>& x_values,
     std::vector<double>& results,
     double* d_targets, double* d_x_values,
     GlobalGpuBuffers& buffers);

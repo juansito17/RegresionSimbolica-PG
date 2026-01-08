@@ -20,7 +20,10 @@
 
 // MODIFICADO: RAW_TARGETS contiene los datos crudos. TARGETS se generará en runtime.
 const std::vector<double> RAW_TARGETS = {2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884};
-const std::vector<double> X_VALUES = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+// MODIFICADO: X_VALUES ahora es vector<vector<double>> para soporte multivariable.
+// Inicializador por defecto para problema univariable.
+const std::vector<std::vector<double>> X_VALUES = {{4}, {5}, {6}, {7}, {8}, {9}, {10}, {11}, {12}, {13}, {14}, {15}, {16}, {17}, {18}, {19}, {20}};
+extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
 
 // Flag para activar la transformación logarítmica automática
 const bool USE_LOG_TRANSFORMATION = true;

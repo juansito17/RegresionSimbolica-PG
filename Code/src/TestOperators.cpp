@@ -10,6 +10,9 @@
 #include "Fitness.h"
 #include "Globals.h"
 
+// Define global variable for tests
+int NUM_VARIABLES = 1;
+
 // --- Helper Macros for Testing ---
 #define ASSERT_NEAR(val1, val2, tol) \
     if (std::fabs((val1) - (val2)) > (tol)) { \
@@ -39,47 +42,47 @@ bool test_binary_operators() {
 
     // Addition
     root = parse_formula_string("2+3");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 5.0, 1e-9);
 
     // Subtraction
     root = parse_formula_string("10-4");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 6.0, 1e-9);
 
     // Multiplication
     root = parse_formula_string("3*4");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 12.0, 1e-9);
 
     // Division
     root = parse_formula_string("10/2");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 5.0, 1e-9);
 
     // Power
     root = parse_formula_string("2^3");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 8.0, 1e-9);
 
     // Modulo
     root = parse_formula_string("10%3");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.0, 1e-9);
 
     // Negative numbers
     root = parse_formula_string("-5+3");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, -2.0, 1e-9);
 
     // Operator precedence: 2+3*4 = 14
     root = parse_formula_string("2+3*4");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 14.0, 1e-9);
 
     // Parentheses override: (2+3)*4 = 20
     root = parse_formula_string("(2+3)*4");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 20.0, 1e-9);
 
     std::cout << "  -> Binary Operators Passed" << std::endl;
@@ -95,52 +98,52 @@ bool test_unary_operators() {
 
     // sin
     root = parse_formula_string("sin(0)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 0.0, 1e-9);
     
     root = parse_formula_string("sin(1.5708)"); // pi/2
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.0, 1e-4);
 
     // cos
     root = parse_formula_string("cos(0)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.0, 1e-9);
 
     // log (protected: log(|x|))
     root = parse_formula_string("log(2.7182818)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.0, 1e-5);
 
     // exp
     root = parse_formula_string("exp(1)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 2.7182818, 1e-5);
 
     // floor
     root = parse_formula_string("floor(2.9)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 2.0, 1e-9);
     
     root = parse_formula_string("floor(-2.1)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, -3.0, 1e-9);
 
     // lgamma: Implementation is lgamma(|x|+1) => ln(|x|!)
     // lgamma(3) -> lgamma(4) = ln(3!) = ln(6) = 1.791759
     root = parse_formula_string("lgamma(3)"); 
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.791759, 1e-4);
 
     // g(x) alias
     root = parse_formula_string("g(3)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.791759, 1e-4);
 
     // Factorial (!): Implementation is tgamma(|x|+1) = |x|!
     // gamma(4) = 3! = 6
     root = parse_formula_string("gamma(3)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, 6.0, 1e-4);
 
     std::cout << "  -> Unary Operators Passed" << std::endl;
@@ -156,37 +159,37 @@ bool test_edge_cases() {
 
     // Division by zero -> INF
     root = parse_formula_string("1/0");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     // Modulo by zero -> INF
     root = parse_formula_string("5%0");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     // log(0) -> INF (protected)
     root = parse_formula_string("log(0)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     // exp(800) -> INF (overflow)
     root = parse_formula_string("exp(800)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     // 0^(-1) -> INF
     root = parse_formula_string("0^(-1)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     // Factorial of large number -> INF
     root = parse_formula_string("gamma(200)");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     // Negative base with non-integer exp -> INF (complex result)
     root = parse_formula_string("(-2)^0.5");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_INF(val);
 
     std::cout << "  -> Edge Cases Passed" << std::endl;
@@ -203,13 +206,13 @@ bool test_simplification() {
     // x - x -> 0
     root = parse_formula_string("x-x");
     simplified = DomainConstraints::fix_or_simplify(root);
-    val = evaluate_tree(simplified, 5.0);
+    val = evaluate_tree(simplified, std::vector<double>{5.0});
     ASSERT_NEAR(val, 0.0, 1e-9);
 
     // x / x -> 1
     root = parse_formula_string("x/x");
     simplified = DomainConstraints::fix_or_simplify(root);
-    val = evaluate_tree(simplified, 5.0);
+    val = evaluate_tree(simplified, std::vector<double>{5.0});
     ASSERT_NEAR(val, 1.0, 1e-9);
 
     // Constant Folding: 2+3 -> 5
@@ -223,30 +226,30 @@ bool test_simplification() {
     root = parse_formula_string("x+0");
     simplified = DomainConstraints::fix_or_simplify(root);
     str = tree_to_string(simplified);
-    ASSERT_TRUE(str == "x");
+    ASSERT_TRUE(str == "x0");
 
     // x * 1 -> x
     root = parse_formula_string("x*1");
     simplified = DomainConstraints::fix_or_simplify(root);
     str = tree_to_string(simplified);
-    ASSERT_TRUE(str == "x");
+    ASSERT_TRUE(str == "x0");
 
     // x * 0 -> 0
     root = parse_formula_string("x*0");
     simplified = DomainConstraints::fix_or_simplify(root);
-    val = evaluate_tree(simplified, 100.0);
+    val = evaluate_tree(simplified, std::vector<double>{100.0});
     ASSERT_NEAR(val, 0.0, 1e-9);
 
     // x^1 -> x
     root = parse_formula_string("x^1");
     simplified = DomainConstraints::fix_or_simplify(root);
     str = tree_to_string(simplified);
-    ASSERT_TRUE(str == "x");
+    ASSERT_TRUE(str == "x0");
 
     // x^0 -> 1
     root = parse_formula_string("x^0");
     simplified = DomainConstraints::fix_or_simplify(root);
-    val = evaluate_tree(simplified, 100.0);
+    val = evaluate_tree(simplified, std::vector<double>{100.0});
     ASSERT_NEAR(val, 1.0, 1e-9);
 
     // Unary Operator Preservation: lgamma(x) should NOT simplify to x
@@ -258,14 +261,14 @@ bool test_simplification() {
     // Unary Constant Folding: lgamma(3) -> constant
     root = parse_formula_string("lgamma(3)");
     simplified = DomainConstraints::fix_or_simplify(root);
-    val = evaluate_tree(simplified, 0.0);
+    val = evaluate_tree(simplified, std::vector<double>{0.0});
     ASSERT_NEAR(val, 1.791759, 1e-4);
     ASSERT_TRUE(tree_size(simplified) == 1);
 
     // sin(0) -> 0 (constant folding)
     root = parse_formula_string("sin(0)");
     simplified = DomainConstraints::fix_or_simplify(root);
-    val = evaluate_tree(simplified, 0.0);
+    val = evaluate_tree(simplified, std::vector<double>{0.0});
     ASSERT_NEAR(val, 0.0, 1e-9);
     ASSERT_TRUE(tree_size(simplified) == 1);
 
@@ -282,33 +285,33 @@ bool test_complex_parsing() {
 
     // Nested functions: sin(cos(0)) = sin(1) ≈ 0.8415
     root = parse_formula_string("sin(cos(0))");
-    val = evaluate_tree(root, 0.0);
+    val = evaluate_tree(root, std::vector<double>{0.0});
     ASSERT_NEAR(val, std::sin(1.0), 1e-4);
 
     // Mixed: lgamma(x+1) at x=3 -> lgamma(4) = lgamma(5) = ln(4!) = ln(24) ≈ 3.178
     root = parse_formula_string("lgamma(x+1)");
-    val = evaluate_tree(root, 3.0);
+    val = evaluate_tree(root, std::vector<double>{3.0});
     ASSERT_NEAR(val, std::lgamma(5.0), 1e-4);
 
     // Formula from project: (g(x)-((x*909613)/1000000))+0.24423 at x=4
     root = parse_formula_string("(g(x)-((x*909613)/1000000))+0.24423");
-    val = evaluate_tree(root, 4.0);
+    val = evaluate_tree(root, std::vector<double>{4.0});
     double expected = std::lgamma(5.0) - (4.0 * 909613.0 / 1000000.0) + 0.24423;
     ASSERT_NEAR(val, expected, 1e-4);
 
     // Implicit multiplication: 2x at x=3 -> 6
     root = parse_formula_string("2x");
-    val = evaluate_tree(root, 3.0);
+    val = evaluate_tree(root, std::vector<double>{3.0});
     ASSERT_NEAR(val, 6.0, 1e-9);
 
     // Deep nesting: exp(log(x)) at x=5 -> 5
     root = parse_formula_string("exp(log(x))");
-    val = evaluate_tree(root, 5.0);
+    val = evaluate_tree(root, std::vector<double>{5.0});
     ASSERT_NEAR(val, 5.0, 1e-4);
 
     // Chained operations: x^2+2*x+1 at x=3 -> 16
     root = parse_formula_string("x^2+2*x+1");
-    val = evaluate_tree(root, 3.0);
+    val = evaluate_tree(root, std::vector<double>{3.0});
     ASSERT_NEAR(val, 16.0, 1e-9);
 
     std::cout << "  -> Complex Parsing Passed" << std::endl;
@@ -322,12 +325,12 @@ bool test_fitness_calc() {
     std::cout << "Testing Fitness Calculation..." << std::endl;
 
     std::vector<double> targets = {1.0, 2.0, 3.0};
-    std::vector<double> x_values = {1.0, 2.0, 3.0};
+    std::vector<std::vector<double>> x_values = {{1.0}, {2.0}, {3.0}};
 
     // Perfect solution: x
-    NodePtr solution = parse_formula_string("x");
+    NodePtr solution = parse_formula_string("x0");
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    double fitness = evaluate_fitness(solution, targets, x_values, nullptr, nullptr);
+    double fitness = evaluate_fitness(solution, targets, x_values, (double*)nullptr, (double*)nullptr);
 #else
     double fitness = evaluate_fitness(solution, targets, x_values);
 #endif
@@ -336,7 +339,7 @@ bool test_fitness_calc() {
     // Imperfect solution: x+1 (errors: 1, 1, 1)
     NodePtr imperfect = parse_formula_string("x+1");
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    fitness = evaluate_fitness(imperfect, targets, x_values, nullptr, nullptr);
+    fitness = evaluate_fitness(imperfect, targets, x_values, (double*)nullptr, (double*)nullptr);
 #else
     fitness = evaluate_fitness(imperfect, targets, x_values);
 #endif
@@ -345,7 +348,7 @@ bool test_fitness_calc() {
     // Very bad solution: constant 100
     NodePtr bad = parse_formula_string("100");
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    double bad_fitness = evaluate_fitness(bad, targets, x_values, nullptr, nullptr);
+    double bad_fitness = evaluate_fitness(bad, targets, x_values, (double*)nullptr, (double*)nullptr);
 #else
     double bad_fitness = evaluate_fitness(bad, targets, x_values);
 #endif

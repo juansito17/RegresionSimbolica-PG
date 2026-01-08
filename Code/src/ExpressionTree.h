@@ -17,6 +17,7 @@ enum class NodeType { Constant, Variable, Operator };
 struct Node {
     NodeType type;
     double value = 0.0;             // If type == Constant
+    int var_index = 0;              // If type == Variable: index of the variable (0 for x0, 1 for x1...)
     char op = 0;                    // If type == Operator: '+', '-', '*', '/', '^'
     NodePtr left = nullptr;         // Children (for Operators)
     NodePtr right = nullptr;
@@ -26,7 +27,11 @@ struct Node {
 };
 
 // Core Tree Functions
-double evaluate_tree(const NodePtr& node, double x);
+// MODIFIED: Takes a vector of variables instead of a single double
+double evaluate_tree(const NodePtr& node, const std::vector<double>& vars);
+
+// Convenience overload for single variable case
+double evaluate_tree(const NodePtr& node, double val);
 std::string tree_to_string(const NodePtr& node);
 int tree_size(const NodePtr& node);
 NodePtr clone_tree(const NodePtr& node);

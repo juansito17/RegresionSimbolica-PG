@@ -48,7 +48,8 @@ OPERATOR_STAGES = {
 }
 
 # Terminal tokens
-VARIABLES = ['x']
+# Terminal tokens
+VARIABLES = ['x' + str(i) for i in range(10)] # x0, x1, ..., x9
 # 'C' is a placeholder for learnable constants
 CONSTANTS = ['C', '0', '1', '2', '3', '5', '10', 'pi', 'e']
 
@@ -199,6 +200,9 @@ class ExpressionTree:
                 return tokens
         
         elif isinstance(node, ast.Name):
+            # Map 'x' to 'x0' if preferred, or keep as is if using x0 in string
+            if node.id == 'x':
+                return ['x0']
             return [node.id]
         
         elif isinstance(node, ast.Constant): # Python 3.8+
@@ -235,36 +239,74 @@ class ExpressionTree:
 
     def evaluate(self, x_values, constants=None):
         """
-        Evaluates the expression tree for a given array of x values.
+        Evaluates the expression tree for a given input.
+        x_values: 
+            - numpy array of shape (N,) for single variable (x0)
+            - numpy array of shape (features, N) or (N, features) ?? 
+              Let's standardize on (features, samples) for easy indexing x[i], 
+              OR a dictionary {'x0': array, 'x1': array}.
         constants: optional dict mapping path tuples to constant values
         Returns a numpy array of results.
         """
-        # Ensure x_values is a numpy array
-        if not isinstance(x_values, np.ndarray):
-            x_values = np.array(x_values, dtype=np.float64)
+        if isinstance(x_values, dict):
+             # Extract arrays: expected keys 'x0', 'x1', ...
+             # We pass the dict directly.
+             pass
+        elif isinstance(x_values, np.ndarray):
+            if x_values.ndim == 1:
+                # Single variable x -> x0
+                x_values = {'x0': x_values}
+            elif x_values.ndim == 2:
+                # Shape issue: is it (N, M) or (M, N)?
+                # Usually standard ML is (samples, features).
+                # But for our eval logic `x[0]` returning feature 0 is easier.
+                # So if shape is (samples, features), we transpose or wrap.
+                # Let's assume standard (N_samples, M_features).
+                # Then x_values[:, 0] is x0.
+                inputs = {}
+                n_features = x_values.shape[1]
+                for i in range(n_features):
+                    inputs[f'x{i}'] = x_values[:, i]
+                x_values = inputs
+            else:
+                raise ValueError(f"Unsupported input shape: {x_values.shape}")
+        else:
+             x_values = {'x0': np.array(x_values, dtype=np.float64)}
+        
+        # Determine sample size from first key
+        n_samples = len(next(iter(x_values.values())))
         
         if not self.is_valid:
-            return np.full_like(x_values, np.nan, dtype=np.float64)
+            return np.full(n_samples, np.nan, dtype=np.float64)
         return self._eval_node(self.root, x_values, constants, path=[])
 
     def _eval_node(self, node, x, constants=None, path=None):
         val = node.value
         
-        if val == 'x':
-            return x.astype(np.float64)
+        # Check for variable
+        if val in x:
+            return x[val].astype(np.float64)
+        if val == 'x': # Backward compatibility
+             if 'x0' in x: return x['x0'].astype(np.float64)
+             # Fallback if x was passed as key 'x'
+             if 'x' in x: return x['x'].astype(np.float64)
+             raise ValueError("Variable 'x' not found in input.")
+        # Get sample size from a variable
+        n_samples = len(next(iter(x.values())))
+        
         if val == 'pi':
-            return np.full_like(x, np.pi, dtype=np.float64)
+            return np.full(n_samples, np.pi, dtype=np.float64)
         if val == 'e':
-            return np.full_like(x, np.e, dtype=np.float64)
+            return np.full(n_samples, np.e, dtype=np.float64)
         if val == 'C':
             # Check if we have an optimized constant for this position
             if constants is not None and tuple(path) in constants:
-                return np.full_like(x, constants[tuple(path)], dtype=np.float64)
-            return np.full_like(x, 1.0, dtype=np.float64)  # Default constant = 1
+                return np.full(n_samples, constants[tuple(path)], dtype=np.float64)
+            return np.full(n_samples, 1.0, dtype=np.float64)  # Default constant = 1
         
         # Check for numeric constants
         try:
-            return np.full_like(x, float(val), dtype=np.float64)
+            return np.full(n_samples, float(val), dtype=np.float64)
         except:
             pass
             
@@ -279,7 +321,7 @@ class ExpressionTree:
             if val == '-': return args[0] - args[1]
             if val == '*': return args[0] * args[1]
             if val == '/': 
-                return np.divide(args[0], args[1], out=np.zeros_like(x, dtype=np.float64), where=args[1]!=0)
+                return np.divide(args[0], args[1], out=np.zeros(n_samples, dtype=np.float64), where=args[1]!=0)
             if val == 'pow':
                 # Safe power
                 return np.power(np.abs(args[0]) + 1e-10, np.clip(args[1], -10, 10))
@@ -325,7 +367,7 @@ class ExpressionTree:
             if val == 'sign':
                 return np.sign(args[0])
                 
-        return np.zeros_like(x, dtype=np.float64)
+        return np.zeros(n_samples, dtype=np.float64)
 
     def get_infix(self):
         if not self.is_valid:

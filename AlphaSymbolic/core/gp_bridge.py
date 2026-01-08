@@ -85,7 +85,7 @@ class GPEngine:
         else:
             self.binary_path = binary_path
 
-    def run(self, x_values: List[float], y_values: List[float], seeds: List[str] = [], timeout_sec: int = 10) -> Optional[str]:
+    def run(self, x_values, y_values: List[float], seeds: List[str] = [], timeout_sec: int = 10) -> Optional[str]:
         """
         Runs the C++ GP Engine with the given data and seeds.
         Returns the best formula found as a string, or None if failed.
@@ -104,9 +104,56 @@ class GPEngine:
             seed_file_path = seed_file.name
             
             # Write Data
-            # Line 1: x1 x2 ...
-            # Line 2: y1 y2 ...
-            data_file.write(" ".join(map(str, x_values)) + "\n")
+            # Format:
+            # Line 1: x0_1 x0_2 ...
+            # Line 2: x1_1 x1_2 ...
+            # ...
+            # Line M: y1 y2 ...
+            
+            # Handle x_values input structure
+            # Case 1: x_values is a list of lists (matrix) or numpy 2D array [features, samples]
+            # Case 2: x_values is dict {'x0': ..., 'x1': ...}
+            # Case 3: x_values is list (single feature) [samples]
+            
+            x_matrix = []
+            if isinstance(x_values, dict):
+                 # Sort keys to ensure order x0, x1, x2...
+                 sorted_keys = sorted(x_values.keys(), key=lambda k: int(k[1:]) if k[1:].isdigit() else 0)
+                 for k in sorted_keys:
+                     x_matrix.append(x_values[k])
+            elif isinstance(x_values, np.ndarray):
+                if x_values.ndim == 1:
+                    x_matrix.append(x_values)
+                else:
+                     # Check shape. Assume (features, samples) if passed from app loop.
+                     # But verify: if shape is (N, F) and F is small, we probably want to transpose.
+                     # Let's assume input matches logic in grammar.py (features, samples)
+                     # Actually, standard sklearn is (samples, features).
+                     # Let's support both but prioritize features being rows for the file.
+                     # If (samples, features), we transpose.
+                     # Heuristic: if shape[0] > shape[1] and shape[1] < 20, assume (samples, features).
+                     if x_values.shape[0] > x_values.shape[1] and x_values.shape[1] < 50:
+                          # (Samples, Features) -> Transpose to (Features, Samples)
+                          for i in range(x_values.shape[1]):
+                              x_matrix.append(x_values[:, i])
+                     else:
+                          # (Features, Samples)
+                          for i in range(x_values.shape[0]):
+                              x_matrix.append(x_values[i])
+            elif isinstance(x_values, list):
+                 # Check if element is list (matrix)
+                 if len(x_values) > 0 and isinstance(x_values[0], list):
+                      # Assumed (Features, Samples)
+                      x_matrix = x_values
+                 else:
+                      # Single feature
+                      x_matrix.append(x_values)
+
+            # Write X lines
+            for feature_vals in x_matrix:
+                data_file.write(" ".join(map(str, feature_vals)) + "\n")
+            
+            # Write Y line
             data_file.write(" ".join(map(str, y_values)) + "\n")
             data_file_path = data_file.name
 

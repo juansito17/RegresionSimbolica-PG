@@ -57,7 +57,7 @@ class GeneticAlgorithm {
     // Miembros principales de la clase GeneticAlgorithm
     std::vector<std::unique_ptr<Island>> islands; // Vector de punteros únicos a las islas
     const std::vector<double>& targets;           // Referencia a los datos objetivo
-    const std::vector<double>& x_values;          // Referencia a los valores de x
+    const std::vector<std::vector<double>>& x_values;          // Referencia a los valores de x [samples][features]
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     double* d_targets = nullptr;                  // Puntero a los datos objetivo en la GPU
     double* d_x_values = nullptr;                 // Puntero a los valores de x en la GPU
@@ -82,7 +82,7 @@ class GeneticAlgorithm {
 public:
     // Constructor
     GeneticAlgorithm(const std::vector<double>& targets_ref,
-                       const std::vector<double>& x_values_ref,
+                       const std::vector<std::vector<double>>& x_values_ref,
                        int total_pop,
                        int gens,
                        const std::vector<std::string>& seeds = {}, // Optional: Initial population seeds

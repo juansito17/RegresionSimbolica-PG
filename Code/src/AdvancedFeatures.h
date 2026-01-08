@@ -74,7 +74,7 @@ public:
     // Actualiza el frente de Pareto con individuos de la población actual.
     void update(const std::vector<struct Individual>& population, // Usa Individual struct
                 const std::vector<double>& targets,
-                const std::vector<double>& x_values);
+                const std::vector<std::vector<double>>& x_values);
 
     // Obtiene los árboles (NodePtr) de las soluciones en el frente actual.
     std::vector<NodePtr> get_pareto_solutions();
@@ -105,14 +105,14 @@ private:
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
                                                   double current_fitness,
                                                   const std::vector<double>& targets,
-                                                  const std::vector<double>& x_values,
+                                                  const std::vector<std::vector<double>>& x_values,
                                                   int attempts,
                                                   double* d_targets, double* d_x_values);
 #else
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
                                                   double current_fitness,
                                                   const std::vector<double>& targets,
-                                                  const std::vector<double>& x_values,
+                                                  const std::vector<std::vector<double>>& x_values,
                                                   int attempts = 10);
 #endif
 

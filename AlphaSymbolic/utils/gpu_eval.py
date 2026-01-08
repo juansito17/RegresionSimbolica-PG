@@ -44,13 +44,24 @@ class GPUEvaluator:
         x_values: numpy array or tensor of x values
         constants: dict mapping positions to constant values
         """
-        if isinstance(x_values, np.ndarray):
-            x_tensor = torch.tensor(x_values, dtype=torch.float32, device=self.device)
+        if isinstance(x_values, dict):
+            # Handle dictionary of inputs
+            x_tensor = {k: torch.tensor(v, dtype=torch.float32, device=self.device) if isinstance(v, np.ndarray) else v.to(self.device) for k, v in x_values.items()}
+        elif isinstance(x_values, np.ndarray):
+            if x_values.ndim == 2:
+                # Assume (samples, features) -> convert to dict x0, x1...
+                x_tensor = {}
+                n_features = x_values.shape[1]
+                t = torch.tensor(x_values, dtype=torch.float32, device=self.device)
+                for i in range(n_features):
+                    x_tensor[f'x{i}'] = t[:, i]
+            else:
+                x_tensor = torch.tensor(x_values, dtype=torch.float32, device=self.device)
         else:
             x_tensor = x_values.to(self.device)
         
         try:
-            result = self._eval_prefix(tokens, x_tensor, constants or {})
+            result, _ = self._eval_prefix(tokens, x_tensor, constants or {})
             return result.cpu().numpy() if isinstance(result, torch.Tensor) else result
         except Exception as e:
             return np.full(len(x_values), np.nan)
@@ -61,25 +72,38 @@ class GPUEvaluator:
             path = []
         
         if idx >= len(tokens):
-            return torch.zeros_like(x), idx
+            ref = x['x0'] if isinstance(x, dict) and 'x0' in x else (list(x.values())[0] if isinstance(x, dict) else x)
+            return torch.zeros_like(ref), idx
         
         token = tokens[idx]
         
         # Terminal nodes
-        if token == 'x':
+        if isinstance(x, dict):
+             if token in x:
+                 return x[token], idx + 1
+             if token == 'x':
+                 # Fallback/Backward compatibility
+                 if 'x0' in x: return x['x0'], idx + 1
+                 if 'x' in x: return x['x'], idx + 1
+                 # If x is dict but token 'x' not found and no x0, this is an error or it's a constant/op
+        elif token == 'x':
             return x, idx + 1
         if token == 'pi':
-            return torch.full_like(x, np.pi), idx + 1
+            ref = x['x0'] if isinstance(x, dict) and 'x0' in x else (list(x.values())[0] if isinstance(x, dict) else x)
+            return torch.full_like(ref, np.pi), idx + 1
         if token == 'e':
-            return torch.full_like(x, np.e), idx + 1
+            ref = x['x0'] if isinstance(x, dict) and 'x0' in x else (list(x.values())[0] if isinstance(x, dict) else x)
+            return torch.full_like(ref, np.e), idx + 1
         if token == 'C':
             val = constants.get(tuple(path), 1.0)
-            return torch.full_like(x, val), idx + 1
+            ref = x['x0'] if isinstance(x, dict) and 'x0' in x else (list(x.values())[0] if isinstance(x, dict) else x)
+            return torch.full_like(ref, val), idx + 1
         
         # Try numeric constant
         try:
             val = float(token)
-            return torch.full_like(x, val), idx + 1
+            ref = x['x0'] if isinstance(x, dict) and 'x0' in x else (list(x.values())[0] if isinstance(x, dict) else x)
+            return torch.full_like(ref, val), idx + 1
         except:
             pass
         
@@ -95,7 +119,7 @@ class GPUEvaluator:
                 arg2, next_idx = self._eval_prefix(tokens, x, constants, mid_idx, path + [1])
                 return OP_FUNCS[token](arg1, arg2), next_idx
         
-        return torch.zeros_like(x), idx + 1
+        return torch.zeros_like(x['x0'] if isinstance(x, dict) and 'x0' in x else (list(x.values())[0] if isinstance(x, dict) else x)), idx + 1
     
     def evaluate_batch(self, formulas, x_values, constants_list=None):
         """
@@ -106,8 +130,18 @@ class GPUEvaluator:
         
         Returns: numpy array of shape [num_formulas, num_points]
         """
-        if isinstance(x_values, np.ndarray):
-            x_tensor = torch.tensor(x_values, dtype=torch.float32, device=self.device)
+        if isinstance(x_values, dict):
+             x_tensor = {k: torch.tensor(v, dtype=torch.float32, device=self.device) if isinstance(v, np.ndarray) else v.to(self.device) for k, v in x_values.items()}
+        elif isinstance(x_values, np.ndarray):
+            if x_values.ndim == 2:
+                # Assume (samples, features) -> convert to dict x0, x1...
+                x_tensor = {}
+                n_features = x_values.shape[1]
+                t = torch.tensor(x_values, dtype=torch.float32, device=self.device)
+                for i in range(n_features):
+                    x_tensor[f'x{i}'] = t[:, i]
+            else:
+                x_tensor = torch.tensor(x_values, dtype=torch.float32, device=self.device)
         else:
             x_tensor = x_values.to(self.device)
         

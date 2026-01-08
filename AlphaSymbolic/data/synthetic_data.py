@@ -4,12 +4,16 @@ from core.grammar import VOCABULARY, OPERATORS, VARIABLES, CONSTANTS, Expression
 from data.augmentation import augment_formula_tokens
 
 class DataGenerator:
-    def __init__(self, max_depth=5, population_size=1000, allowed_operators=None):
+    def __init__(self, max_depth=5, population_size=1000, allowed_operators=None, num_variables=1):
         self.max_depth = max_depth
         self.population_size = population_size
+        self.num_variables = num_variables
         self.vocab = VOCABULARY
+        # Use subset of variables based on num_variables
+        self.active_variables = VARIABLES[:num_variables] if num_variables > 1 else ['x']
+        
         # Pre-compute terminal vs operator lists
-        self.terminals = VARIABLES + CONSTANTS
+        self.terminals = self.active_variables + CONSTANTS
         if allowed_operators:
             self.operators = [op for op in allowed_operators if op in OPERATORS]
         else:
@@ -17,9 +21,9 @@ class DataGenerator:
 
     def generate_random_tree(self, max_depth, current_depth=0):
         if current_depth >= max_depth:
-            # Balanced Terminal Selection: 50% x, 50% constant
+            # Balanced Terminal Selection: 50% variable, 50% constant
             if random.random() < 0.5:
-                return ['x']
+                return [random.choice(self.active_variables)]
             else:
                 return [random.choice(CONSTANTS)]
         
@@ -33,10 +37,10 @@ class DataGenerator:
                 tokens.extend(self.generate_random_tree(max_depth, current_depth + 1))
             return tokens
         else:
-            # Balanced Terminal Selection: 40% x, 30% C, 30% numbers
+            # Balanced Terminal Selection: 40% var, 30% C, 30% numbers
             r = random.random()
             if r < 0.4:
-                return ['x']
+                return [random.choice(self.active_variables)]
             elif r < 0.7:
                 return ['C']
             else:
@@ -56,14 +60,22 @@ class DataGenerator:
             if not tree.is_valid:
                 continue
             
-            # Ensure 'x' is present in the formula (90% of the time)
-            if 'x' not in tokens and random.random() < 0.9:
+            # Ensure variables are present (90% of the time, check any active variable)
+            if not any(v in tokens for v in self.active_variables) and random.random() < 0.9:
                 continue
                 
             # Generate random X points
-            x_values = np.random.uniform(x_range[0], x_range[1], point_count)
-            # Sort X for cleaner visualization/learning
-            x_values.sort()
+            # If num_variables > 1, shape (point_count, num_variables)
+            # If num_variables == 1, shape (point_count,) or (point_count, 1) - but maintain compat
+            if self.num_variables > 1:
+                x_values = np.random.uniform(x_range[0], x_range[1], (point_count, self.num_variables))
+                # Sorting 2D array by first col just for consistent indexing? or keep random?
+                # Maybe sort by first column for visualization
+                x_values = x_values[x_values[:, 0].argsort()]
+            else:
+                x_values = np.random.uniform(x_range[0], x_range[1], point_count)
+                # Sort X for cleaner visualization/learning
+                x_values.sort()
             
             # Randomize 'C' values if present
             c_positions = tree.root.get_constant_positions()
@@ -101,9 +113,9 @@ class DataGenerator:
         """
         # Base cases
         if complexity <= 0:
-            # Randomly choose between x, C and constants
+            # Randomly choose between active_variables, C and constants
             r = random.random()
-            if r < 0.4: return ['x']
+            if r < 0.4: return [random.choice(self.active_variables)]
             if r < 0.7: return ['C']
             return [random.choice([c for c in CONSTANTS if c != 'C'])]
             
@@ -193,7 +205,8 @@ class DataGenerator:
             complexity = random.randint(1, max(1, self.max_depth - 1))
             
             try:
-                tokens = self.generate_structured_tree(complexity, 'x')
+                # Use random variable as starting seed if needed, but structured tree handles selection at leaves
+                tokens = self.generate_structured_tree(complexity, random.choice(self.active_variables))
                 
                 # Convert numeric strings to 'C' placeholders if needed
                 # But here we want the GROUND TRUTH tokens with numbers for checking?
@@ -230,8 +243,8 @@ class DataGenerator:
                 if not tree.is_valid:
                     continue
                 
-                # Ensure 'x' is present (90% of the time)
-                if 'x' not in final_tokens and random.random() < 0.9:
+                # Ensure variables are present (90% of the time)
+                if not any(v in final_tokens for v in self.active_variables) and random.random() < 0.9:
                     continue
                     
                 # Check constraints (depth, length)
@@ -241,12 +254,19 @@ class DataGenerator:
                 # Generate X points
                 # Use safer range for complex funcs
                 # Exp/Pow grow very fast, so we constrain X to avoid float overflow
+                range_limit = x_range
                 if 'exp' in final_tokens or 'pow' in final_tokens:
-                    x_safe = np.linspace(-2, 2, point_count)
+                    range_limit = (-2, 2)
                 elif 'log' in final_tokens or 'sqrt' in final_tokens:
-                    x_safe = np.linspace(0.1, 5, point_count)
+                    range_limit = (0.1, 5)
+
+                if self.num_variables > 1:
+                    x_safe = np.linspace(range_limit[0], range_limit[1], point_count)
+                    # For multivar, linspace per column or random?
+                    # Let's use random uniform for coverage in multivar space
+                    x_safe = np.random.uniform(range_limit[0], range_limit[1], (point_count, self.num_variables))
                 else:
-                    x_safe = np.linspace(x_range[0], x_range[1], point_count)
+                    x_safe = np.linspace(range_limit[0], range_limit[1], point_count)
                 
                 # Randomize 'C' values if present
                 c_positions = tree.root.get_constant_positions()
