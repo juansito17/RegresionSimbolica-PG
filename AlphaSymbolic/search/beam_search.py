@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree, OPERATOR_STAGES
 from utils.optimize_constants import optimize_constants
+from utils.data_utils import normalize_batch
 
 class BeamSearch:
     def __init__(self, model, device, beam_width=10, max_length=30, curriculum_stage=None, num_variables=1):
@@ -55,8 +56,14 @@ class BeamSearch:
         Beam Search to find the best formula structure.
         """
         # Prepare data once
-        x_tensor = torch.tensor(x_values, dtype=torch.float32).unsqueeze(0).to(self.device) # [1, points]
-        y_tensor = torch.tensor(y_values, dtype=torch.float32).unsqueeze(0).to(self.device) # [1, points]
+        # Normalize data for model inference
+        # normalize_batch input: list of arrays. We wrap x_values/y_values in list.
+        norm_x_list, norm_y_list = normalize_batch([x_values], [y_values])
+        norm_x = norm_x_list[0]
+        norm_y = norm_y_list[0]
+        
+        x_tensor = torch.tensor(norm_x, dtype=torch.float32).unsqueeze(0).to(self.device) # [1, points, vars] or [1, points] if 1D-normalized
+        y_tensor = torch.tensor(norm_y, dtype=torch.float32).unsqueeze(0).to(self.device) # [1, points]
         
         # Each element in beams is just the sequence of tokens (list of strings)
         # We track scores and open branches in parallel lists or a list of dicts
@@ -77,9 +84,14 @@ class BeamSearch:
             # Batch size = number of active beams
             batch_size = len(active_beams)
             
-            # Expand X and Y to match batch size [batch, points]
-            x_batch = x_tensor.expand(batch_size, -1)
-            y_batch = y_tensor.expand(batch_size, -1)
+            # Expand X and Y to match batch size [batch, points, vars]
+            # Use expand with *shape to handle arbitrary dimensions (1D or Multi-Var)
+            # x_tensor shape is [1, points, vars] or [1, points]
+            # We want [batch_size, points, vars]
+            
+            # Use repeat or expand. Expand is strictly view, safer:
+            x_batch = x_tensor.expand(batch_size, *x_tensor.shape[1:])
+            y_batch = y_tensor.expand(batch_size, *y_tensor.shape[1:])
             
             # Prepare input sequences [batch, current_seq_len]
             # Must prepend SOS token
@@ -97,6 +109,8 @@ class BeamSearch:
             # Apply curriculum mask if set
             if self.token_mask is not None:
                 last_token_logits = last_token_logits + self.token_mask
+
+
             
             log_probs = torch.log_softmax(last_token_logits, dim=-1) # [batch, vocab]
             

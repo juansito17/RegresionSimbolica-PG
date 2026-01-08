@@ -144,8 +144,17 @@ class GPEngine:
             elif isinstance(x_values, list):
                  # Check if element is list (matrix)
                  if len(x_values) > 0 and isinstance(x_values[0], list):
-                      # Assumed (Features, Samples)
-                      x_matrix = x_values
+                      # Heuristic check for (Samples, Features) vs (Features, Samples)
+                      # If we have many rows (samples) and few columns (features), transpose.
+                      rows = len(x_values)
+                      cols = len(x_values[0])
+                      
+                      if rows > cols and cols < 50:
+                           # Transpose list of lists
+                           x_matrix = list(map(list, zip(*x_values)))
+                      else:
+                           # Assumed (Features, Samples) already
+                           x_matrix = x_values
                  else:
                       # Single feature
                       x_matrix.append(x_values)

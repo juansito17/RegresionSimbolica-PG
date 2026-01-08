@@ -25,6 +25,14 @@ def detect_pattern(x_values, y_values):
     
     if len(x) < 3:
         return results
+
+    # Handle Multivariable Input (Skip 1D pattern checks)
+    if x.ndim > 1 and x.shape[1] > 1:
+        results['type'] = 'multivariable'
+        results['confidence'] = 1.0
+        results['suggested_ops'] = ['+', '-', '*', 'x', 'C']
+        results['details']['multivariable'] = {'num_vars': x.shape[1]}
+        return results
     
     scores = {}
     

@@ -528,12 +528,12 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                         rmses.append(nn_rmse)
                     else:
                         # 3. NN FAILED - GP Engine to the rescue!
-                        # Use hybrid_solve with short timeout for speed
+                        # Use hybrid_solve with INCREASED timeout for better formulas
                         try:
                             gp_result = hybrid_solve(
                                 x_data, y_data, MODEL, DEVICE,
-                                beam_width=20,  # Small beam for speed
-                                gp_timeout=5,    # Short timeout
+                                beam_width=20,
+                                gp_timeout=15,    # Increased from 5s to 15s
                                 num_variables=int(num_variables)
                             )
                             
@@ -545,42 +545,52 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                                     y_pred = tree.evaluate(x_data)
                                     gp_rmse = np.sqrt(np.mean((y_pred - y_data)**2))
                                     
-                                    # Only use GP solution if it's actually good
-                                    if gp_rmse < 0.15 and len(tree.tokens) <= 30:
+                                    # DYNAMIC ACCEPTANCE CRITERIA
+                                    # Accept if RMSE <= 0.01 (Precision Mode)
+                                    # Since we fixed the GP, we expect exact matches.
+                                    is_decent = gp_rmse <= 0.01
+                                    
+                                    if is_decent and len(tree.tokens) <= 50:
                                         # Sanitize tokens: replace numeric constants NOT in vocab with 'C'
-                                        # GP outputs numbers like '7.80207885' which aren't in TOKEN_TO_ID
                                         sanitized_tokens = []
                                         for t in tree.tokens:
                                             if t in TOKEN_TO_ID:
                                                 sanitized_tokens.append(t)
                                             else:
-                                                # Try to parse as float - if it is, replace with 'C'
                                                 try:
                                                     float(t)
                                                     sanitized_tokens.append('C')
                                                 except ValueError:
-                                                    # Unknown token - skip this formula
                                                     sanitized_tokens = None
                                                     break
                                         
                                         if sanitized_tokens and len(sanitized_tokens) > 0:
                                             # Create "expert" policy - uniform over tokens
-                                            # This teaches the model the correct sequence
                                             policy = np.ones(len(VOCABULARY)) / len(VOCABULARY)
+                                            
+                                            # SCALED REWARD
+                                            # Give higher value for better solutions
+                                            # RMSE 0.0 -> Value 1.0
+                                            # RMSE 0.1 -> Value 0.8
+                                            # RMSE 0.5 -> Value 0.2
+                                            # Formula: max(0.1, 1.0 - (rmse * 1.6))
+                                            reward_value = max(0.1, 1.0 - (gp_rmse * 1.6))
                                             
                                             replay_buffer.append({
                                                 'x': x_data, 'y': y_data,
                                                 'tokens': sanitized_tokens,
                                                 'policy': policy,
-                                                'value': max(0.5, 1.0 - gp_rmse),  # Higher value for better GP solutions
+                                                'value': reward_value,
                                                 'source': 'GP_EXPERT'
                                             })
                                             gp_corrections += 1
                                             rmses.append(gp_rmse)
                                             
-                                            # Also add as supervised training example (CrossEntropy)
-                                            # This is the key learning signal!
-                                            print(f"📚 GP Expert: {gp_result['formula'][:50]}... (RMSE: {gp_rmse:.4f})")
+                                            print(f"📚 GP Expert ACCEPTED: {gp_result['formula'][:50]}... (RMSE: {gp_rmse:.4f}, Val: {reward_value:.2f})")
+                                        else:
+                                             print(f"🔸 GP Rejected (Sanitization): {gp_result['formula'][:30]}")
+                                    else:
+                                         print(f"🔸 GP Rejected (Quality): RMSE {gp_rmse:.4f} vs NN {nn_rmse:.4f}")
                         except Exception as gp_err:
                             # GP failed too - skip this problem
                             pass
@@ -1143,6 +1153,7 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                     
                     # Run Hybrid Search (Quick Mode)
                     # We pass the model so beam search can seed the GP
+                    res = None # Initialize to avoid UnboundLocalError
                     res = hybrid_solve(
                         prob['x'], 
                         prob['y'], 
@@ -1175,7 +1186,8 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                             seeds_html += f"<span style='background:#222; padding:3px 6px; border-radius:4px;'>Worker {i+1}: {s[:30]}...</span>"
                         seeds_html += "</div>"
                     
-                    if res and res.get('formula') and res.get('rmse', 1e6) < 0.01:
+                    gp_rmse = res.get('rmse', 1e6)
+                    if res and res.get('formula') and gp_rmse <= 0.01:
                         # SUCCESS!
                         gp_successes += 1
                         
@@ -1186,23 +1198,26 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                             # 2. Get tokens
                             tokens = tree.tokens
                             
-                            # Calculate Efficiency Reward
-                            # If time < 5s -> Reward 1.0 (Gold Standard)
-                            # If time > 5s -> Linear Decay down to 0.5 at 30s
+                            # SCALED REWARD + Efficiency
+                            # 1. Quality Reward (0.2 to 1.0)
+                            quality_reward = max(0.2, 1.0 - (gp_rmse * 1.6))
+                            
+                            # 2. Efficiency Bonus (0.5 to 1.0)
                             taken_time = res.get('time', 10.0)
-                            efficiency_reward = 1.0
+                            efficiency_bonus = 1.0
                             if taken_time > 5.0:
-                                # Decay: 5s=1.0, 30s=0.5
-                                # Formula: 1.0 - ((time - 5) / 25) * 0.5
                                 decay = ((taken_time - 5.0) / 25.0) * 0.5
-                                efficiency_reward = max(0.5, 1.0 - decay)
+                                efficiency_bonus = max(0.5, 1.0 - decay)
+                            
+                            # Final Reward = Quality * Efficiency
+                            final_reward = quality_reward * efficiency_bonus
 
                             replay_buffer.append({
                                 'x': prob['x'],
                                 'y': prob['y'],
                                 'tokens': tokens,
                                 'source': 'GP_Teacher',
-                                'reward': efficiency_reward
+                                'reward': final_reward
                             })
 
                             # --- MISSION 2: PERSISTENCE ---
@@ -1237,7 +1252,7 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                 
                 # --- FALLBACK: If GP failed, use Original Ground Truth ---
                 # This ensures the model always learns something and the graph updates
-                found_gp_solution = (res and res.get('formula') and res.get('rmse', 1e6) < 0.01)
+                found_gp_solution = (res and res.get('formula') and res.get('rmse', 1e6) <= 0.01)
                 
                 if not found_gp_solution:
                     # Clean tokens
@@ -1277,7 +1292,19 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                         dec_in[j, 1:len(seq)+1] = torch.tensor(seq, dtype=torch.long)
                         targets[j, :len(seq)] = torch.tensor(seq, dtype=torch.long)
                         
-                    x_t = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
+                    # DYNAMIC PADDING FOR X (Mixed Dimensions)
+                    # Find max variables in this batch
+                    max_vars = max(x.shape[1] for x in x_list)
+                    points = x_list[0].shape[0]
+                    
+                    # Create padded array (Batch, Points, MaxVars)
+                    x_padded = np.zeros((batch_size_train, points, max_vars), dtype=np.float32)
+                    
+                    for j, x_item in enumerate(x_list):
+                        current_vars = x_item.shape[1]
+                        x_padded[j, :, :current_vars] = x_item
+                        
+                    x_t = torch.tensor(x_padded, dtype=torch.float32).to(DEVICE)
                     y_t = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
                     dec_in = dec_in.to(DEVICE)
                     targets = targets.to(DEVICE)
