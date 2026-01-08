@@ -946,7 +946,7 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
         return f"Error: {str(e)}", None
 
 
-def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, progress=gr.Progress()):
+def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, max_workers=4, progress=gr.Progress()):
     """
     Teacher-Student Distillation Loop.
     1. Find problems where model has high loss.
@@ -1162,7 +1162,7 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                         beam_width=10,     # Faster beam
                         gp_timeout=gp_timeout,
                         gp_binary_path=None,
-                        max_workers=6,      # Parallel Workers (Mission 1)
+                        max_workers=max_workers,      # Parallel Workers (Mission 1)
                         num_variables=iter_num_vars
                     )
                     

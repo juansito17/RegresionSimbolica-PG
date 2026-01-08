@@ -132,7 +132,8 @@ def create_app():
                             value="Alpha-GP Hybrid",
                             label="Algoritmo de Búsqueda"
                         )
-                        beam_slider = gr.Slider(5, 500, value=50, step=5, label="Intensidad")
+                        beam_slider = gr.Slider(5, 500, value=50, step=5, label="Intensidad (Beam Width)")
+                        workers_slider = gr.Slider(1, 16, value=6, step=1, label="Workers (Paralelismo)", info="Procesos para el motor GP")
                         solve_btn = gr.Button("🚀 BUSCAR FÓRMULA", variant="primary", size="lg", elem_classes="primary-btn")
                         
                         with gr.Accordion("Tabla de Predicciones", open=False):
@@ -146,7 +147,7 @@ def create_app():
                         alt_html = gr.HTML(label="Alternativas")
                 
                 raw_formula = gr.Textbox(visible=False)
-                solve_btn.click(solve_formula, [x_input, y_input, beam_slider, search_method], 
+                solve_btn.click(solve_formula, [x_input, y_input, beam_slider, search_method, workers_slider], 
                                [result_html, plot_output, pred_html, alt_html, raw_formula])
             
             # TAB 2: Training
@@ -193,7 +194,6 @@ def create_app():
                 
                 # Global Training Config
                 with gr.Row():
-                    dim_slider = gr.Slider(1, 10, value=1, step=1, label="Variables (Dimension)")
                     reset_state_btn = gr.Button("⚠️ Reset Estado", variant="secondary", size="sm")
 
                 def reset_training_state():
@@ -218,7 +218,7 @@ def create_app():
                             with gr.Column():
                                 result_basic = gr.HTML()
                                 plot_basic = gr.Plot()
-                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic, dim_slider], [result_basic, plot_basic])
+                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic], [result_basic, plot_basic])
                     
                     # Curriculum
                     with gr.Tab("Curriculum"):
@@ -237,7 +237,7 @@ def create_app():
                             with gr.Column():
                                 result_curriculum = gr.HTML()
                                 plot_curriculum = gr.Plot()
-                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum, dim_slider], [result_curriculum, plot_curriculum])
+                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum], [result_curriculum, plot_curriculum])
                     
                     # Self-Play
                     with gr.Tab("Self-Play"):
@@ -256,7 +256,7 @@ def create_app():
                             with gr.Column():
                                 result_sp = gr.HTML()
                                 plot_sp = gr.Plot()
-                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp, dim_slider], [result_sp, plot_sp])
+                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
                 
                     # Feedback Loop (Teacher-Student)
                     with gr.Tab("Feedback Loop (Hybrid)"):
@@ -275,7 +275,7 @@ def create_app():
                             with gr.Column():
                                 result_fb = gr.HTML()
                                 plot_fb = gr.Plot()
-                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb], [result_fb, plot_fb])
+                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb, workers_slider], [result_fb, plot_fb])
                 
                 # --- PRE-TRAINING (Warmup) ---
                 with gr.Accordion("🎓 Escuela Primaria (Pre-Entrenamiento)", open=False):
@@ -287,7 +287,7 @@ def create_app():
                         with gr.Column():
                             result_pre = gr.HTML()
                             plot_pre = gr.Plot()
-                    train_pre_btn.click(train_supervised, [epochs_pre, dim_slider], [result_pre, plot_pre])
+                    train_pre_btn.click(train_supervised, [epochs_pre], [result_pre, plot_pre])
                 
                 # --- MEMORY TRAINING (Offline RL) ---
                 with gr.Accordion("🧠 Entrenamiento de Memoria (Offline)", open=False):
