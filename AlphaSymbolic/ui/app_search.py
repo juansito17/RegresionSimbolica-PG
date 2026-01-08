@@ -3,6 +3,8 @@ Search/Solve functions for AlphaSymbolic Gradio App.
 Supports both Beam Search and MCTS.
 """
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import time
 import gradio as gr
