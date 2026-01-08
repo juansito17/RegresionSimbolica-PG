@@ -126,11 +126,12 @@ def create_app():
                                 epochs_basic = gr.Slider(10, 500, value=100, step=10, label="Epocas")
                                 batch_basic = gr.Slider(16, 128, value=32, step=16, label="Batch Size")
                                 points_basic = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
+                                num_vars_basic = gr.Slider(1, 10, value=1, step=1, label="Variables (Dimension)")
                                 train_basic_btn = gr.Button("Entrenar Basico", variant="primary")
                             with gr.Column():
                                 result_basic = gr.HTML()
                                 plot_basic = gr.Plot()
-                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic], [result_basic, plot_basic])
+                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic, num_vars_basic], [result_basic, plot_basic])
                     
                     # Curriculum
                     with gr.Tab("Curriculum"):
@@ -145,11 +146,12 @@ def create_app():
                                 epochs_curriculum = gr.Slider(50, 2000, value=200, step=50, label="Epocas")
                                 batch_curriculum = gr.Slider(16, 128, value=64, step=16, label="Batch Size")
                                 points_curriculum = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
+                                num_vars_curriculum = gr.Slider(1, 10, value=1, step=1, label="Variables (Dimension)")
                                 train_curriculum_btn = gr.Button("Entrenar Curriculum", variant="primary")
                             with gr.Column():
                                 result_curriculum = gr.HTML()
                                 plot_curriculum = gr.Plot()
-                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum], [result_curriculum, plot_curriculum])
+                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum, num_vars_curriculum], [result_curriculum, plot_curriculum])
                     
                     # Self-Play
                     with gr.Tab("Self-Play"):
@@ -164,11 +166,12 @@ def create_app():
                                 iterations_sp = gr.Slider(10, 1000, value=100, step=10, label="Iteraciones")
                                 problems_sp = gr.Slider(5, 200, value=10, step=5, label="Problemas/Iter")
                                 points_sp = gr.Slider(10, 100, value=20, step=10, label="Puntos por Formula")
+                                num_vars_sp = gr.Slider(1, 10, value=1, step=1, label="Variables (Dimension)")
                                 train_sp_btn = gr.Button("Iniciar Self-Play", variant="primary")
                             with gr.Column():
                                 result_sp = gr.HTML()
                                 plot_sp = gr.Plot()
-                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
+                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp, num_vars_sp], [result_sp, plot_sp])
                 
                     # Feedback Loop (Teacher-Student)
                     with gr.Tab("Feedback Loop (Hybrid)"):
@@ -183,11 +186,12 @@ def create_app():
                                 iterations_fb = gr.Slider(5, 500, value=20, step=5, label="Ciclos")
                                 problems_fb = gr.Slider(5, 50, value=10, step=5, label="Problemas Difíciles / Ciclo")
                                 timeout_fb = gr.Slider(5, 30, value=10, step=5, label="Timeout Maestro (s)")
+                                num_vars_fb = gr.Slider(1, 10, value=1, step=1, label="Variables (Dimension)")
                                 train_fb_btn = gr.Button("Iniciar Feedback Loop", variant="primary")
                             with gr.Column():
                                 result_fb = gr.HTML()
                                 plot_fb = gr.Plot()
-                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb], [result_fb, plot_fb])
+                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb, num_vars_fb], [result_fb, plot_fb])
                 
                 # --- PRE-TRAINING (Warmup) ---
                 with gr.Accordion("🎓 Escuela Primaria (Pre-Entrenamiento)", open=False):
@@ -195,11 +199,14 @@ def create_app():
                     with gr.Row():
                         with gr.Column():
                             epochs_pre = gr.Slider(100, 10000, value=2000, step=100, label="Iteraciones Rápidas")
+                            batch_pre = gr.Slider(32, 256, value=128, step=32, label="Batch Size")
+                            points_pre = gr.Slider(10, 100, value=10, step=10, label="Puntos por Formula")
+                            num_vars_pre = gr.Slider(1, 10, value=1, step=1, label="Variables (Dimension)")
                             train_pre_btn = gr.Button("Iniciar Pre-Entrenamiento", variant="primary")
                         with gr.Column():
                             result_pre = gr.HTML()
                             plot_pre = gr.Plot()
-                    train_pre_btn.click(train_supervised, [epochs_pre], [result_pre, plot_pre])
+                    train_pre_btn.click(train_supervised, [epochs_pre, batch_pre, points_pre, num_vars_pre], [result_pre, plot_pre])
 
                 # --- HALL OF SHAME (Error Analysis) ---
                 with gr.Accordion("🕵️‍♂️ Hall of Shame (Analisis de Errores)", open=False):

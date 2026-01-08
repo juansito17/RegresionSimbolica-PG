@@ -69,7 +69,7 @@ def normalize_batch(x_list, y_list):
     return normalized_x, normalized_y
 
 
-def train_basic(epochs, batch_size, point_count=10, progress=gr.Progress()):
+def train_basic(epochs, batch_size, point_count=10, num_variables=1, progress=gr.Progress()):
     """Basic training with synthetic data."""
     global TRAINING_STATUS
     
@@ -89,7 +89,7 @@ def train_basic(epochs, batch_size, point_count=10, progress=gr.Progress()):
         VOCAB_SIZE = len(VOCABULARY)
         SOS_ID = VOCAB_SIZE
         
-        data_gen = DataGenerator(max_depth=4)
+        data_gen = DataGenerator(max_depth=4, num_variables=int(num_variables))
         losses = []
         
         for epoch in range(int(epochs)):
@@ -163,7 +163,7 @@ def train_basic(epochs, batch_size, point_count=10, progress=gr.Progress()):
         return f"Error: {str(e)}", None
 
 
-def train_curriculum(epochs, batch_size, point_count=10, progress=gr.Progress()):
+def train_curriculum(epochs, batch_size, point_count=10, num_variables=1, progress=gr.Progress()):
     """Curriculum Learning - starts simple, increases difficulty gradually."""
     global TRAINING_STATUS
     
@@ -203,7 +203,7 @@ def train_curriculum(epochs, batch_size, point_count=10, progress=gr.Progress())
             
             progress((epoch + 1) / epochs, desc=f"Epoca {epoch+1}/{int(epochs)} (prof: {current_depth}, inv: {inverse_ratio:.0%}) [{DEVICE.type.upper()}]")
             
-            data_gen = DataGenerator(max_depth=current_depth)
+            data_gen = DataGenerator(max_depth=current_depth, num_variables=int(num_variables))
             
             # Mix inverse + random based on curriculum stage
             n_inverse = int(batch_size * inverse_ratio)
@@ -281,7 +281,7 @@ def train_curriculum(epochs, batch_size, point_count=10, progress=gr.Progress())
         return f"Error: {str(e)}", None
 
 
-def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.Progress()):
+def train_self_play(iterations, problems_per_iter, point_count=10, num_variables=1, progress=gr.Progress()):
     """AlphaZero Self-Play loop."""
     global TRAINING_STATUS
     
@@ -313,7 +313,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
         
         # Adaptive Curriculum State
         current_depth = 2
-        data_gen = DataGenerator(max_depth=current_depth)
+        data_gen = DataGenerator(max_depth=current_depth, num_variables=int(num_variables))
         
         # MCTS for A100: Increase batch size and simulations significantly
         # Adjusted for RTX 3050/i5: Batch 64 is smoother (less CPU wait)
@@ -367,7 +367,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
             if len(rmses) > 20 and recent_rmse < 0.1 and curriculum_stage < len(CURRICULUM_LEVELS) - 1:
                 curriculum_stage += 1
                 stage_info = CURRICULUM_LEVELS[curriculum_stage]
-                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
                 # Recreate MCTS with new curriculum stage for operator filtering
                 searcher = MCTS(MODEL, DEVICE, max_simulations=500, complexity_lambda=0.1, batch_size=64, curriculum_stage=curriculum_stage)
                 print(f"*** Curriculum Level Up! Stage {curriculum_stage} ({stage_info['depth']}, {stage_info['ops']}) ***")
@@ -376,7 +376,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, progress=gr.P
             # Ensure data_gen is initialized at start
             if iteration == 0:
                 stage_info = CURRICULUM_LEVELS[0]
-                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
 
             stage_name = ["Arithmetic", "Polynomials", "Trigonometry", "Advanced", "Complex"][curriculum_stage]
             
@@ -784,7 +784,7 @@ def create_selfplay_plot(losses, rmses):
     plt.tight_layout()
     return fig
 
-def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Progress()):
+def train_supervised(epochs, batch_size=128, point_count=10, num_variables=1, progress=gr.Progress()):
     """
     Massive Supervised Pre-training (Warmup).
     Focus: Syntax, Basic Arithmetic, Overcoming "Collapse to Constant".
@@ -822,7 +822,7 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
         losses = []
         current_stage_idx = 0
         stage_info = PRE_CURRICULUM[0]
-        data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+        data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
         allowed_mask = get_allowed_token_mask(stage_info['stage'] if stage_info['stage'] is not None else 4, VOCAB_SIZE, DEVICE)
         
         start_time = time.time()
@@ -840,7 +840,7 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
             if new_stage_idx != current_stage_idx:
                 current_stage_idx = new_stage_idx
                 stage_info = PRE_CURRICULUM[current_stage_idx]
-                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'])
+                data_gen = DataGenerator(max_depth=stage_info['depth'], allowed_operators=stage_info['ops'], num_variables=int(num_variables))
                 stage_id = stage_info['stage'] if stage_info['stage'] is not None else 4
                 allowed_mask = get_allowed_token_mask(stage_id, VOCAB_SIZE, DEVICE)
                 stage_name = ['Arithmetic', 'Polynomials', 'Trigonometry', 'Advanced', 'Complex'][new_stage_idx]
@@ -924,7 +924,7 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
         return f"Error: {str(e)}", None
 
 
-def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, progress=gr.Progress()):
+def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, num_variables=1, progress=gr.Progress()):
     """
     Teacher-Student Distillation Loop.
     1. Find problems where model has high loss.
@@ -952,7 +952,7 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
         replay_buffer = deque(maxlen=5000)
         
         # Start with simple problems and grow
-        data_gen = DataGenerator(max_depth=3)
+        data_gen = DataGenerator(max_depth=3, num_variables=int(num_variables))
         
         losses = []
         gp_successes = 0
