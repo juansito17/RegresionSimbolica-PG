@@ -135,7 +135,7 @@ def main():
                 MODEL, DEVICE, 
                 beam_width=10, 
                 gp_timeout=60, 
-                max_workers=8,
+                max_workers=1, # GPU Only (0 CPU)
                 num_variables=1,
                 extra_seeds=extra_seeds
             )

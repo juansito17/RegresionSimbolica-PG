@@ -193,7 +193,7 @@ class ExpressionTree:
         elif isinstance(node, ast.Call):
             # Functions like sin(x)
             func_id = node.func.id
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma']:
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign']:
                 tokens = [func_id]
                 for arg in node.args:
                     tokens.extend(ExpressionTree._ast_to_prefix(arg))
