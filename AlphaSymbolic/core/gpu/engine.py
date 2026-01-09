@@ -1359,6 +1359,45 @@ class TensorGeneticEngine:
                               abs_err)
         return abs_err
 
+    def compute_case_weights(self, errors: torch.Tensor) -> torch.Tensor:
+        """
+        Compute case weights based on difficulty (variance of errors across population).
+        
+        Cases with higher variance are considered harder and get higher weights.
+        
+        Args:
+            errors: [PopSize, n_cases] error matrix
+            
+        Returns:
+            [n_cases] weights normalized to sum to 1
+        """
+        # Variance across population per case
+        case_variance = torch.var(errors, dim=0)
+        
+        # Normalize to weights (higher variance -> higher weight)
+        weights = case_variance / (case_variance.sum() + 1e-9)
+        
+        return weights
+
+    def weighted_rmse(self, errors: torch.Tensor, weights: torch.Tensor = None) -> torch.Tensor:
+        """
+        Compute weighted RMSE across cases.
+        
+        Args:
+            errors: [PopSize, n_cases] absolute error matrix
+            weights: [n_cases] optional case weights (default: uniform)
+            
+        Returns:
+            [PopSize] weighted RMSE per individual
+        """
+        if weights is None or not GpuGlobals.USE_WEIGHTED_FITNESS:
+            # Standard RMSE
+            return torch.sqrt((errors ** 2).mean(dim=1))
+        
+        # Weighted mean squared error
+        weighted_mse = (errors ** 2 * weights.unsqueeze(0)).sum(dim=1)
+        return torch.sqrt(weighted_mse)
+
     def lexicase_selection(self, population: torch.Tensor, errors: torch.Tensor, n_select: int) -> torch.Tensor:
         """
         Selects n_select parents using Tournament Lexicase Selection.

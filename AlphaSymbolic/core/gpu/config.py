@@ -135,6 +135,7 @@ class GpuGlobals:
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
     USE_PARETO_SELECTION = True  # NSGA-II multi-objective (error vs complexity)
+    USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
 
     # ----------------------------------------
     # Otros Parámetros
