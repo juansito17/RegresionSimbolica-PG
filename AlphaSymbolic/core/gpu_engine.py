@@ -48,10 +48,6 @@ class GPUGrammar:
 class TensorGeneticEngine:
     def __init__(self, device: torch.device = None, pop_size=10000, max_len=30, num_variables=1, max_constants=5, n_islands=5):
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # CPU Temperature Control: Force single thread
-        torch.set_num_threads(1)
-        
         self.grammar = GPUGrammar(num_variables)
         
         # Adjust pop_size to be divisible by n_islands
@@ -170,6 +166,8 @@ class TensorGeneticEngine:
             except:
                 batch_rpn.append([PAD_ID]*self.max_len)
                 
+        if not batch_rpn:
+             return torch.empty((0, self.max_len), device=self.device, dtype=torch.long)
         return torch.tensor(batch_rpn, device=self.device, dtype=torch.long)
 
     def rpn_to_infix(self, rpn_tensor: torch.Tensor) -> str:
@@ -814,7 +812,50 @@ class TensorGeneticEngine:
         if x_t.ndim > 1: x_t = x_t.flatten() 
         if y_t.ndim > 1: y_t = y_t.flatten()
 
-        print(f"[GPU Worker] Initializing Tensor Population ({self.pop_size})...")
+        # print(f"[GPU Worker] Initializing Tensor Population ({self.pop_size})...")
+        
+        # --- 0. Target Pattern Detection ("The Sniper") ---
+        # Swiftly check for trivial Linear or Geometric patterns
+        if x_t.shape[0] > 2:
+            try:
+                # Prepare X matrix [N, 2] for (slope, intercept)
+                X_mat = torch.stack([x_t, torch.ones_like(x_t)], dim=1)
+                
+                # A. Linear Check (y = mx + c)
+                # Solve: X * [m, c] = y
+                try:
+                    solution = torch.linalg.lstsq(X_mat, y_t).solution
+                    m, c = solution[0].item(), solution[1].item()
+                    y_pred = m * x_t + c
+                    
+                    # Check residuals (Relative Error or R2?)
+                    # Use Normalized RMSE
+                    res_std = torch.std(y_t - y_pred)
+                    y_std = torch.std(y_t)
+                    if y_std > 1e-9 and (res_std / y_std) < 1e-4:
+                        # Found Linear!
+                        # print(f"[GPU Sniper] Detected Linear Pattern: {m:.4f}*x + {c:.4f}")
+                        if abs(c) < 1e-5: return f"({m:.4f} * x)"
+                        return f"(({m:.4f} * x) + {c:.4f})"
+                except: pass
+
+                # B. Geometric Check (y = A * e^(Bx) -> log(y) = log(A) + Bx)
+                if torch.all(y_t > 0):
+                    log_y = torch.log(y_t)
+                    solution_g = torch.linalg.lstsq(X_mat, log_y).solution
+                    B, log_A = solution_g[0].item(), solution_g[1].item()
+                    
+                    y_pred_log = B * x_t + log_A
+                    res_std_log = torch.std(log_y - y_pred_log)
+                    
+                    if res_std_log < 1e-4:
+                        # Found Geometric!
+                        # Formula: exp(log_A + Bx)
+                        # print(f"[GPU Sniper] Detected Geometric Pattern.")
+                        return f"exp(({B:.4f} * x) + {log_A:.4f})"
+            except Exception as e:
+                pass
+
         
         # 2. Initialize Population & Constants
         seed_tensor = self.infix_to_rpn(seeds)
@@ -845,6 +886,13 @@ class TensorGeneticEngine:
         generations = 0
         COMPLEXITY_PENALTY = 0.005
         
+        # --- Dynamic Adaptation ("The Thermostat") ---
+        stagnation_counter = 0
+        current_mutation_rate = 0.15  # Base rate
+        current_chaos_rate = 0.01     # Base chaos
+        last_improvement_gen = 0
+
+        
         while time.time() - start_time < timeout_sec:
             generations += 1
             
@@ -858,30 +906,28 @@ class TensorGeneticEngine:
             fitness_penalized = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
             
             # B. Constant Optimization (Elitism)
-            # ECO MODE: Run rarely (Every 10)
-            if generations % 10 == 0:
-                # Pick Top 50 candidates based on PENALIZED fitness to refine
-                k_opt = 50
-                top_vals, top_indices = torch.topk(fitness_penalized, k_opt, largest=False)
-                
-                # Run Gradient Descent on these constants
-                refined_consts, refined_mse = self.optimize_constants(
-                    population[top_indices], 
-                    pop_constants[top_indices], 
-                    x_t, y_t, steps=10, lr=0.1
-                )
-                
-                # Write back results
-                pop_constants[top_indices] = refined_consts.detach()
-                fitness_rmse[top_indices] = refined_mse.detach()
-                
-                # Re-calculate penalized fitness for optimized ones
-                refined_lengths = lengths[top_indices]
-                fitness_penalized[top_indices] = refined_mse.detach() * (1.0 + COMPLEXITY_PENALTY * refined_lengths) + refined_lengths * 1e-6
-
+            # Pick Top 50 candidates based on PENALIZED fitness to refine
+            k_opt = 50
+            top_vals, top_indices = torch.topk(fitness_penalized, k_opt, largest=False)
+            
+            # Run Gradient Descent on these constants
+            refined_consts, refined_mse = self.optimize_constants(
+                population[top_indices], 
+                pop_constants[top_indices], 
+                x_t, y_t, steps=10, lr=0.1
+            )
+            
+            # Write back results
+            pop_constants[top_indices] = refined_consts.detach()
+            fitness_rmse[top_indices] = refined_mse.detach()
+            
+            # Re-calculate penalized fitness for optimized ones
+            refined_lengths = lengths[top_indices]
+            fitness_penalized[top_indices] = refined_mse.detach() * (1.0 + COMPLEXITY_PENALTY * refined_lengths) + refined_lengths * 1e-6
+            
             # --- Algebraic Simplification (The Cleaner) ---
-            # ECO MODE: DISABLED (SymPy is CPU heavy)
-            if generations % 999999 == 0:
+            # Every 5 generations, simplify the top elites to remove clutter (x*1 -> x)
+            if generations % 5 == 0:
                 try:
                     import sympy
                     # Simplify the optimization candidates (which are already best)
@@ -938,6 +984,23 @@ class TensorGeneticEngine:
                 best_consts_vec = pop_constants[min_idx]
                 best_formula_str = self.rpn_to_infix(best_rpn, best_consts_vec)
                 # print(f"[GPU Worker] New Best: {best_formula_str} (RMSE: {best_rmse:.5f})")
+                
+                # Reset Stagnation
+                stagnation_counter = 0
+                current_mutation_rate = 0.15
+                current_chaos_rate = 0.01
+                last_improvement_gen = generations
+            else:
+                stagnation_counter += 1
+                
+            # Adaptation Logic
+            if stagnation_counter > 20:
+                # Boost Mutation/Chaos incrementally
+                current_mutation_rate = min(0.40, current_mutation_rate + 0.02)
+                current_chaos_rate = min(0.05, current_chaos_rate + 0.005)
+                # if stagnation_counter % 10 == 0:
+                #    print(f"[GPU Worker] Stagnation ({stagnation_counter}). Mut: {current_mutation_rate:.2f}, Chaos: {current_chaos_rate:.3f}")
+
             
             # C. Island Selection & Tournament (Vectorized)
             # 1. Reshape to [NumIslands, IslandSize]
@@ -993,8 +1056,8 @@ class TensorGeneticEngine:
             
             # D. Mutation (On Offspring Only)
             
-            # 1. Safe Arity-Preserving Mutation (High Rate: 15%)
-            mask = torch.rand(winners_pop.shape, device=self.device) < 0.15
+            # 1. Safe Arity-Preserving Mutation (Dynamic Rate)
+            mask = torch.rand(winners_pop.shape, device=self.device) < current_mutation_rate
             current_arities = self.token_arity[winners_pop]
             
             # Arity 0 -> Arity 0
@@ -1013,7 +1076,7 @@ class TensorGeneticEngine:
                 winners_pop = torch.where(mask & (current_arities == 2), noise_2, winners_pop)
                 
             # 2. Chaos Mutation (Structure changing, Low Rate: 1%)
-            chaos_mask = torch.rand(winners_pop.shape, device=self.device) < 0.01
+            chaos_mask = torch.rand(winners_pop.shape, device=self.device) < current_chaos_rate
             chaos_noise = torch.randint(1, self.grammar.vocab_size, winners_pop.shape, device=self.device)
             winners_pop = torch.where(chaos_mask, chaos_noise, winners_pop)
             
@@ -1029,9 +1092,6 @@ class TensorGeneticEngine:
             # Flatten to [PopSize, L]
             population = next_pop_view.view(self.pop_size, self.max_len)
             pop_constants = next_c_view.view(self.pop_size, self.max_constants)
-            
-            # Active Cooling: Sleep briefly to let CPU idle (Aggressive for 92C fix)
-            time.sleep(0.1)
             
         print(f"[GPU Worker] Finished. Gens: {generations}. Best RMSE: {best_rmse:.5f}")
         return best_formula_str

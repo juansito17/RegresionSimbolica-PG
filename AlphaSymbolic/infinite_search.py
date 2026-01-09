@@ -23,8 +23,65 @@ X_TARGETS = np.array([26, 27], dtype=np.float64)
 Y_TARGETS = np.array([22317699616364044, 234907967154122528], dtype=np.float64)
 
 CSV_FILE = "top_formulas.csv"
+PATTERN_FILE = "pattern_memory.json"
 TOP_K = 5
 MIN_SAMPLE_SIZE = 6 # > 5
+
+import json
+
+# --- PATTERN MEMORY ("La Biblioteca") ---
+def extract_structural_skeleton(formula_str):
+    """
+    Parses formula and replaces all numeric constants with 'C'.
+    Returns the structural skeleton (infix).
+    """
+    try:
+        from core.grammar import ExpressionTree, Node
+        tree = ExpressionTree.from_infix(formula_str)
+        if not tree.is_valid: return None
+        
+        def transform(node):
+            if not node: return
+            # If leaf is number, make it C
+            # How to detect number? 
+            # In ExpressionTree, numbers are just values.
+            # Check if value is numeric string
+            try:
+                float(node.value)
+                node.value = 'C'
+            except:
+                pass # Operator or Variable
+            
+            for child in node.children:
+                transform(child)
+                
+        transform(tree.root)
+        return tree.root.to_infix()
+    except:
+        return None
+
+def load_pattern_memory():
+    if os.path.exists(PATTERN_FILE):
+        try:
+            with open(PATTERN_FILE, 'r') as f:
+                return json.load(f)
+        except: return {}
+    return {}
+
+def save_pattern_memory(memory):
+    try:
+        with open(PATTERN_FILE, 'w') as f:
+            json.dump(memory, f, indent=2)
+    except: pass
+
+def update_pattern_memory(memory, formula_str):
+    skeleton = extract_structural_skeleton(formula_str)
+    if skeleton:
+        count = memory.get(skeleton, 0)
+        memory[skeleton] = count + 1
+        return True
+    return False
+
 
 def load_or_create_top_list():
     if os.path.exists(CSV_FILE):
@@ -63,6 +120,9 @@ def main():
         return
         
     top_formulas = load_or_create_top_list()
+    pattern_memory = load_pattern_memory()
+    print(f"Loaded Pattern Memory with {len(pattern_memory)} patterns.")
+
     
     print(f"Starting infinite search loop... (Press Ctrl+C to stop)")
     iteration = 0
@@ -84,7 +144,7 @@ def main():
         x_sample = X_FULL[indices]
         y_sample = Y_FULL[indices]
         
-        print(f"\n[Iter {iteration}] Sampling {k} points...")
+        print(f"[Iter {iteration}] Sampling {k} pts...", end=" ")
         
         # Prepare Seeds (Evolutionary Feedback)
         # Prepare Seeds (Evolutionary Feedback)
@@ -99,7 +159,18 @@ def main():
                 # (allows giving more compute to the very best if picked twice)
                 chosen = random.choices(candidate_formulas, k=3)
                 extra_seeds.extend(chosen)
-                print(f"Feedback: Injected {len(chosen)} seeds from Top {len(candidates)} (Random Sample).")
+                print(f"+ {len(chosen)} Seeds")
+        
+        # Inject Patterns from Memory (The Library)
+        if pattern_memory:
+            # Pick top 3 most frequent patterns
+            # Sort by count desc
+            sorted_patterns = sorted(pattern_memory.items(), key=lambda x: x[1], reverse=True)
+            top_patterns = [p[0] for p in sorted_patterns[:3]]
+            if top_patterns:
+                extra_seeds.extend(top_patterns)
+                # print(f"+ {len(top_patterns)} Architectures")
+
 
         # 2. Search
         # 1.5 Flattening Transformation (The "Feynman" Trick)
@@ -123,9 +194,7 @@ def main():
         
         # print first few to debug (in stdout)
         if iteration == 1:
-            print(f"Sample X: {x_sample[:3]}")
-            print(f"Sample Y: {y_sample[:3]}")
-            print(f"Flat Y: {y_sample_flat[:3]}")
+            pass # print(f"Flat Y: {y_sample_flat[:3]}")
 
         # 2. Search (on FLATTENED target)
         try:
@@ -148,7 +217,7 @@ def main():
             continue
             
         residual_formula_str = result['formula']
-        print(f"Found residual candidate: {residual_formula_str}")
+        # print(f"Found residual candidate: {residual_formula_str}")
         
         # 2.5 INTELLIGENT REFINEMENT (BFGS) on Residual
         final_formula_str = residual_formula_str # Default if refinement fails
@@ -168,7 +237,7 @@ def main():
                 y_all_flat = np.log(np.abs(y_all) + epsilon) - factorial_term_all
                 
                 if initial_values:
-                    print(f"Refining {len(initial_values)} constants on FLAT surface...")
+                    # print(f"Refining {len(initial_values)} constants on FLAT surface...")
                     
                     # optimization expects C-tree
                     constants_dict, rmse = optimize_constants(tree, x_all, y_all_flat, initial_guess=initial_values)
@@ -179,7 +248,7 @@ def main():
                          infix_with_Cs = tree.get_infix() 
                          refined_residual = substitute_constants(infix_with_Cs, constants_dict, positions)
                          
-                         print(f"Refined Residual: {refined_residual}")
+                         # print(f"Refined Residual: {refined_residual}")
                          residual_formula_str = refined_residual
                          
         except Exception as e:
@@ -256,6 +325,11 @@ def main():
             
             # Save
             save_top_list(top_formulas)
+            
+            # Update Pattern Memory with the new winner
+            if update_pattern_memory(pattern_memory, full_formula_str):
+                 save_pattern_memory(pattern_memory)
+
             
             current_best = top_formulas[0].get('rmsle_global', 999)
             print(f"Current Best RMSLE: {current_best:.6f}")

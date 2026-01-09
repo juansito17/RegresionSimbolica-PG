@@ -59,22 +59,22 @@ def hybrid_solve(
     Solves Symbolic Regression using a Hybrid Neuro-Evolutionary approach with Parallel GP.
     """
     
-    print(f"--- Starting Alpha-GP Hybrid Search (Parallel Workers={max_workers}, Vars={num_variables}) ---")
+    # print(f"--- Starting Alpha-GP Hybrid Search (Parallel Workers={max_workers}, Vars={num_variables}) ---")
     start_time = time.time()
     
     # 1. Neural Beam Search (Phase 1)
-    print(f"[Phase 1] Neural Beam Search (Width={beam_width})...")
+    # print(f"[Phase 1] Neural Beam Search (Width={beam_width})...")
     neural_results = beam_solve(x_values, y_values, model, device, beam_width=beam_width, num_variables=num_variables)
     
     seeds = []
     
     # Inject Extra Seeds (Feedback Loop)
     if extra_seeds:
-        print(f"[Phase 1] Injecting {len(extra_seeds)} external seeds (Feedback Loop).")
+        pass # print(f"[Phase 1] Injecting {len(extra_seeds)} external seeds (Feedback Loop).")
         seeds.extend(extra_seeds)
         
     if neural_results:
-        print(f"[Phase 1] Found {len(neural_results)} candidates.")
+        pass # print(f"[Phase 1] Found {len(neural_results)} candidates.")
         seen_formulas = set()
         for res in neural_results:
             f_str = res['formula']
@@ -83,14 +83,14 @@ def hybrid_solve(
                 seeds.append(f_str)
                 seen_formulas.add(f_str)
         
-        print(f"[Phase 1] Generated {len(seeds)} unique seeds for GP.")
+        # print(f"[Phase 1] Generated {len(seeds)} unique seeds for GP.")
         if len(seeds) > 0:
-            print(f"Top Seed: {seeds[0]}")
+            pass # print(f"Top Seed: {seeds[0]}")
     else:
         print("[Phase 1] No valid candidates found. Falling back to pure GP.")
 
     # 2. GP Refinement (Phase 2 - Heterogeneous CPU + GPU)
-    print(f"[Phase 2] Genetic Refinement (Timeout={gp_timeout}s)...")
+    # print(f"[Phase 2] Genetic Refinement (Timeout={gp_timeout}s)...")
     
     x_list = x_values.tolist() if hasattr(x_values, 'tolist') else list(x_values)
     y_list = y_values.tolist() if hasattr(y_values, 'tolist') else list(y_values)
@@ -104,7 +104,7 @@ def hybrid_solve(
     else:
         num_cpu_workers = max_workers
     
-    print(f"[Phase 2] Resources: {num_cpu_workers} CPU Workers + {'1 GPU Worker' if use_gpu else '0 GPU Workers'}")
+    # print(f"[Phase 2] Resources: {num_cpu_workers} CPU Workers + {'1 GPU Worker' if use_gpu else '0 GPU Workers'}")
 
     results = []
     futures = []
@@ -136,15 +136,15 @@ def hybrid_solve(
         gpu_result = None
         if use_gpu:
             try:
-                print("[Phase 2] Launching GPU Engine...")
+                pass # print("[Phase 2] Launching GPU Engine...")
                 # We can run this in the main thread while threads handle CPU subprocesses
                 # Or submit to executor if we want? 
                 # Better to run in main thread to ensure CUDA context is happy and we monitor it.
                 gpu_engine = TensorGeneticEngine(pop_size=50000, max_len=30, num_variables=num_variables)
                 
-                # Give GPU diverse seeds (ALL seeds, not just top 1)
-                # GPU excels at breadth.
                 gpu_best_formula = gpu_engine.run(x_list, y_list, seeds, timeout_sec=gp_timeout)
+                # print(f"[GPU Worker] Initializing Tensor Population ({self.pop_size})...") -> Moved to inside gpu_engine but commented out there
+
                 
                 if gpu_best_formula:
                     # Evaluate fitness (RMSE) using CPU logic for fairness/consistency
@@ -188,8 +188,8 @@ def hybrid_solve(
             best_result = res['formula']
             
     if best_result:
-        print(f"--- Hybrid Search Completed in {total_time:.2f}s ---")
-        print(f"Best Formula (Parallel): {best_result} (RMSE: {best_rmse:.5f})")
+        # print(f"--- Hybrid Search Completed in {total_time:.2f}s ---")
+        # print(f"Best Formula (Parallel): {best_result} (RMSE: {best_rmse:.5f})")
         
         return {
             'formula': best_result,
