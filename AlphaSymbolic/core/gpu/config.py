@@ -134,6 +134,7 @@ class GpuGlobals:
     USE_SIMPLIFICATION = True
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
+    USE_PARETO_SELECTION = True  # NSGA-II multi-objective (error vs complexity)
 
     # ----------------------------------------
     # Otros Parámetros

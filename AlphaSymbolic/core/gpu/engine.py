@@ -7,6 +7,8 @@ from core.grammar import OPERATORS, VARIABLES, CONSTANTS, ExpressionTree
 from .formatting import format_const
 from .sniper import Sniper
 from .config import GpuGlobals
+from .pareto import ParetoOptimizer
+from .pattern_memory import PatternMemory
 
 # SymPy for simplification
 try:
@@ -157,6 +159,17 @@ class TensorGeneticEngine:
         
         # The Sniper
         self.sniper = Sniper(self.device)
+        
+        # Pareto Optimizer (NSGA-II)
+        self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE)
+        
+        # Pattern Memory
+        self.pattern_memory = PatternMemory(
+            self.device, 
+            max_patterns=100,
+            fitness_threshold=GpuGlobals.PATTERN_RECORD_FITNESS_THRESHOLD,
+            min_uses=GpuGlobals.PATTERN_MEM_MIN_USES
+        )
 
 
     def optimize_constants(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, steps=10, lr=0.1):
@@ -209,6 +222,64 @@ class TensorGeneticEngine:
             optimizer.step()
             
         return best_consts, torch.sqrt(best_mse)
+
+    def local_search(self, population: torch.Tensor, constants: torch.Tensor, 
+                     x: torch.Tensor, y: torch.Tensor, 
+                     top_k: int = 10, attempts: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Hill climbing: try single-token mutations on top individuals, keep improvements.
+        
+        Args:
+            population: [PopSize, L] RPN tensors
+            constants: [PopSize, MaxC] constants
+            x: Input data
+            y: Target data  
+            top_k: Number of top individuals to apply local search
+            attempts: Number of mutation attempts per individual (default: LOCAL_SEARCH_ATTEMPTS)
+        
+        Returns:
+            (improved_population, improved_constants)
+        """
+        if attempts is None:
+            attempts = GpuGlobals.LOCAL_SEARCH_ATTEMPTS
+        
+        pop_out = population.clone()
+        const_out = constants.clone()
+        
+        # Get top K individuals by fitness
+        fitness = self.evaluate_batch(population, x, y, constants)
+        _, top_idx = torch.topk(fitness, top_k, largest=False)
+        
+        for idx in top_idx:
+            idx = idx.item()
+            current_rpn = population[idx:idx+1]
+            current_const = constants[idx:idx+1]
+            current_fit = fitness[idx].item()
+            
+            best_rpn = current_rpn.clone()
+            best_const = current_const.clone()
+            best_fit = current_fit
+            
+            # Try random single-token mutations
+            for _ in range(attempts):
+                # Mutate with high rate (1 token expected change)
+                mutant = self.mutate_population(current_rpn, mutation_rate=0.15)
+                
+                # Evaluate mutant
+                mutant_fit = self.evaluate_batch(mutant, x, y, current_const)[0].item()
+                
+                if mutant_fit < best_fit:
+                    best_rpn = mutant.clone()
+                    best_fit = mutant_fit
+            
+            # Update if improved
+            if best_fit < current_fit:
+                pop_out[idx] = best_rpn[0]
+                # Also optimize constants for the improved individual
+                opt_const, _ = self.optimize_constants(best_rpn, best_const, x, y, steps=5)
+                const_out[idx] = opt_const[0]
+        
+        return pop_out, const_out
 
     def simplify_expression(self, rpn_tensor: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, bool]:
         """
@@ -1504,9 +1575,17 @@ class TensorGeneticEngine:
             next_pop_list = []
             next_const_list = []
             
-            # 1. Elitism (Top 5%)
+            # 1. Elitism (Top 5% using Pareto or Fitness)
             k_elite = max(1, int(self.pop_size * 0.05))
-            _, elite_idx = torch.topk(fitness_penalized, k_elite, largest=False)
+            
+            if GpuGlobals.USE_PARETO_SELECTION:
+                # Use NSGA-II to select elite individuals balancing error vs complexity
+                complexity = lengths  # Tree size as complexity
+                elite_idx = self.pareto.select(population, fitness_rmse, complexity, k_elite)
+            else:
+                # Standard fitness-based elitism
+                _, elite_idx = torch.topk(fitness_penalized, k_elite, largest=False)
+            
             elites = population[elite_idx]
             elites_c = pop_constants[elite_idx]
             next_pop_list.append(elites)
@@ -1662,6 +1741,23 @@ class TensorGeneticEngine:
                 if n_simp > 0 and callback:
                     print(f"[GPU] Simplified {n_simp} expressions")
 
+            # --- Pattern Memory ---
+            # Record successful subtrees from current population
+            self.pattern_memory.record_subtrees(population, fitness_rmse, self.grammar)
+            
+            # Inject patterns periodically
+            if generations % GpuGlobals.PATTERN_INJECT_INTERVAL == 0:
+                population, pop_constants, n_inj = self.pattern_memory.inject_into_population(
+                    population, pop_constants, self.grammar, 
+                    percent=GpuGlobals.PATTERN_INJECT_PERCENT
+                )
+
+            # --- Local Search (Every 25 generations) ---
+            if generations % 25 == 0:
+                population, pop_constants = self.local_search(
+                    population, pop_constants, x_t, y_t, 
+                    top_k=10, attempts=GpuGlobals.LOCAL_SEARCH_ATTEMPTS
+                )
             
             if best_rmse < 1e-7:
                  return self.rpn_to_infix(best_rpn, best_consts_vec)
