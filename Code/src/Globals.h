@@ -52,7 +52,7 @@ const std::vector<std::vector<double>> X_VALUES = {
 };extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
 
 // Flag para activar la transformación logarítmica automática
-const bool USE_LOG_TRANSFORMATION = true;
+const bool USE_LOG_TRANSFORMATION = false;
 
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
@@ -80,8 +80,8 @@ const int NUM_ISLANDS = 5;               // Menos islas = más foco por isla
 const int MIN_POP_PER_ISLAND = 10;        
 
 // --- Fórmula Inicial ---
-const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "(exp(lgamma(x0)-(x0*1.94)))";
+const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
+const std::string INITIAL_FORMULA_STRING = "log((x1+exp((((((1.28237193+((x0+2.59195138)+8.54688985))*x0)+(log((((x2/-0.99681346)-(x0-8.00219939))/(0.35461932-x2)))+(x0+(88.95319019/((x0+x0)+x0)))))-x1)/((exp(exp(((exp(x2)*(1.39925709/x0))^exp(x0))))+0.76703064)*6.05423753)))))";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas

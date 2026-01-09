@@ -15,7 +15,6 @@ from core.grammar import ExpressionTree
 from utils.optimize_constants import optimize_constants, substitute_constants, convert_and_extract_constants
 
 # --- CONFIGURATION ---
-# --- CONFIGURATION ---
 X_FULL = np.array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25], dtype=np.float64)
 Y_FULL = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,2423393768440,227514171973736,2207893435808352], dtype=np.float64)
 
@@ -79,20 +78,10 @@ def main():
         
         # Prepare Seeds (Evolutionary Feedback)
         extra_seeds = []
-        if top_formulas:
-            # DIVERSITY STRATEGY:
-            # Instead of just taking Top 1 (which gets stuck in local optima),
-            # we take up to 3 random formulas from the Top 5 to keep the gene pool diverse.
-            # Weighted choice: prefer better formulas, but give chance to others.
-            
-            # Simple random sample relative to list size
-            n_seeds = min(len(top_formulas), 3)
-            selected = random.sample(top_formulas, n_seeds)
-            
-            for s in selected:
-                extra_seeds.append(s['formula'])
-                
-            print(f"Feedback: Injecting {len(extra_seeds)} diverse seeds from Top List...")
+        if top_formulas and len(top_formulas) > 0:
+            best_formula = top_formulas[0]['formula']
+            extra_seeds.append(best_formula)
+            print(f"Feedback: Injecting best formula as seed: {best_formula[:50]}...")
 
         # 2. Search
         try:
@@ -101,9 +90,9 @@ def main():
                 x_sample, y_sample, 
                 MODEL, DEVICE, 
                 beam_width=10, 
-                gp_timeout=300, # Increased to 5 minutes
+                gp_timeout=10, # Keep it snappy
                 max_workers=4,
-                num_variables=1, 
+                num_variables=1,
                 extra_seeds=extra_seeds
             )
         except Exception as e:
