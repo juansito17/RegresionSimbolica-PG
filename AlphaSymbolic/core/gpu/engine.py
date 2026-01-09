@@ -8,6 +8,15 @@ from .formatting import format_const
 from .sniper import Sniper
 from .config import GpuGlobals
 
+# SymPy for simplification
+try:
+    import sympy
+    from sympy import symbols, sympify, simplify, nsimplify, Float
+    from sympy.parsing.sympy_parser import parse_expr
+    SYMPY_AVAILABLE = True
+except ImportError:
+    SYMPY_AVAILABLE = False
+
 # --- GPU GRAMMAR ENCODING (RPN / Postfix) ---
 PAD_ID = 0
 
@@ -200,6 +209,234 @@ class TensorGeneticEngine:
             optimizer.step()
             
         return best_consts, torch.sqrt(best_mse)
+
+    def simplify_expression(self, rpn_tensor: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, bool]:
+        """
+        Simplify an RPN expression using SymPy.
+        
+        Args:
+            rpn_tensor: [L] tensor of token IDs (single individual)
+            constants: [MaxC] tensor of constant values
+        
+        Returns:
+            (simplified_rpn, new_constants, success)
+        """
+        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION:
+            return rpn_tensor, constants, False
+        
+        try:
+            # 1. Convert RPN to infix string
+            infix = self.rpn_to_infix(rpn_tensor, constants)
+            if infix == "Invalid" or not infix:
+                return rpn_tensor, constants, False
+            
+            # 2. Prepare SymPy symbols
+            sym_vars = {f'x{i}': symbols(f'x{i}') for i in range(self.num_variables)}
+            sym_vars['x'] = sym_vars.get('x0', symbols('x0'))  # Alias
+            
+            # 3. Parse to SymPy (handle operator conversions)
+            expr_str = infix
+            expr_str = expr_str.replace('^', '**')  # Power
+            expr_str = expr_str.replace('lgamma', 'loggamma')
+            
+            # Try parsing
+            try:
+                expr = parse_expr(expr_str, local_dict=sym_vars)
+            except:
+                # Fallback to sympify
+                expr = sympify(expr_str, locals=sym_vars)
+            
+            # 4. Simplify
+            simplified = simplify(expr)
+            
+            # 5. Rationalize constants (e.g., 0.5 -> 1/2)
+            simplified = nsimplify(simplified, tolerance=1e-6, rational=True)
+            
+            # 6. Convert back to infix string
+            simplified_str = str(simplified)
+            
+            # 7. If simplification made it longer, abort
+            if len(simplified_str) > len(infix) * 1.5:
+                return rpn_tensor, constants, False
+            
+            # 8. Convert to our format (** -> ^, etc.)
+            simplified_str = simplified_str.replace('**', ' ^ ')
+            simplified_str = simplified_str.replace('loggamma', 'lgamma')
+            
+            # 9. Convert back to RPN
+            new_rpn = self.infix_to_rpn([simplified_str])
+            if new_rpn.shape[0] == 0 or (new_rpn[0] == PAD_ID).all():
+                return rpn_tensor, constants, False
+            
+            # 10. Extract new constants from simplified expression
+            # For now, we initialize with zeros (optimizer will refine)
+            new_consts = torch.zeros(self.max_constants, device=self.device, dtype=torch.float64)
+            
+            # Count 'C' tokens in new RPN
+            id_C = self.grammar.token_to_id.get('C', -1)
+            n_consts = (new_rpn[0] == id_C).sum().item()
+            
+            # Try to extract numeric constants from simplified_str
+            import re
+            numbers = re.findall(r'[-+]?\d*\.?\d+', simplified_str)
+            for i, num in enumerate(numbers[:min(n_consts, self.max_constants)]):
+                try:
+                    new_consts[i] = float(num)
+                except:
+                    pass
+            
+            return new_rpn[0], new_consts, True
+            
+        except Exception as e:
+            # Simplification failed, return original
+            return rpn_tensor, constants, False
+
+    def simplify_population(self, population: torch.Tensor, constants: torch.Tensor, top_k: int = None) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Simplify top K individuals in the population.
+        
+        Args:
+            population: [PopSize, L] RPN tensors
+            constants: [PopSize, MaxC] constant tensors
+            top_k: Number of individuals to simplify (default: 10% of population)
+        
+        Returns:
+            (new_population, new_constants, n_simplified)
+        """
+        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION:
+            return population, constants, 0
+        
+        if top_k is None:
+            top_k = max(1, int(population.shape[0] * 0.1))
+        
+        n_simplified = 0
+        pop_out = population.clone()
+        const_out = constants.clone()
+        
+        for i in range(min(top_k, population.shape[0])):
+            new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
+            if success:
+                pop_out[i] = new_rpn
+                const_out[i] = new_consts
+                n_simplified += 1
+        
+        return pop_out, const_out, n_simplified
+
+    def migrate_islands(self, population: torch.Tensor, constants: torch.Tensor, fitness: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Perform ring migration between islands.
+        
+        Top MIGRATION_SIZE individuals from each island migrate to the next island (ring topology),
+        replacing the worst individuals in the destination.
+        
+        Args:
+            population: [PopSize, L] RPN tensors
+            constants: [PopSize, MaxC] constant tensors
+            fitness: [PopSize] fitness scores (lower is better)
+        
+        Returns:
+            (new_population, new_constants)
+        """
+        if self.n_islands <= 1:
+            return population, constants
+        
+        pop_out = population.clone()
+        const_out = constants.clone()
+        
+        island_size = self.island_size
+        mig_size = min(GpuGlobals.MIGRATION_SIZE, island_size // 2)  # Don't migrate more than half
+        
+        for island in range(self.n_islands):
+            # Source island
+            src_start = island * island_size
+            src_end = src_start + island_size
+            
+            # Destination island (ring: island+1 mod n_islands)
+            dst_island = (island + 1) % self.n_islands
+            dst_start = dst_island * island_size
+            dst_end = dst_start + island_size
+            
+            # Get fitness for source island
+            src_fitness = fitness[src_start:src_end]
+            
+            # Get indices of best individuals in source (lowest fitness)
+            _, best_idx_local = torch.topk(src_fitness, mig_size, largest=False)
+            best_idx_global = best_idx_local + src_start
+            
+            # Get fitness for destination island
+            dst_fitness = fitness[dst_start:dst_end]
+            
+            # Get indices of worst individuals in destination (highest fitness)
+            _, worst_idx_local = torch.topk(dst_fitness, mig_size, largest=True)
+            worst_idx_global = worst_idx_local + dst_start
+            
+            # Migrate: replace worst in destination with best from source
+            pop_out[worst_idx_global] = population[best_idx_global]
+            const_out[worst_idx_global] = constants[best_idx_global]
+        
+        return pop_out, const_out
+
+    def deduplicate_population(self, population: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Remove duplicate individuals from the population.
+        
+        Duplicates are identified by hashing their RPN token sequence.
+        Duplicates are replaced with mutated versions of random non-duplicates.
+        
+        Args:
+            population: [PopSize, L] RPN tensors
+            constants: [PopSize, MaxC] constant tensors
+        
+        Returns:
+            (new_population, new_constants, n_replaced)
+        """
+        if not GpuGlobals.PREVENT_DUPLICATES:
+            return population, constants, 0
+        
+        pop_size = population.shape[0]
+        pop_cpu = population.cpu().numpy()
+        
+        # Hash each individual
+        seen_hashes = {}
+        duplicate_indices = []
+        unique_indices = []
+        
+        for i in range(pop_size):
+            # Create hash from non-padding tokens
+            tokens = pop_cpu[i]
+            non_pad = tokens[tokens != PAD_ID]
+            hash_key = tuple(non_pad.tolist())
+            
+            if hash_key in seen_hashes:
+                duplicate_indices.append(i)
+            else:
+                seen_hashes[hash_key] = i
+                unique_indices.append(i)
+        
+        n_dups = len(duplicate_indices)
+        if n_dups == 0:
+            return population, constants, 0
+        
+        # Replace duplicates with mutated versions of random unique individuals
+        pop_out = population.clone()
+        const_out = constants.clone()
+        
+        unique_indices_t = torch.tensor(unique_indices, device=self.device)
+        
+        for dup_idx in duplicate_indices:
+            # Pick random unique individual
+            rand_idx = unique_indices_t[torch.randint(len(unique_indices_t), (1,))].item()
+            
+            # Mutate it with higher rate for diversity
+            mutant = self.mutate_population(population[rand_idx:rand_idx+1], mutation_rate=0.3)
+            
+            # Assign
+            pop_out[dup_idx] = mutant[0]
+            
+            # Slightly perturb constants
+            const_out[dup_idx] = constants[rand_idx] + torch.randn_like(constants[rand_idx]) * 0.1
+        
+        return pop_out, const_out, n_dups
 
 
     def mutate_population(self, population: torch.Tensor, mutation_rate: float) -> torch.Tensor:
@@ -1235,6 +1472,10 @@ class TensorGeneticEngine:
             if callback and (generations % 100 == 0 or generations == 1) and best_rpn is not None:
                  callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
 
+            # --- Island Migration ---
+            if self.n_islands > 1 and generations % GpuGlobals.MIGRATION_INTERVAL == 0:
+                population, pop_constants = self.migrate_islands(population, pop_constants, fitness_rmse)
+
             # Cataclysm
             if stagnation_counter >= GpuGlobals.STAGNATION_LIMIT:
                  saved_best_rpn = best_rpn.clone()
@@ -1404,24 +1645,22 @@ class TensorGeneticEngine:
             next_pop = torch.cat(next_pop_list, dim=0)
             next_c = torch.cat(next_const_list, dim=0)
             
-            # 4. Uniqueness Check (CPU set)
-            # To prevent collapse, we check hashes.
-            # If duplicate, replace with random.
-            # This is slow if done on full pop. Only check elites + new?
-            # Or just check small collisions.
-            # Simple check:
-            # next_pop_cpu = next_pop.cpu().numpy()
-            # seen = set()
-            # unique_mask = []
-            # ...
-            # Implementation for high speed: just don't check or check every N gens.
-            # Let's check every generation for now but efficiently?
-            # No, keep it simple. Allow some duplicates for GPU throughput. 
-            # But the task requires Diversity Control.
-            # Let's replace collisions with Random.
-            
             population = next_pop[:self.pop_size]
             pop_constants = next_c[:self.pop_size]
+
+            # --- Deduplication (Every 20 generations) ---
+            if GpuGlobals.PREVENT_DUPLICATES and generations % 20 == 0:
+                population, pop_constants, n_dups = self.deduplicate_population(population, pop_constants)
+                # Silent - only log if many duplicates
+                if n_dups > self.pop_size * 0.1:
+                    print(f"[GPU] Removed {n_dups} duplicates")
+
+            # --- Simplification (Every 50 generations) ---
+            if GpuGlobals.USE_SIMPLIFICATION and generations % 50 == 0:
+                # Simplify top 50 individuals
+                population, pop_constants, n_simp = self.simplify_population(population, pop_constants, top_k=50)
+                if n_simp > 0 and callback:
+                    print(f"[GPU] Simplified {n_simp} expressions")
 
             
             if best_rmse < 1e-7:
