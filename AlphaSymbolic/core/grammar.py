@@ -34,8 +34,18 @@ OPERATORS = {
     'floor': 1,
     'ceil': 1,
     'mod': 2,
+    '%': 2,     # Alias for mod
     'gamma': 1,
-    'lgamma': 1,  # Log-gamma function (from C++ GP engine)
+    'lgamma': 1,
+    
+    # === C++ / GPU Specific Aliases ===
+    'e': 1,     # Alias for exp
+    '!': 1,     # Alias for gamma/factorial
+    'g': 1,     # Alias for lgamma
+    '_': 1,     # Alias for floor
+    'S': 1,     # Alias for asin
+    'C': 1,     # Alias for acos
+    'T': 1,     # Alias for atan
 }
 
 # Operator groups for curriculum control
@@ -83,10 +93,20 @@ class Node:
         elif len(self.children) == 2:
             if op == 'pow':
                 return f"({self.children[0].to_infix()} ^ {self.children[1].to_infix()})"
-            elif op == 'mod':
+            elif op == 'mod' or op == '%':
                 return f"({self.children[0].to_infix()} % {self.children[1].to_infix()})"
             return f"({self.children[0].to_infix()} {op} {self.children[1].to_infix()})"
-        return str(self.value)
+        
+        # Mapping for short tokens to readable infix
+        if op == '!': return f"gamma({self.children[0].to_infix()})" # Use gamma for !
+        if op == '_': return f"floor({self.children[0].to_infix()})"
+        if op == 'g': return f"lgamma({self.children[0].to_infix()})"
+        if op == 'S': return f"asin({self.children[0].to_infix()})"
+        if op == 'C': return f"acos({self.children[0].to_infix()})"
+        if op == 'T': return f"atan({self.children[0].to_infix()})"
+        if op == 'e': return f"exp({self.children[0].to_infix()})"
+        
+        return f"{op}({self.children[0].to_infix()})"
     
     def count_constants(self):
         """Count the number of 'C' placeholders in the tree."""
@@ -154,9 +174,16 @@ class ExpressionTree:
                 # Content includes the parens: ( ... )
                 content = processed_str[start:idx] 
                 processed_str = processed_str[:start] + "gamma" + content + processed_str[idx+1:]
+            elif idx < len(processed_str) - 1 and processed_str[idx+1] == '(':
+                # Prefix usage !(...) -> gamma(...)
+                processed_str = processed_str[:idx] + "gamma" + processed_str[idx+1:]
             else:
-                # Fallback: Just remove ! if it's weirdly placed (should not happen with GP output)
-                processed_str = processed_str.replace('!', '', 1)
+                # Fallback: Replace ! with gamma if it's explicitly used as a function-like token
+                processed_str = processed_str.replace('!', 'gamma', 1)
+
+        # 1b. Handle 'pow' and 'mod' keywords if they leak in
+        processed_str = processed_str.replace(' pow ', ' ^ ') # Be careful not to replace 'power' variable names if any, though we don't have them.
+        processed_str = processed_str.replace(' mod ', ' % ')
 
         # 2. C++ uses ^ for power, Python uses **. AST parses ^ as BitXor.
         try:
@@ -193,8 +220,22 @@ class ExpressionTree:
         elif isinstance(node, ast.Call):
             # Functions like sin(x)
             func_id = node.func.id
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign']:
-                tokens = [func_id]
+            # Allow both standard names and GPU short tokens
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg',
+                           'S', 'C', 'T', 'e', 'g', '_']: 
+                
+                # Map back to short tokens if used by engine
+                # We assume engine uses short tokens for S, C, T, e, !, _, g
+                token = func_id
+                if func_id == 'asin': token = 'S'
+                if func_id == 'acos': token = 'C'
+                if func_id == 'atan': token = 'T'
+                if func_id == 'exp': token = 'e'
+                if func_id == 'gamma': token = '!'
+                if func_id == 'floor': token = '_'
+                if func_id == 'lgamma': token = 'g'
+                
+                tokens = [token]
                 for arg in node.args:
                     tokens.extend(ExpressionTree._ast_to_prefix(arg))
                 return tokens
@@ -330,14 +371,16 @@ class ExpressionTree:
             if val == 'sin': return np.sin(args[0])
             if val == 'cos': return np.cos(args[0])
             if val == 'tan': return np.tan(args[0])
-            if val == 'asin': 
+            
+            if val == 'asin' or val == 'S': 
                 # Protected asin: asin(clip(x, -1, 1))
                 return np.arcsin(np.clip(args[0], -1 + 1e-7, 1 - 1e-7))
-            if val == 'acos': 
+            if val == 'acos' or val == 'C': 
                 # Protected acos: acos(clip(x, -1, 1))
                 return np.arccos(np.clip(args[0], -1 + 1e-7, 1 - 1e-7))
-            if val == 'atan': return np.arctan(args[0])
-            if val == 'exp': 
+            if val == 'atan' or val == 'T': return np.arctan(args[0])
+            
+            if val == 'exp' or val == 'e': 
                 return np.exp(np.clip(args[0], -100, 100))
             if val == 'log': 
                 return np.log(np.abs(args[0]) + 1e-10)
@@ -345,17 +388,18 @@ class ExpressionTree:
                 return np.sqrt(np.abs(args[0]))
             if val == 'abs':
                 return np.abs(args[0])
-            if val == 'floor':
+            if val == 'floor' or val == '_':
                 return np.floor(args[0])
             if val == 'ceil':
                 return np.ceil(args[0])
-            if val == 'gamma':
+            
+            if val == 'gamma' or val == '!':
                 # Match C++ Protected Gamma/Factorial: tgamma(|x| + 1)
                 # This ensures consistent evaluation for formulas from C++ engine (which uses !)
                 arg = np.abs(args[0]) + 1.0
                 clipped = np.clip(arg, 0.1, 50) # Clip upper bound to avoid overflow
                 return scipy_gamma(clipped)
-            if val == 'lgamma':
+            if val == 'lgamma' or val == 'g':
                 # Protected lgamma: lgamma(|x| + 1)
                 arg = np.abs(args[0]) + 1.0
                 # gammaln is safe for large positive numbers, so less aggressive clipping needed for overflow,
@@ -375,10 +419,47 @@ class ExpressionTree:
         return self.root.to_infix()
     
     
+
     def count_constants(self):
         if not self.is_valid:
             return 0
         return self.root.count_constants()
+
+    @staticmethod
+    def generate_random(max_depth=4, num_variables=1, p_terminal=0.3):
+        """
+        Generates a random valid ExpressionTree.
+        """
+        import random
+        
+        valid_vars = ['x' + str(i) for i in range(num_variables)]
+        # Use module-level OPERATORS
+        ops = list(OPERATORS.keys())
+        
+        def _gen(depth):
+            if depth >= max_depth or (depth > 1 and random.random() < p_terminal):
+                # Terminal
+                if random.random() < 0.7: # Variable
+                     return Node(random.choice(valid_vars))
+                else: # Constant
+                     return Node(random.choice(['1', '2', '3', '5', 'pi', 'e', 'C']))
+            else:
+                # Operator
+                op = random.choice(ops)
+                arity = OPERATORS[op]
+                if arity == 1:
+                    return Node(op, [_gen(depth+1)])
+                else:
+                    return Node(op, [_gen(depth+1), _gen(depth+1)])
+        
+        root = _gen(0)
+        # Verify valid infix generation
+        try:
+            return ExpressionTree.from_infix(root.to_infix())
+        except:
+            # Fallback for very unlucky generation
+            return ExpressionTree.from_infix("x0")
+
 
 import sympy
 

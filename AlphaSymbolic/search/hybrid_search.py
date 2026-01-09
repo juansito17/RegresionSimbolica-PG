@@ -9,7 +9,7 @@ from core.gp_bridge import GPEngine
 from search.beam_search import BeamSearch, beam_solve
 from core.grammar import ExpressionTree
 try:
-    from core.gpu_engine import TensorGeneticEngine
+    from core.gpu import TensorGeneticEngine
 except ImportError:
     TensorGeneticEngine = None
     print("Warning: Could not import TensorGeneticEngine (PyTorch/CUDA missing?)")

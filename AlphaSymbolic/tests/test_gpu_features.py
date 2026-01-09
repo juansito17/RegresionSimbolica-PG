@@ -8,7 +8,7 @@ import os
 # Add root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.gpu_engine import TensorGeneticEngine
+from core.gpu import TensorGeneticEngine
 
 class TestGPUFeatures(unittest.TestCase):
     def setUp(self):

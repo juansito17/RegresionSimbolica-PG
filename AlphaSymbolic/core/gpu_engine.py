@@ -1,10 +1,7 @@
-import torch
-import numpy as np
-import time
-from typing import List, Tuple, Optional
-from core.grammar import OPERATORS, VARIABLES, CONSTANTS, ExpressionTree
 
-# --- GPU GRAMMAR ENCODING (RPN / Postfix) ---
+# DEPRECATED: Use core.gpu instead
+from core.gpu import TensorGeneticEngine
+
 # We map every token to an integer ID.
 # 0 is padding/null.
 PAD_ID = 0
@@ -753,61 +750,87 @@ class TensorGeneticEngine:
         """
         Main entry point.
         """
-        start_time = time.time()
-        
-        # 1. Setup Data
     def rpn_to_infix(self, rpn_tensor: torch.Tensor, constants: torch.Tensor = None) -> str:
         """
-        Decodes RPN to Infix string.
-        constants: [K] vector of float values for 'C' tokens.
+        Decodes RPN tensor to Infix string (CPU-style formatting).
         """
-        ids = rpn_tensor.squeeze().cpu().numpy()
+        vocab = self.grammar.id_to_token
         stack = []
-        c_idx = 0
+        const_idx = 0
         
-        for id in ids:
-            if id == PAD_ID: continue
+        def format_const(val):
+            # Match C++ format_constant
+            if abs(val - round(val)) < 1e-9:
+                return str(int(round(val)))
+            if abs(val) >= 1e6 or abs(val) <= 1e-6:
+                return f"{val:.8e}"
+            s = f"{val:.8f}"
+            s = s.rstrip('0').rstrip('.')
+            return s if s else "0"
+
+        for token_id in rpn_tensor:
+            token_id = token_id.item()
+            if token_id == PAD_ID: break
             
-            token = self.grammar.id_to_token[id]
+            token = vocab.get(token_id, "")
             
-            if token == 'C' and constants is not None:
-                # Substitute C with value
-                if c_idx < len(constants):
-                    val = constants[c_idx].item()
-                    token = f"{val:.4f}"
-                    c_idx += 1
-                else:
-                    token = "1.0" # Fallback
-            
-            if token not in OPERATORS:
-                stack.append(token)
-            else:
-                # Arity check from grammar usually, but simplified here
-                if token in OPERATORS:
-                    arity = OPERATORS[token]
-                    if len(stack) < arity: 
-                        continue
+            if token in self.grammar.OPERATORS:
+                arity = self.grammar.token_arity.get(token, 2)
+                if arity == 1:
+                    if not stack: return "Invalid"
+                    a = stack.pop()
+                    if token == 's': stack.append(f"sin({a})")
+                    elif token == 'c': stack.append(f"cos({a})")
+                    elif token == 'l': stack.append(f"log({a})")
+                    elif token == 'e': stack.append(f"exp({a})")
+                    elif token == 'q': stack.append(f"sqrt({a})")
+                    elif token == 'a': stack.append(f"abs({a})")
+                    elif token == 'n': stack.append(f"sign({a})")
+                    elif token == '_': stack.append(f"floor({a})")
+                    elif token == '!': stack.append(f"({a})!")
+                    else: stack.append(f"{token}({a})")
+                else: # Binary
+                    if len(stack) < 2: return "Invalid"
+                    b = stack.pop()
+                    a = stack.pop()
                     
-                    args = [stack.pop() for _ in range(arity)]
-                    args.reverse()
-                    
-                    if arity == 2:
-                        if token == 'pow': elem = f"pow({args[0]}, {args[1]})"
-                        else: elem = f"({args[0]} {token} {args[1]})"
+                    # Handle A + (-B) -> (A - B)
+                    # Handle 0 - B -> (-B)
+                    if token == '+' and b.startswith("-") and not b.startswith("(-"):
+                         stack.append(f"({a} - {b[1:]})")
+                    elif token == '-' and a == "0":
+                         stack.append(f"(-{b})")
                     else:
-                        elem = f"{token}({args[0]})"
-                    stack.append(elem)
+                         stack.append(f"({a} {token} {b})")
+            elif token == 'C':
+                val = 1.0
+                if constants is not None and const_idx < len(constants):
+                    val = constants[const_idx].item()
+                    const_idx += 1
+                stack.append(format_const(val))
+            elif token.startswith('x'):
+                # Handle x0, x1
+                # If token is just 'x', assume x0
+                if token == 'x': stack.append("x0")
+                else: stack.append(token)
+            else:
+                stack.append(str(token))
                 
-        if len(stack) >= 1:
-            return stack[-1]
+        if len(stack) == 1:
+            return stack[0]
         return "Invalid"
 
-    def run(self, x_data: List[float], y_data: List[float], seeds: List[str], timeout_sec=10) -> Optional[str]:
+
+    def run(self, x_values: List[float], y_targets: List[float], seeds: List[str], timeout_sec=10, callback=None) -> Optional[str]:
+        """
+        Main evolutionary loop on GPU.
+        callback: function(gen, best_mse, best_rpn, best_consts, is_new_best) -> None
+        """
         start_time = time.time()
         
         # 1. Setup Data
-        x_t = torch.tensor(x_data, device=self.device, dtype=torch.float32)
-        y_t = torch.tensor(y_data, device=self.device, dtype=torch.float32)
+        x_t = torch.tensor(x_values, device=self.device, dtype=torch.float32)
+        y_t = torch.tensor(y_targets, device=self.device, dtype=torch.float32)
         
         if x_t.ndim > 1: x_t = x_t.flatten() 
         if y_t.ndim > 1: y_t = y_t.flatten()
@@ -884,7 +907,7 @@ class TensorGeneticEngine:
         best_rmse = float('inf')
         
         generations = 0
-        COMPLEXITY_PENALTY = 0.005
+        COMPLEXITY_PENALTY = 0.01
         
         # --- Dynamic Adaptation ("The Thermostat") ---
         stagnation_counter = 0
@@ -985,6 +1008,9 @@ class TensorGeneticEngine:
                 best_formula_str = self.rpn_to_infix(best_rpn, best_consts_vec)
                 # print(f"[GPU Worker] New Best: {best_formula_str} (RMSE: {best_rmse:.5f})")
                 
+                if callback:
+                    callback(generations, best_rmse, best_rpn, best_consts_vec, True)
+                
                 # Reset Stagnation
                 stagnation_counter = 0
                 current_mutation_rate = 0.15
@@ -993,13 +1019,45 @@ class TensorGeneticEngine:
             else:
                 stagnation_counter += 1
                 
+            if callback and (generations % 100 == 0 or generations == 1) and best_rpn is not None:
+                 # Pass current global best
+                 callback(generations, best_rmse, best_rpn, best_consts_vec, False) # False = not new best, just update
+                 
+            # Adaptation Logic
+
+
+                
             # Adaptation Logic
             if stagnation_counter > 20:
                 # Boost Mutation/Chaos incrementally
                 current_mutation_rate = min(0.40, current_mutation_rate + 0.02)
                 current_chaos_rate = min(0.05, current_chaos_rate + 0.005)
-                # if stagnation_counter % 10 == 0:
-                #    print(f"[GPU Worker] Stagnation ({stagnation_counter}). Mut: {current_mutation_rate:.2f}, Chaos: {current_chaos_rate:.3f}")
+                
+            # --- Island Cataclysm (Nuclear Reset) ---
+            if stagnation_counter >= 50:
+                 # print(f"[GPU Worker] CATACLYSM! Global Stagnation {stagnation_counter}. Resetting population.")
+                 # Keep Top 1 (min_idx)
+                 # We need to construct a new population where index 0 is best, rest random.
+                 
+                 # 1. Save Best
+                 saved_best_rpn = population[min_idx].clone()
+                 saved_best_c = pop_constants[min_idx].clone()
+                 
+                 # 2. Randomize All
+                 population = torch.randint(1, self.grammar.vocab_size, (self.pop_size, self.max_len), device=self.device)
+                 pop_constants = torch.randn(self.pop_size, self.max_constants, device=self.device)
+                 
+                 # 3. Restore Best at 0
+                 population[0] = saved_best_rpn
+                 pop_constants[0] = saved_best_c
+                 
+                 # 4. Reset Stats
+                 stagnation_counter = 0
+                 current_mutation_rate = 0.15
+                 current_chaos_rate = 0.01
+                 
+                 # Force re-eval? Next loop will evaluate.
+
 
             
             # C. Island Selection & Tournament (Vectorized)
