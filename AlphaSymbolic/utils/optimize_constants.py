@@ -6,7 +6,7 @@ import numpy as np
 from scipy.optimize import minimize
 from core.grammar import ExpressionTree
 
-def optimize_constants(tree, x_data, y_data, method='L-BFGS-B'):
+def optimize_constants(tree, x_data, y_data, method='L-BFGS-B', initial_guess=None):
     """
     Given an ExpressionTree with 'C' placeholders, find optimal constant values.
     
@@ -54,11 +54,20 @@ def optimize_constants(tree, x_data, y_data, method='L-BFGS-B'):
         mse = np.mean((y_pred - y_data)**2)
         return mse
     
-    # Initial guess: all 1s
-    x0 = np.ones(n_constants)
+    
+    # Check if initial_guess matches n_constants
+    if initial_guess is not None:
+        if len(initial_guess) != n_constants:
+             # Fallback if mismatch
+             x0 = np.ones(n_constants)
+        else:
+             x0 = np.array(initial_guess)
+    else:
+        # Initial guess: all 1s
+        x0 = np.ones(n_constants)
     
     # Bounds: reasonable range for constants
-    bounds = [(-1000, 1000)] * n_constants
+    bounds = [(-1e9, 1e9)] * n_constants
     
     try:
         result = minimize(
@@ -77,6 +86,29 @@ def optimize_constants(tree, x_data, y_data, method='L-BFGS-B'):
         
     except Exception as e:
         return {}, float('inf')
+
+def convert_and_extract_constants(node, values=None):
+    """
+    Recursively converts numeric nodes to 'C' and extracts their values.
+    Returns: list of initial values.
+    """
+    if values is None:
+        values = []
+        
+    # Check if node is a number (and not a special constant like pi/e)
+    try:
+        val = float(node.value)
+        # It is a number. Convert to C.
+        node.value = 'C'
+        values.append(val)
+    except:
+        pass
+        
+    for child in node.children:
+        convert_and_extract_constants(child, values)
+        
+    return values
+
 
 def substitute_constants(infix_str, constants_dict, positions):
     """

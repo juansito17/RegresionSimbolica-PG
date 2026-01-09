@@ -22,8 +22,34 @@
 const std::vector<double> RAW_TARGETS = {2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884};
 // MODIFICADO: X_VALUES ahora es vector<vector<double>> para soporte multivariable.
 // Inicializador por defecto para problema univariable.
-const std::vector<std::vector<double>> X_VALUES = {{4}, {5}, {6}, {7}, {8}, {9}, {10}, {11}, {12}, {13}, {14}, {15}, {16}, {17}, {18}, {19}, {20}};
-extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
+const std::vector<std::vector<double>> X_VALUES = {
+    {1, 1, 1},   // 1
+    {2, 2, 0},   // 2
+    {3, 3, 1},   // 3
+    {4, 4, 0},   // 4
+    {5, 5, 1},   // 5
+    {6, 0, 0},   // 6
+    {7, 1, 1},   // 7
+    {8, 2, 0},   // 8
+    {9, 3, 1},   // 9
+    {10, 4, 0},  // 10
+    {11, 5, 1},  // 11
+    {12, 0, 0},  // 12
+    {13, 1, 1},  // 13
+    {14, 2, 0},  // 14
+    {15, 3, 1},  // 15
+    {16, 4, 0},  // 16
+    {17, 5, 1},  // 17
+    {18, 0, 0},  // 18
+    {19, 1, 1},  // 19
+    {20, 2, 0},  // 20
+    {21, 3, 1},  // 21
+    {22, 4, 0},  // 22
+    {23, 5, 1},  // 23
+    {24, 0, 0},  // 24
+    {25, 1, 1},  // 25
+    {26, 2, 0}   // 26
+};extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
 
 // Flag para activar la transformación logarítmica automática
 const bool USE_LOG_TRANSFORMATION = true;
@@ -55,7 +81,7 @@ const int MIN_POP_PER_ISLAND = 10;
 
 // --- Fórmula Inicial ---
 const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "(g(x)-(x*0.912079)+0.146743+(3.78968/x))";
+const std::string INITIAL_FORMULA_STRING = "(exp(lgamma(x0)-(x0*1.94)))";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -85,17 +111,17 @@ const bool USE_OP_MINUS    = true; // -
 const bool USE_OP_MULT     = true; // *
 const bool USE_OP_DIV      = true; // /
 const bool USE_OP_POW      = true; // ^
-const bool USE_OP_MOD      = true; // %
-const bool USE_OP_SIN      = true; // s
-const bool USE_OP_COS      = true; // c
+const bool USE_OP_MOD      = false; // % (DISABLED)
+const bool USE_OP_SIN      = false; // s (DISABLED)
+const bool USE_OP_COS      = false; // c (DISABLED)
 const bool USE_OP_LOG      = true; // l
 const bool USE_OP_EXP      = true; // e
-const bool USE_OP_FACT     = true; // !
-const bool USE_OP_FLOOR    = true; // _
+const bool USE_OP_FACT     = false; // ! (DISABLED - using lgamma instead)
+const bool USE_OP_FLOOR    = false; // _ (DISABLED)
 const bool USE_OP_GAMMA    = true; // g
-const bool USE_OP_ASIN     = true; // S
-const bool USE_OP_ACOS     = true; // C
-const bool USE_OP_ATAN     = true; // T
+const bool USE_OP_ASIN     = false; // S (DISABLED)
+const bool USE_OP_ACOS     = false; // C (DISABLED)
+const bool USE_OP_ATAN     = false; // T (DISABLED)
 
 // Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
 // Los pesos se multiplican por el flag (0 o 1) para habilitar/deshabilitar.
@@ -151,7 +177,7 @@ const double EXACT_SOLUTION_THRESHOLD = 1e-8;
 // ----------------------------------------
 // Activa el fitness ponderado para penalizar fuertemente errores en valores altos de N.
 // Esto destruye a las parábolas que fallan en N=20 pero dan buen promedio general.
-const bool USE_WEIGHTED_FITNESS = true;
+const bool USE_WEIGHTED_FITNESS = false;
 // Tipo de peso: "quadratic" usa i*i, "exponential" usa exp(i*WEIGHTED_FITNESS_EXPONENT)
 // Exponente para peso exponencial (más agresivo). Usar 0.2-0.3 para datasets pequeños.
 const double WEIGHTED_FITNESS_EXPONENT = 0.25;
