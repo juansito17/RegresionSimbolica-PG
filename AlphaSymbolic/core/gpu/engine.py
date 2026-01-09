@@ -1594,8 +1594,15 @@ class TensorGeneticEngine:
         
         generations = 0
         COMPLEXITY_PENALTY = GpuGlobals.COMPLEXITY_PENALTY
+        max_generations = GpuGlobals.GENERATIONS
 
-        while time.time() - start_time < timeout_sec:
+        # Loop until: fitness ~0, OR max generations, OR timeout
+        while generations < max_generations:
+            # Check timeout (optional, set timeout_sec=None to disable)
+            if timeout_sec and (time.time() - start_time) >= timeout_sec:
+                print(f"[GPU] Timeout after {generations} generations")
+                break
+                
             generations += 1
             
 

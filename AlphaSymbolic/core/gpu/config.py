@@ -15,10 +15,10 @@ class GpuGlobals:
     # ----------------------------------------
     FORCE_CPU_MODE = False # Si es True, usa CPU aunque CUDA esté disponible
     
-    # Tamaño de población
-    POP_SIZE = 5000 
-    GENERATIONS = 50000
-    NUM_ISLANDS = 5
+    # Tamaño de población - MÁXIMO para RTX 3050 (4GB VRAM)
+    POP_SIZE = 5000       # Agresivo - usa ~3GB VRAM
+    GENERATIONS = 100000  # Más generaciones
+    NUM_ISLANDS = 8       # Máxima diversidad
     MIN_POP_PER_ISLAND = 10
 
     # --- Fórmula Inicial ---
@@ -41,7 +41,7 @@ class GpuGlobals:
     CONSTANT_INT_MIN_VALUE = -10
     CONSTANT_INT_MAX_VALUE = 10
     USE_HARD_DEPTH_LIMIT = True
-    MAX_TREE_DEPTH_HARD_LIMIT = 12
+    MAX_TREE_DEPTH_HARD_LIMIT = 30  # MÁXIMO - expresiones muy complejas
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
