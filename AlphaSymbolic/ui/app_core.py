@@ -108,6 +108,7 @@ def load_model(force_reload=False, preset_name=None):
         nhead=config['nhead'],
         num_encoder_layers=config['num_encoder_layers'], 
         num_decoder_layers=config['num_decoder_layers'],
+        max_seq_len=256,
         input_dim=11
     ).to(DEVICE)
     
@@ -150,7 +151,19 @@ def load_model(force_reload=False, preset_name=None):
                     print(f"Error al eliminar archivo: {e}")
                 status = "⚠️ Modelo corrupto eliminado y reiniciado"
             else:
-                MODEL.load_state_dict(state_dict)
+                # Handle resizing of Positional Encoding (e.g. 50 -> 256)
+                if 'pos_encoder.pe' in state_dict:
+                    saved_pe_shape = state_dict['pos_encoder.pe'].shape
+                    model_pe_shape = MODEL.pos_encoder.pe.shape
+                    if saved_pe_shape != model_pe_shape:
+                        print(f"⚠️ Resizing Positional Encoding from {saved_pe_shape[1]} to {model_pe_shape[1]}. Resetting buffer.")
+                        del state_dict['pos_encoder.pe']
+                        MODEL.load_state_dict(state_dict, strict=False)
+                    else:
+                        MODEL.load_state_dict(state_dict)
+                else:
+                    MODEL.load_state_dict(state_dict)
+                    
                 MODEL.eval()
                 status = f"Modelo cargado ({CURRENT_PRESET})"
                 

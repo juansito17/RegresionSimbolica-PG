@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 
 class AlphaSymbolicModel(nn.Module):
-    def __init__(self, vocab_size, d_model=128, nhead=4, num_encoder_layers=2, num_decoder_layers=2, max_seq_len=50, input_dim=2):
+    def __init__(self, vocab_size, d_model=128, nhead=4, num_encoder_layers=2, num_decoder_layers=2, max_seq_len=256, input_dim=2):
         super(AlphaSymbolicModel, self).__init__()
         
         self.d_model = d_model
