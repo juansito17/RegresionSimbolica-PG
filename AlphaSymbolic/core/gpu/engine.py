@@ -509,6 +509,70 @@ class TensorGeneticEngine:
         
         return pop_out, const_out, n_dups
 
+    def tarpeian_control(self, population: torch.Tensor, fitness: torch.Tensor) -> torch.Tensor:
+        """
+        Tarpeian bloat control: randomly penalize oversized individuals.
+        
+        Individuals longer than 1.5x average length have 50% chance of 
+        receiving very bad fitness, pushing them out of selection.
+        
+        Args:
+            population: [PopSize, L] RPN tensors
+            fitness: [PopSize] current fitness values
+            
+        Returns:
+            Modified fitness tensor
+        """
+        lengths = (population != PAD_ID).sum(dim=1).float()
+        avg_len = lengths.mean()
+        
+        # Find oversized individuals (> 1.5x average)
+        oversized = lengths > avg_len * 1.5
+        
+        # Randomly penalize 50% of oversized
+        random_mask = torch.rand(population.shape[0], device=self.device) < 0.5
+        penalize_mask = oversized & random_mask
+        
+        # Apply penalty
+        fitness_out = fitness.clone()
+        fitness_out[penalize_mask] = 1e30  # Large but within float32 range
+        
+        return fitness_out
+
+    def shrink_mutation(self, individual: torch.Tensor) -> torch.Tensor:
+        """
+        Apply shrinking mutation - removes a subtree and replaces with terminal.
+        """
+        ind_cpu = individual.cpu().numpy()
+        non_pad = ind_cpu[ind_cpu != PAD_ID]
+        
+        if len(non_pad) < 3:
+            return individual
+        
+        # Pick a random operator position
+        operator_positions = []
+        for i, token_id in enumerate(non_pad):
+            token = self.grammar.id_to_token.get(token_id, "")
+            if token in self.grammar.operators:
+                operator_positions.append(i)
+        
+        if not operator_positions:
+            return individual
+        
+        target_pos = np.random.choice(operator_positions)
+        span = self.grammar.get_subtree_span(non_pad.tolist(), target_pos)
+        
+        if span[0] == -1:
+            return individual
+        
+        # Replace subtree with random terminal
+        terminal_id = self.terminal_ids[torch.randint(len(self.terminal_ids), (1,))].item()
+        new_tokens = list(non_pad[:span[0]]) + [terminal_id] + list(non_pad[target_pos+1:])
+        new_tokens = new_tokens[:self.max_len]
+        new_tokens = new_tokens + [PAD_ID] * (self.max_len - len(new_tokens))
+        
+        return torch.tensor(new_tokens, device=self.device, dtype=individual.dtype)
+
 
     def mutate_population(self, population: torch.Tensor, mutation_rate: float) -> torch.Tensor:
         """
@@ -1524,6 +1588,9 @@ class TensorGeneticEngine:
             lengths = (population != PAD_ID).sum(dim=1).float()
             fitness_penalized = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
             
+            # --- Tarpeian Bloat Control ---
+            fitness_penalized = self.tarpeian_control(population, fitness_penalized)
+            
             # Select Best
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
             if min_rmse.item() < best_rmse:
@@ -1682,7 +1749,14 @@ class TensorGeneticEngine:
             
             def get_lexicase_indices(n_select, errs_cpu):
                 # errs_cpu: [Pop, Cases] numpy
+                # Using Epsilon-Lexicase with MAD (Median Absolute Deviation)
                 P, C_ = errs_cpu.shape
+                
+                # Pre-compute MAD for each case (for epsilon calculation)
+                case_medians = np.median(errs_cpu, axis=0)
+                mad_per_case = np.median(np.abs(errs_cpu - case_medians), axis=0)
+                mad_per_case = np.maximum(mad_per_case, 1e-9)  # Avoid zero
+                
                 selected = []
                 for _ in range(n_select):
                     cands = np.random.randint(0, P, 50) # pool
@@ -1690,7 +1764,8 @@ class TensorGeneticEngine:
                     for c_idx in cases:
                         c_errs = errs_cpu[cands, c_idx]
                         min_e = np.min(c_errs)
-                        eps = max(min_e * 0.1, 1e-9)
+                        # Epsilon = MAD for this case (adaptive epsilon-lexicase)
+                        eps = mad_per_case[c_idx]
                         keep = c_errs <= (min_e + eps)
                         cands = cands[keep]
                         if len(cands) <= 1: break
