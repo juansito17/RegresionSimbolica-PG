@@ -24,6 +24,7 @@ set(SOURCES
     src/GeneticOperators.cpp
     src/AdvancedFeatures.cpp
     src/GeneticAlgorithm.cpp
+    src/GradientOptimizer.cpp
 )
 
 if(CMAKE_CUDA_COMPILER)
@@ -35,7 +36,7 @@ if(CMAKE_CUDA_COMPILER)
     find_package(CUDA REQUIRED)
 
     # Add .cu file to sources only if CUDA is present
-    list(APPEND SOURCES src/FitnessGPU.cu)
+    list(APPEND SOURCES src/FitnessGPU.cu src/GradientOptimizerGPU.cu)
 
     # Create Executable
     add_executable(SymbolicRegressionGP ${SOURCES})
@@ -109,11 +110,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/TestOperators.cpp")
         src/GeneticOperators.cpp
         src/AdvancedFeatures.cpp
         src/GeneticAlgorithm.cpp
+        src/GradientOptimizer.cpp
     )
 
     if(CMAKE_CUDA_COMPILER)
         target_compile_definitions(TestOperators PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
-        target_sources(TestOperators PRIVATE src/FitnessGPU.cu)
+        target_sources(TestOperators PRIVATE src/FitnessGPU.cu src/GradientOptimizerGPU.cu)
         target_include_directories(TestOperators PUBLIC ${CUDA_INCLUDE_DIRS})
         if(TARGET CUDA::cudart)
             target_link_libraries(TestOperators PUBLIC CUDA::cudart)

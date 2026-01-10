@@ -1,4 +1,5 @@
 #include "AdvancedFeatures.h"
+#include "GradientOptimizer.h"
 #include "Globals.h"
 #include "GeneticOperators.h"
 #include "Fitness.h"
@@ -340,10 +341,16 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
 
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, int attempts, double* d_targets, double* d_x_values) {
-    // 1. First, try to optimize constants of the CURRENT tree
+    // 1. First, try to optimize constants of the CURRENT tree using GRADIENT DESCENT
     NodePtr optimized_tree = clone_tree(tree);
-    optimize_constants(optimized_tree, targets, x_values, d_targets, d_x_values);
-    double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values, d_targets, d_x_values);
+    // Use Gradient Optimization (Adam) - much more precise than Hill Climbing
+    optimize_constants_gradient(optimized_tree, targets, x_values, 0.05, 30);
+    
+    #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+        double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values, d_targets, d_x_values);
+    #else
+        double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values);
+    #endif
     
     NodePtr best_neighbor = (optimized_fitness < current_fitness) ? optimized_tree : tree;
     double best_neighbor_fitness = (optimized_fitness < current_fitness) ? optimized_fitness : current_fitness;
@@ -370,9 +377,9 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double cur
 }
 #else
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, int attempts) {
-    // 1. First, try to optimize constants of the CURRENT tree
+    // 1. First, try to optimize constants of the CURRENT tree using GRADIENT DESCENT
     NodePtr optimized_tree = clone_tree(tree);
-    optimize_constants(optimized_tree, targets, x_values, nullptr, nullptr);
+    optimize_constants_gradient(optimized_tree, targets, x_values, 0.05, 30);
     double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values);
     
     NodePtr best_neighbor = (optimized_fitness < current_fitness) ? optimized_tree : tree;

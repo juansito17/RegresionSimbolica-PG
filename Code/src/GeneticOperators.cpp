@@ -441,6 +441,75 @@ Individual crossover(const Individual& parent1, const Individual& parent2) {
     return Individual(tree1_clone); // Devolver uno de los hijos, el otro se descarta
 }
 
+// Implementación de Semantic Crossover
+Individual semantic_crossover(const Individual& p1, const Individual& p2, const std::vector<std::vector<double>>& x_values, int attempts) {
+    if (x_values.empty()) return crossover(p1, p2); // Fallback
+
+    auto& rng = get_rng();
+    
+    // 1. Select Semantic Sample (subset of data)
+    int sample_size = std::min((int)x_values.size(), 10);
+    std::vector<int> indices(sample_size);
+    std::uniform_int_distribution<int> idx_dist(0, x_values.size() - 1);
+    for(int i=0; i<sample_size; ++i) indices[i] = idx_dist(rng);
+    
+    // 2. Compute Parent Semantics
+    std::vector<double> sem_p1(sample_size);
+    std::vector<double> sem_p2(sample_size);
+    bool p1_valid = true, p2_valid = true;
+    
+    for(int i=0; i<sample_size; ++i) {
+        sem_p1[i] = evaluate_tree(p1.tree, x_values[indices[i]]);
+        sem_p2[i] = evaluate_tree(p2.tree, x_values[indices[i]]);
+        if (std::isnan(sem_p1[i]) || std::isinf(sem_p1[i])) p1_valid = false;
+        if (std::isnan(sem_p2[i]) || std::isinf(sem_p2[i])) p2_valid = false;
+    }
+    
+    Individual best_child;
+    double max_diversity = -1.0;
+    
+    for(int k=0; k<attempts; ++k) {
+        // Generate child
+        Individual child = crossover(p1, p2);
+        
+        // Compute Child Semantics
+        std::vector<double> sem_c(sample_size);
+        bool c_valid = true;
+        
+        double diff_p1 = 0.0;
+        double diff_p2 = 0.0;
+        
+        for(int i=0; i<sample_size; ++i) {
+            sem_c[i] = evaluate_tree(child.tree, x_values[indices[i]]);
+            if (std::isnan(sem_c[i]) || std::isinf(sem_c[i])) {
+                c_valid = false;
+                break;
+            }
+            if (p1_valid) diff_p1 += std::abs(sem_c[i] - sem_p1[i]);
+            if (p2_valid) diff_p2 += std::abs(sem_c[i] - sem_p2[i]);
+        }
+        
+        if (!c_valid) continue; // Skip bad children
+        
+        // Check Semantic Difference (Sensitivity)
+        double sensitivity = 1e-4;
+        if (diff_p1 > sensitivity && diff_p2 > sensitivity) {
+            return child; // Found a semantically unique child!
+        }
+        
+        // Keep the "most different" valid child found so far as fallback
+        double diversity = std::min(diff_p1, diff_p2);
+        if (diversity > max_diversity) {
+            max_diversity = diversity;
+            best_child = std::move(child);
+        }
+    }
+    
+    // Return best found or just a random crossover if all failed semantic check
+    if (best_child.tree) return best_child;
+    return crossover(p1, p2);
+}
+
 // Implementación de mutate
 void mutate(Individual& individual, double mutation_rate) {
     individual.tree = mutate_tree(individual.tree, mutation_rate, MAX_TREE_DEPTH_MUTATION);

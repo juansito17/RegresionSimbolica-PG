@@ -644,7 +644,8 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
                     p1 = tournament_selection(island.population, island.params.tournament_size);
                     p2 = tournament_selection(island.population, island.params.tournament_size);
                 }
-                offspring = crossover(p1, p2);
+                // Use Semantic Crossover for better diversity
+                offspring = semantic_crossover(p1, p2, x_values);
             } else {
                 Individual p1;
                 if (USE_LEXICASE_SELECTION) {

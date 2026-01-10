@@ -49,7 +49,11 @@ Individual tournament_selection(const std::vector<Individual>& population, int t
 Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values);
 
 // Realiza el cruce (crossover) entre dos individuos y devuelve un nuevo individuo.
+// Realiza el cruce (crossover) entre dos individuos y devuelve un nuevo individuo.
 Individual crossover(const Individual& parent1, const Individual& parent2);
+
+// Realiza cruce semántico: intenta generar un hijo que sea funcionalmente distinto a los padres.
+Individual semantic_crossover(const Individual& p1, const Individual& p2, const std::vector<std::vector<double>>& x_values, int attempts = 5);
 
 // Mutata un individuo in-place.
 void mutate(Individual& individual, double mutation_rate);
