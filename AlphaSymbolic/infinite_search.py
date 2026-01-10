@@ -203,8 +203,8 @@ def main():
                 x_sample, y_sample_flat,  # PASS FLAT Y
                 MODEL, DEVICE, 
                 beam_width=10, 
-                gp_timeout=60, 
-                max_workers=1, # GPU Only (0 CPU)
+                gp_timeout=120, 
+                max_workers=4, # Use 4 parallel workers (C++ Engine)
                 num_variables=1,
                 extra_seeds=extra_seeds
             )
@@ -265,7 +265,7 @@ def main():
         # FIX: lgamma in ExpressionTree adds +1 internally (lgamma(|x|+1)).
         # So we use lgamma(x) to represent lgamma(x+1) mathematically.
         full_formula_str = f"exp({residual_formula_str} + lgamma(x))"
-        print(f"Reconstructed Full Formula: {full_formula_str}")
+        # print(f"Reconstructed Full Formula: {full_formula_str}")
 
         # 4. Evaluate on FULL RANGE (History + Targets) w/ Reconstructed Formula
         try:
@@ -295,7 +295,8 @@ def main():
             pred_27 = y_pred_all[-1]
             extrap_error_sum = abs(pred_26 - Y_TARGETS[0]) + abs(pred_27 - Y_TARGETS[1])
             
-            print(f"RMSLE (1-27): {log_error:.6f} | Extrap Error: {extrap_error_sum:.2e}")
+            time_taken = result.get('time', 0)
+            print(f"\n[SUCCESS] Formula: {full_formula_str}\n          RMSLE (1-27): {log_error:.6f} | Extrap Error: {extrap_error_sum:.2e} | Time: {time_taken:.2f}s")
             
             # 5. Update Top List
             entry = {

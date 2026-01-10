@@ -337,7 +337,7 @@ class ExpressionTree:
         
         if val == 'pi':
             return np.full(n_samples, np.pi, dtype=np.float64)
-        if val == 'e':
+        if val == 'e' and not node.children:
             return np.full(n_samples, np.e, dtype=np.float64)
         if val == 'C':
             # Check if we have an optimized constant for this position

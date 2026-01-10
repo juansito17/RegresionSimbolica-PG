@@ -170,7 +170,7 @@ class GPEngine:
         try:
             # Run Command
             cmd = [self.binary_path, "--seed", seed_file_path, "--data", data_file_path]
-            print(f"Running GP Engine: {' '.join(cmd)}")
+            # print(f"Running GP Engine: {' '.join(cmd)}")
             
             # Windows-specific: Hide console window and suppress error dialogs
             startupinfo = None
@@ -216,16 +216,16 @@ class GPEngine:
                             if "final formula:" in line_lower:
                                 break  # Final Formula is the best, stop looking
                         
-            print(f"GP Engine finished in {time.time() - start_time:.2f}s")
+            # print(f"GP Engine finished in {time.time() - start_time:.2f}s")
             
             if best_formula is None:
-                print(f"[DEBUG] GP Engine Output (Stdout):\n{output}")
-                print(f"[DEBUG] GP Engine Output (Stderr):\n{result.stderr}")
+                pass # print(f"[DEBUG] GP Engine Output (Stdout):\n{output}")
+                pass # print(f"[DEBUG] GP Engine Output (Stderr):\n{result.stderr}")
             
             return best_formula
 
         except subprocess.TimeoutExpired as e:
-            print(f"GP Engine timed out after {timeout_sec}s.")
+            # print(f"GP Engine timed out after {timeout_sec}s.")
             # Recover output captured so far. 
             # Note: TimeoutExpired.stdout/stderr might be bytes even if text=True was passed to subprocess.run.
             output = e.stdout if e.stdout else ""
@@ -250,17 +250,17 @@ class GPEngine:
                                     break
             
             if best_formula:
-                print(f"Recovered best formula from timeout: {best_formula}")
+                # print(f"Recovered best formula from timeout: {best_formula}")
                 return best_formula
             
             if error_output:
-                 print(f"GP Engine Timeout Stderr: {error_output}")
+                 pass # print(f"GP Engine Timeout Stderr: {error_output}")
             return None
 
         except Exception as e:
-            print(f"GP Engine failed: {e}")
+            # print(f"GP Engine failed: {e}")
             if hasattr(e, 'stderr') and e.stderr:
-                print(f"Stderr: {e.stderr}")
+                pass # print(f"Stderr: {e.stderr}")
             return None
         finally:
             # Cleanup

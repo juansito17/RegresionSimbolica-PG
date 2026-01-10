@@ -85,7 +85,7 @@ def hybrid_solve(
         
         # print(f"[Phase 1] Generated {len(seeds)} unique seeds for GP.")
         if len(seeds) > 0:
-            pass # print(f"Top Seed: {seeds[0]}")
+            print(f"Top Seed NN: {seeds[0]}")
     else:
         print("[Phase 1] No valid candidates found. Falling back to pure GP.")
 
@@ -95,72 +95,34 @@ def hybrid_solve(
     x_list = x_values.tolist() if hasattr(x_values, 'tolist') else list(x_values)
     y_list = y_values.tolist() if hasattr(y_values, 'tolist') else list(y_values)
     
-    # Determine Resources
-    # Determine Resources
-    use_gpu = (TensorGeneticEngine is not None) and (max_workers > 0)
-    
-    if use_gpu:
-        num_cpu_workers = max(0, max_workers - 1)
-    else:
-        num_cpu_workers = max_workers
-    
-    # print(f"[Phase 2] Resources: {num_cpu_workers} CPU Workers + {'1 GPU Worker' if use_gpu else '0 GPU Workers'}")
+    # Resources managed dynamically by max_workers
 
     results = []
     futures = []
 
     # A. Launch CPU Workers (Background)
     # ---------------------------------
-    # Prepare chunks (Sniper strategy for CPU)
+    # ---------------------------------
+    # Prepare chunks for ALL workers
     cpu_seeds = list(seeds) # Copy
     cpu_chunks = []
-    top_seeds = []
     
-    if num_cpu_workers > 0:
+    if max_workers > 0:
         if not cpu_seeds:
-            cpu_chunks = [[] for _ in range(num_cpu_workers)]
+            cpu_chunks = [[] for _ in range(max_workers)]
         else:
-            top_seeds = cpu_seeds[:num_cpu_workers]
-            for i in range(num_cpu_workers):
-                seed_idx = i % len(top_seeds)
-                cpu_chunks.append([top_seeds[seed_idx]])
+            # Distribute seeds round-robin
+            cpu_chunks = [[] for _ in range(max_workers)]
+            for i, seed in enumerate(cpu_seeds):
+                cpu_chunks[i % max_workers].append(seed)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, num_cpu_workers)) as executor:
-        if num_cpu_workers > 0:
-            for chunk in cpu_chunks:
-                args = (x_list, y_list, chunk, gp_timeout, gp_binary_path)
-                futures.append(executor.submit(_run_gp_worker, args))
-                
-        # B. Run GPU Worker (Main Thread / Concurrent)
-        # ------------------------------------------
-        gpu_result = None
-        if use_gpu:
-            try:
-                pass # print("[Phase 2] Launching GPU Engine...")
-                # We can run this in the main thread while threads handle CPU subprocesses
-                # Or submit to executor if we want? 
-                # Better to run in main thread to ensure CUDA context is happy and we monitor it.
-                gpu_engine = TensorGeneticEngine(pop_size=50000, max_len=30, num_variables=num_variables)
-                
-                gpu_best_formula = gpu_engine.run(x_list, y_list, seeds, timeout_sec=gp_timeout)
-                # print(f"[GPU Worker] Initializing Tensor Population ({self.pop_size})...") -> Moved to inside gpu_engine but commented out there
+    # print(f"[Phase 2] Launching {max_workers} Parallel GP Workers (C++ SOTA)...")
 
-                
-                if gpu_best_formula:
-                    # Evaluate fitness (RMSE) using CPU logic for fairness/consistency
-                    try:
-                         tree = ExpressionTree.from_infix(gpu_best_formula)
-                         y_pred = tree.evaluate(np.array(x_list))
-                         mse = np.mean((np.array(y_list) - y_pred)**2)
-                         rmse = np.sqrt(mse)
-                         gpu_result = {'formula': gpu_best_formula, 'rmse': rmse, 'status': 'success', 'worker': 'GPU'}
-                         print(f"[GPU Result] {gpu_best_formula} (RMSE: {rmse:.5f})")
-                    except Exception as e:
-                         print(f"[GPU Error] Eval failed: {e}")
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"[GPU Error] Engine failed: {e}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        for chunk in cpu_chunks:
+            args = (x_list, y_list, chunk, gp_timeout, gp_binary_path)
+            futures.append(executor.submit(_run_gp_worker, args))
+
 
         # C. Collect CPU Results
         # ----------------------
@@ -171,10 +133,7 @@ def hybrid_solve(
                     res['worker'] = 'CPU'
                     results.append(res)
             except Exception as e:
-                print(f"CPU Worker exception: {e}")
-                
-        if gpu_result:
-            results.append(gpu_result)
+                print(f"Worker exception: {e}")
 
     total_time = time.time() - start_time
 
@@ -196,7 +155,7 @@ def hybrid_solve(
             'rmse': best_rmse,
             'source': 'Alpha-GP Hybrid',
             'time': total_time,
-            'seeds_tried': top_seeds if seeds else []
+            'seeds_tried': seeds if seeds else []
         }
     else:
         print(f"--- Hybrid Search Failed (All workers failed) ---")
@@ -205,7 +164,7 @@ def hybrid_solve(
             'rmse': 1e9,
             'source': 'Alpha-GP Hybrid',
             'time': total_time,
-            'seeds_tried': top_seeds if seeds else []
+            'seeds_tried': seeds if seeds else []
         }
 
 if __name__ == "__main__":

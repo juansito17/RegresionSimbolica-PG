@@ -364,7 +364,7 @@ NodePtr parse_formula_string(const std::string& formula_raw) {
             {"sin", 's'}, {"cos", 'c'}, {"tan", 't'}, 
             {"asin", 'S'}, {"acos", 'C'}, {"atan", 'T'},
             {"log", 'l'}, {"exp", 'e'}, {"sqrt", 'q'},
-            {"floor", '_'}, {"ceil", '^'}, {"abs", 'a'}, {"sign", 'n'},
+            {"floor", '_'}, {"ceil", 'u'}, {"abs", 'a'}, {"sign", 'n'},
             {"gamma", '!'}, {"lgamma", 'g'}, {"g", 'g'}
         };
 
