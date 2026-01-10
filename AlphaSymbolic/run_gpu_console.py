@@ -90,11 +90,21 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
         
     else:
         # Progress Report
-        # --- Generation 100/50000 (Elapsed: 0.50s) ---
-        # Overall Best Fitness: ...
-        # Best Formula Size: ...
+        if not hasattr(console_mimic_callback, "last_time"):
+             console_mimic_callback.last_time = start_time_global
+             console_mimic_callback.last_gen = 0
+        
+        current_time = time.time()
+        delta_t = current_time - console_mimic_callback.last_time
+        delta_g = gen - console_mimic_callback.last_gen
+        
+        instant_speed = (delta_g * engine.pop_size) / delta_t if delta_t > 0 else 0.0
+        
+        console_mimic_callback.last_time = current_time
+        console_mimic_callback.last_gen = gen
+
         elapsed = time.time() - start_time_global
-        print(f"\n--- Generation {gen} (Elapsed: {elapsed:.2f}s) ---")
+        print(f"\n--- Gen {gen} (Elapsed: {elapsed:.2f}s) | Instant Speed: {instant_speed:,.0f} Evals/sec ---")
         print(f"Overall Best Fitness: {best_rmse:.4e}")
         print(f"Best Formula Size: {formula_size}")
         sys.stdout.flush()
@@ -111,7 +121,10 @@ if __name__ == "__main__":
     from core.gpu.config import GpuGlobals
     
     # User can override Globals here
-    # GpuGlobals.POP_SIZE = 10000
+    GpuGlobals.POP_SIZE = 25000
+    GpuGlobals.NUM_ISLANDS = 20
+    GpuGlobals.PROGRESS_REPORT_INTERVAL = 100
+    GpuGlobals.USE_PARETO_SELECTION = False  # Disable NSGA-II for speed test
     
     # Engine will use Globals defaults for pop_size and n_islands
     engine = TensorGeneticEngine(num_variables=3) # 3 variables as per new X_VALUES
@@ -130,10 +143,15 @@ if __name__ == "__main__":
         else:
             x_input = X_VALUES[:len(TARGETS)]
         
+        seeds = []
+        if GpuGlobals.USE_INITIAL_FORMULA and GpuGlobals.INITIAL_FORMULA_STRING:
+            seeds.append(GpuGlobals.INITIAL_FORMULA_STRING)
+            print(f"Info: Injecting initial formula: {GpuGlobals.INITIAL_FORMULA_STRING}")
+
         final_formula = engine.run(
             x_input, 
             TARGETS, 
-            seeds=[], 
+            seeds=seeds, 
             timeout_sec=3600, 
             callback=console_mimic_callback
         )

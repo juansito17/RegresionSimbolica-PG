@@ -435,17 +435,43 @@ class ExpressionTree:
         valid_vars = ['x' + str(i) for i in range(num_variables)]
         # Use module-level OPERATORS
         ops = list(OPERATORS.keys())
+
+        # Weighted operators (matching C++ OPERATOR_WEIGHTS approximately)
+        # +, -, *, / : High weight (0.2, 0.2, 0.2, 0.15)
+        # ^ : Medium (0.1)
+        # sin, cos: Medium (0.1)
+        # log, exp: Low (0.05)
+        # others: Very Low (0.01)
         
+        weighted_ops = []
+        op_weights = []
+        for op in ops:
+            weighted_ops.append(op)
+            if op in ['+', '-', '*']: w = 20
+            elif op == '/': w = 15
+            elif op in ['^', 'sin', 'cos']: w = 10
+            elif op in ['log', 'exp']: w = 5
+            else: w = 1 # !, _, g, S, C, T
+            op_weights.append(w)
+            
         def _gen(depth):
             if depth >= max_depth or (depth > 1 and random.random() < p_terminal):
                 # Terminal
-                if random.random() < 0.7: # Variable
+                if random.random() < 0.75: # Variable (0.75 matches C++ config)
                      return Node(random.choice(valid_vars))
                 else: # Constant
-                     return Node(random.choice(['1', '2', '3', '5', 'pi', 'e', 'C']))
+                     # C++ uses range -10 to 10
+                     # We can generate a random float string or use 'C' for optimization
+                     # Using 'C' allows optimize_constants to work later.
+                     # But initially, some random numbers are good.
+                     if random.random() < 0.5:
+                         val = random.uniform(-5.0, 5.0)
+                         return Node(f"{val:.4f}")
+                     else:
+                         return Node('C')
             else:
-                # Operator
-                op = random.choice(ops)
+                # Operator (Weighted)
+                op = random.choices(weighted_ops, weights=op_weights, k=1)[0]
                 arity = OPERATORS[op]
                 if arity == 1:
                     return Node(op, [_gen(depth+1)])

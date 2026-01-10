@@ -452,7 +452,7 @@ class TensorGeneticEngine:
         Remove duplicate individuals from the population.
         
         Duplicates are identified by hashing their RPN token sequence.
-        Duplicates are replaced with mutated versions of random non-duplicates.
+        Duplicates are replaced with **FRESH RANDOM INDIVIDUALS** (not mutated clones).
         
         Args:
             population: [PopSize, L] RPN tensors
@@ -470,7 +470,6 @@ class TensorGeneticEngine:
         # Hash each individual
         seen_hashes = {}
         duplicate_indices = []
-        unique_indices = []
         
         for i in range(pop_size):
             # Create hash from non-padding tokens
@@ -482,30 +481,25 @@ class TensorGeneticEngine:
                 duplicate_indices.append(i)
             else:
                 seen_hashes[hash_key] = i
-                unique_indices.append(i)
         
         n_dups = len(duplicate_indices)
         if n_dups == 0:
             return population, constants, 0
         
-        # Replace duplicates with mutated versions of random unique individuals
+        # Replace duplicates with fresh random individuals
         pop_out = population.clone()
         const_out = constants.clone()
         
-        unique_indices_t = torch.tensor(unique_indices, device=self.device)
+        # Generate N fresh random trees
+        fresh_pop = self._generate_random_population(n_dups)
+        fresh_consts = torch.randn(n_dups, constants.shape[1], device=self.device, dtype=torch.float64)
         
-        for dup_idx in duplicate_indices:
-            # Pick random unique individual
-            rand_idx = unique_indices_t[torch.randint(len(unique_indices_t), (1,))].item()
-            
-            # Mutate it with higher rate for diversity
-            mutant = self.mutate_population(population[rand_idx:rand_idx+1], mutation_rate=0.3)
-            
-            # Assign
-            pop_out[dup_idx] = mutant[0]
-            
-            # Slightly perturb constants
-            const_out[dup_idx] = constants[rand_idx] + torch.randn_like(constants[rand_idx]) * 0.1
+        # Assign to duplicate slots
+        # duplicate_indices is a list, convert to tensor?
+        # Actually indexing with list works in PyTorch if converted to tensor or list.
+        # But `fresh_pop` is [n_dups, L].
+        pop_out[duplicate_indices] = fresh_pop
+        const_out[duplicate_indices] = fresh_consts
         
         return pop_out, const_out, n_dups
 
@@ -634,99 +628,224 @@ class TensorGeneticEngine:
         
         return mutated_pop
 
+    def _get_subtree_ranges(self, population: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the start index of the subtree ending at each position.
+        Returns tensor [B, L] where value is start_index, or -1 if invalid/padding.
+        Optimized for RPN logic on GPU.
+        """
+        B, L = population.shape
+        subtree_starts = torch.full((B, L), -1, device=self.device, dtype=torch.long)
+        
+        # 1. Map tokens to Arity Change
+        # Variables/Consts: +1
+        # Binary: -1 (Pop 2 Push 1 -> Net -1)
+        # Unary: 0 (Pop 1 Push 1 -> Net 0)
+        
+        # We need a fast lookup.
+        # Construct Arity Table
+        # Default 1 (Operand)
+        arities = torch.ones_like(population, dtype=torch.long) 
+        
+        # Binary (-1)
+        op_add = self.grammar.token_to_id.get('+', -100); op_sub = self.grammar.token_to_id.get('-', -100)
+        op_mul = self.grammar.token_to_id.get('*', -100); op_div = self.grammar.token_to_id.get('/', -100)
+        op_pow = self.grammar.token_to_id.get('pow', -100); op_mod = self.grammar.token_to_id.get('%', -100)
+        
+        mask_bin = (population == op_add) | (population == op_sub) | (population == op_mul) | \
+                   (population == op_div) | (population == op_pow) | (population == op_mod)
+        arities[mask_bin] = -1
+        
+        # Unary (0)
+        op_sin = self.grammar.token_to_id.get('sin', -100); op_cos = self.grammar.token_to_id.get('cos', -100)
+        # ... (add all unary)
+        # Simplified: If it's not binary and it's an operator, it's unary?
+        # Better: Assume all Ops are <= some ID? No.
+        # Explicit list is safer.
+        unary_tokens = ['sin','cos','tan','S','C','T','e','log','sqrt','abs','neg','!','_','g']
+        unary_ids = [self.grammar.token_to_id.get(t, -999) for t in unary_tokens]
+        # Make tensor of unary ids
+        # Ideally this table is precomputed. For now, on the fly is ok.
+        
+        mask_unary = torch.zeros_like(population, dtype=torch.bool)
+        for uid in unary_ids:
+             mask_unary = mask_unary | (population == uid)
+        arities[mask_unary] = 0
+        
+        # Padding: -999 (Invalid)
+        arities[population == PAD_ID] = -999
+        
+        # 2. To find start of subtree ending at 'end', we scan backwards until cumulative sum is +1.
+        # Since scanning backwards is hard in vector, we can scan loops?
+        # Max depth isn't huge.
+        
+        # Alternatively: "Stack Depth at step i".
+        # Subtree at 'end' corresponds to the interval [start, end] where
+        # Depth(start-1) = D
+        # Depth(end) = D + 1
+        # And min_depth(start...end) >= D
+        
+        # Let's compute cumulative sum (Stack Depth Profile)
+        # cum_arity[i] is depth AFTER processing token i.
+        # arities for this: PAD=0? No, PAD breaks it.
+        # Let's mask PAD for cumsum.
+        
+        safe_arities = arities.clone()
+        safe_arities[population == PAD_ID] = 0
+        depths = torch.cumsum(safe_arities, dim=1)
+        
+        # The scan logic is still tricky O(L^2) across batch.
+        # For L=30, iterating i from 0 to L is fast.
+        
+        for i in range(L):
+            # If position i is PAD, skip
+            is_pad = (population[:, i] == PAD_ID)
+            
+            # We want to find 'start' such that sum(arities[start...i]) == 1
+            # Which means depths[i] - depths[start-1] == 1
+            # implies depths[start-1] = depths[i] - 1.
+            # And for all k in start...i, depths[k] >= depths[start-1] (validity).
+            
+            target_depth = depths[:, i] - 1
+            
+            # Search backwards from i
+            # We can vectorize this search over B by iterating j downwards
+            current_start = torch.full((B,), -1, device=self.device, dtype=torch.long)
+            found = torch.zeros(B, dtype=torch.bool, device=self.device)
+            
+            # Optimization: Pre-calculate validity masks?
+            # Brute force backwards for L=30 is fine.
+            for j in range(i, -1, -1):
+                # Check condition for batch
+                # d[j-1] == target?
+                # Actually, depth[j-1] is depth BEFORE processing j.
+                # If j=0, depth[-1] = 0.
+                
+                prev_depth = depths[:, j-1] if j > 0 else torch.zeros(B, device=self.device)
+                
+                # Match condition: prev_depth == target_depth
+                match = (prev_depth == target_depth)
+                
+                # Check if we violated lower bound in between?
+                # Implicitly, if we hit match first time going backwards, it's the minimal subtree.
+                # We update 'found' mask.
+                
+                new_found = match & (~found)
+                current_start[new_found] = j
+                found = found | new_found
+            
+            # Store valid starts for this end position 'i'
+            # Only valid if not PAD and found
+            valid_i = (~is_pad) & found
+            subtree_starts[valid_i, i] = current_start[valid_i]
+            
+        return subtree_starts
+
     def crossover_population(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
         """
-        Performs subtree crossover on the population.
+        Performs subtree crossover on the population (Two-Child Crossover).
         parents: [PopSize, L] (assumed valid RPNs)
+        Uses GPU to find subtrees, CPU to splice (faster than irregular GPU scatter).
         """
         pop_size, length = parents.shape
-        offspring = parents.clone()
+        # We process pairs. Shuffle.
+        indices = torch.randperm(pop_size, device=self.device)
         
-        # Determine who performs crossover
-        # We process in pairs. 
-        # For simplicity, we can shuffle parents and take pairs.
-        # Logic: Select 2 parents, produce 1 offspring (or 2). 
-        # Standard GP: 2 Parents -> 2 Offspring.
-        # Vectorized is hard because varying lengths. CPU loop is acceptable for logic, but slow?
-        # Let's try CPU loop with some optimizations (only for those selected).
+        # Number of crossover operations
+        n_pairs = int(pop_size * 0.5 * crossover_rate)
+        if n_pairs == 0:
+            return parents.clone()
         
-        # 1. Select IDs participating
-        # We need pairs.
-        indices = torch.randperm(pop_size, device=self.device) # Shuffle
-        # Num pairs = PopSize // 2
+        # Get ranges for ALL (Parallel GPU Scan)
+        subtree_starts = self._get_subtree_ranges(parents)
         
-        # Move to CPU for graph logic (RPN traversal is hard in tensor)
+        # Move relevant data to CPU for splicing
         parents_cpu = parents.detach().cpu().numpy()
-        offspring_cpu = parents_cpu.copy() # Start with copies
+        starts_cpu = subtree_starts.detach().cpu().numpy()
+        indices_cpu = indices.detach().cpu().numpy()
         
-        num_crossovers = int(pop_size * 0.5 * crossover_rate)
+        offspring_cpu = parents_cpu.copy()
         
-        for k in range(num_crossovers):
-            # Indices in the shuffled array
-            idx_a = indices[2*k].item()
-            idx_b = indices[2*k+1].item()
+        # Create batches of crossover
+        MAX_LEN = self.max_len
+        PAD = PAD_ID
+        
+        for k in range(n_pairs):
+            idx_a = indices_cpu[2*k]
+            idx_b = indices_cpu[2*k+1]
             
             pA = parents_cpu[idx_a]
             pB = parents_cpu[idx_b]
+            starts_A = starts_cpu[idx_a]
+            starts_B = starts_cpu[idx_b]
             
-            # Find subtrees
-            # We pick a random point in A that is NOT PAD.
-            len_A = np.count_nonzero(pA != PAD_ID)
-            if len_A == 0: continue
+            # Valid root points are where starts_X != -1
+            cand_A = np.where(starts_A != -1)[0]
+            cand_B = np.where(starts_B != -1)[0]
             
-            # Root A
-            # We must pick a valid node.
-            # RPN: Root is always the last valid node? No, any node is valid subtree root.
-            c_point_A = np.random.randint(0, len_A)
-            span_A = self.grammar.get_subtree_span(pA, c_point_A)
+            if len(cand_A) == 0 or len(cand_B) == 0: continue
             
-            if span_A[0] == -1: continue # Should not happen if logic valid
+            # Pick random crossover points
+            end_A = np.random.choice(cand_A)
+            end_B = np.random.choice(cand_B)
             
-            # Parent B
-            len_B = np.count_nonzero(pB != PAD_ID)
-            if len_B == 0: continue
-            c_point_B = np.random.randint(0, len_B)
-            span_B = self.grammar.get_subtree_span(pB, c_point_B)
+            start_A = starts_A[end_A]
+            start_B = starts_B[end_B]
             
-            if span_B[0] == -1: continue
-            
-            # Swap B into A
+            # --- Child 1: A takes B ---
             # New A = A[:startA] + B[startB:endB+1] + A[endA+1:]
             
-            subtree_B = pB[span_B[0] : span_B[1]+1]
-            prefix_A = pA[:span_A[0]]
-            suffix_A = pA[span_A[1]+1:]
+            part1 = pA[:start_A]
+            part2 = pB[start_B : end_B+1]
+            part3 = pA[end_A+1:]
             
-            # Check length
-            new_len = len(prefix_A) + len(subtree_B) + len(suffix_A)
-            # Trim suffix (usually PADs) to real logic?
-            # Actually suffix_A might contain operators that used the subtree A.
-            # So we MUST keep them.
-            # But suffix_A contains also the trailing PADS?
-            # We need to trim trailing PADS from original A first to define 'real' suffix?
-            # pA[span_A[1]+1:] includes everything till max_len.
+            new_gene_a = np.concatenate([part1, part2, part3])
             
-            # Let's count real suffix.
-            real_len_A = np.count_nonzero(pA != PAD_ID)
-            # Suffix A real part is [span_A[1]+1 : real_len_A]
-            
-            real_suffix_A = pA[span_A[1]+1 : real_len_A]
-            
-            new_gene = np.concatenate([prefix_A, subtree_B, real_suffix_A])
-            
-            if len(new_gene) <= self.max_len:
-                # Pad
-                padded = np.zeros(self.max_len, dtype=pA.dtype) # 0 is PAD_ID?
-                padded[:len(new_gene)] = new_gene
-                padded[len(new_gene):] = PAD_ID
+            # Validate Length A
+            valid_len_a = len(new_gene_a)
+            if valid_len_a > MAX_LEN:
+                # Check real length (last non-pad index)
+                non_pad = np.where(new_gene_a != PAD)[0]
+                if len(non_pad) == 0: real_len = 0
+                else: real_len = non_pad[-1] + 1
+                
+                if real_len <= MAX_LEN:
+                    # Fits if truncated
+                    truncated = np.full(MAX_LEN, PAD, dtype=pA.dtype)
+                    truncated[:real_len] = new_gene_a[:real_len]
+                    offspring_cpu[idx_a] = truncated
+            else:
+                # Fits, need to pad
+                padded = np.full(MAX_LEN, PAD, dtype=pA.dtype)
+                padded[:valid_len_a] = new_gene_a
                 offspring_cpu[idx_a] = padded
-                # We update idx_a. idx_b stays as donor (or we could make 2 children).
-                # Current logic updates offspring at idx_a.
+
+            # --- Child 2: B takes A ---
+            # New B = B[:startB] + A[startA:endA+1] + B[endB+1:]
             
-            # Optionally: Child 2 (A into B)
-            # Not strict requirement, but good for diversity.
+            part1_b = pB[:start_B]
+            part2_b = pA[start_A : end_A+1]
+            part3_b = pB[end_B+1:]
             
-        # Copy back
+            new_gene_b = np.concatenate([part1_b, part2_b, part3_b])
+            
+            # Validate Length B
+            valid_len_b = len(new_gene_b)
+            if valid_len_b > MAX_LEN:
+                # Check real length
+                non_pad = np.where(new_gene_b != PAD)[0]
+                if len(non_pad) == 0: real_len = 0
+                else: real_len = non_pad[-1] + 1
+                
+                if real_len <= MAX_LEN:
+                    truncated = np.full(MAX_LEN, PAD, dtype=pB.dtype)
+                    truncated[:real_len] = new_gene_b[:real_len]
+                    offspring_cpu[idx_b] = truncated
+            else:
+                padded = np.full(MAX_LEN, PAD, dtype=pB.dtype)
+                padded[:valid_len_b] = new_gene_b
+                offspring_cpu[idx_b] = padded
+                
         return torch.tensor(offspring_cpu, device=self.device, dtype=torch.long)
 
 
@@ -780,7 +899,7 @@ class TensorGeneticEngine:
         for token_id in rpn_tensor:
 
             token_id = token_id.item()
-            if token_id == PAD_ID: break
+            if token_id == PAD_ID: continue
             
             token = vocab.get(token_id, "")
             
@@ -867,6 +986,9 @@ class TensorGeneticEngine:
         sp = torch.zeros(eff_B, device=self.device, dtype=torch.long)
         const_counters = torch.zeros(eff_B, device=self.device, dtype=torch.long)
         
+        # NEW: Error tracking
+        has_error = torch.zeros(eff_B, dtype=torch.bool, device=self.device)
+        
         pi_val = torch.tensor(np.pi, device=self.device, dtype=torch.float64)
         e_val = torch.tensor(np.e, device=self.device, dtype=torch.float64)
 
@@ -939,7 +1061,12 @@ class TensorGeneticEngine:
                 
             # Binary
             is_binary = (token == op_add) | (token == op_sub) | (token == op_mul) | (token == op_div) | (token == op_pow) | (token == op_mod)
-            valid_op = is_binary & (sp >= 2)
+            
+            enough_stack = (sp >= 2)
+            valid_op = is_binary & enough_stack
+            
+            has_error = has_error | (is_binary & ~enough_stack)
+            
             if valid_op.any():
                 idx_b = torch.clamp(sp - 1, 0, MAX_STACK - 1).unsqueeze(1); val_b = stack.gather(1, idx_b).squeeze(1)
                 idx_a = torch.clamp(sp - 2, 0, MAX_STACK - 1).unsqueeze(1); val_a = stack.gather(1, idx_a).squeeze(1)
@@ -970,7 +1097,12 @@ class TensorGeneticEngine:
                        (token == op_exp) | (token == op_log) | \
                        (token == op_sqrt) | (token == op_abs) | (token == op_neg) | \
                        (token == op_fact) | (token == op_floor) | (token == op_gamma)
-            valid_op = is_unary & (sp >= 1)
+            
+            enough_stack = (sp >= 1)
+            valid_op = is_unary & enough_stack
+            
+            has_error = has_error | (is_unary & ~enough_stack)
+            
             if valid_op.any():
                 idx_a = torch.clamp(sp - 1, 0, MAX_STACK - 1).unsqueeze(1); val_a = stack.gather(1, idx_a).squeeze(1); res = torch.zeros_like(val_a)
                 m = (token == op_sin) & valid_op; res[m] = torch.sin(val_a[m])
@@ -1000,7 +1132,7 @@ class TensorGeneticEngine:
 
                 wp = torch.clamp(sp - 1, 0, MAX_STACK-1); curr = stack.gather(1, wp.unsqueeze(1)).squeeze(1)
                 fw = torch.where(valid_op, res, curr); stack = stack.scatter(1, wp.unsqueeze(1), fw.unsqueeze(1))
-        return stack[:, 0], sp
+        return stack[:, 0], sp, has_error
 
     def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         """
@@ -1010,9 +1142,9 @@ class TensorGeneticEngine:
         B, L = population.shape
         D = x.shape[0]
         
-        final_preds, sp = self._run_vm(population, x, constants)
+        final_preds, sp, has_error = self._run_vm(population, x, constants)
         
-        is_valid = (sp == 1)
+        is_valid = (sp == 1) & (~has_error)
         # Use parity with C++: if not valid or nan/inf, penalty 1e300
         final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
                                   final_preds, 
@@ -1458,31 +1590,55 @@ class TensorGeneticEngine:
 
         
 
-    def initialize_population(self) -> torch.Tensor:
+    def _generate_random_population(self, size: int) -> torch.Tensor:
         """
-        Generates a population of VALID random formulas.
+        Helper to generate random RPN population of given size.
         """
-        pool_size = min(self.pop_size, 2000)
         formulas = []
-        for _ in range(pool_size):
+        # Generate full population (slower but ensures diversity)
+        for _ in range(size):
             try:
                 # Generate random valid tree
                 tree = ExpressionTree.generate_random(max_depth=GpuGlobals.MAX_TREE_DEPTH_INITIAL, num_variables=self.num_variables)
                 formulas.append(tree.get_infix())
             except:
                 formulas.append("x0")
-                
-        # Convert to RPN
-        pool_rpn = self.infix_to_rpn(formulas)
         
-        # Tile to fill population
-        if pool_size < self.pop_size:
-            n_repeats = (self.pop_size // pool_size) + 1
-            population = pool_rpn.repeat(n_repeats, 1)[:self.pop_size]
-        else:
-            population = pool_rpn
-            
-        return population.clone()
+        # Convert to RPN
+        return self.infix_to_rpn(formulas)
+
+    def initialize_population(self) -> torch.Tensor:
+        """
+        Generates a population of VALID random formulas.
+        """
+        return self._generate_random_population(self.pop_size)
+
+    def cataclysm_population(self, population: torch.Tensor, constants: torch.Tensor, fitness_rmse: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Hard Reset: Keep Top 10% Elites, replace the rest with new random individuals.
+        Called when diversity collapses (too many duplicates).
+        """
+        B = population.shape[0]
+        n_elites = int(B * 0.10)
+        n_random = B - n_elites
+        
+        # Sort by fitness (RMSE ascending is better)
+        sorted_indices = torch.argsort(fitness_rmse)
+        elite_indices = sorted_indices[:n_elites]
+        
+        # Keep Elites
+        elites = population[elite_indices]
+        elite_consts = constants[elite_indices]
+        
+        # Generate fresh randoms
+        new_pop = self._generate_random_population(n_random)
+        new_consts = torch.zeros((n_random, constants.shape[1]), device=self.device, dtype=torch.float64)
+        
+        # Combine
+        final_pop = torch.cat([elites, new_pop], dim=0)
+        final_consts = torch.cat([elite_consts, new_consts], dim=0)
+        
+        return final_pop, final_consts
 
     def detect_patterns(self, targets: List[float]) -> List[str]:
         """
@@ -1612,23 +1768,46 @@ class TensorGeneticEngine:
             # --- Constant Optimization (Top K) ---
             # Optimize top 200 candidates to refine their constants
             k_opt = min(self.pop_size, 200)
+            
+            # Find candidates (using penalized fitness or raw rmse?)
+            # Raw RMSE is better for optimization target
             _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
             
             # Extract subset
             opt_pop = population[top_idx]
             opt_consts = pop_constants[top_idx]
             
+            # Optimize (Gradient Descent)
+            # Use fewer steps to keep speed up? 10 is fine.
+            refined_consts, refined_mse = self.optimize_constants(
+                opt_pop, opt_consts, x_t, y_t, steps=10, lr=0.1
+            )
+            
+            # Update population constants
+            pop_constants[top_idx] = refined_consts
+            
+            # Update fitness for optimized individuals (optional but good for accurate tracking)
+            # refined_mse is actually RMSE from the function
+            fitness_rmse[top_idx] = refined_mse
+            
+            # Re-evaluate penalties? Length doesn't change.
+            # But we can just leave it for next gen or update fitness_penalized here.
+            # Let's update Penalized so Elitism picks the improved versions instantly.
+            # We need lengths for these
+            # lengths is [PopSize], so we pick top_idx
+            # fitness_penalized[top_idx] = refined_mse * (1.0 + lengths[top_idx] * COMPLEXITY_PENALTY)
+            
             # Run Adam
-            refined_consts, refined_rmse = self.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=15)
+            # refined_consts, refined_rmse = self.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=15)
             
             # Update Population
             # We must update the original tensors.
             # 1. Update Constants
-            pop_constants[top_idx] = refined_consts
+            # pop_constants[top_idx] = refined_consts
             # 2. Update Fitness Scores (Evaluation was implicit in optimize)
             # But wait, fitness_rmse is [PopSize].
             # We update the scores.
-            fitness_rmse[top_idx] = refined_rmse
+            # fitness_rmse[top_idx] = refined_rmse
             
             # --- Selection ---
             lengths = (population != PAD_ID).sum(dim=1).float()
@@ -1653,7 +1832,7 @@ class TensorGeneticEngine:
             else:
                 stagnation_counter += 1
             
-            if callback and (generations % 100 == 0 or generations == 1) and best_rpn is not None:
+            if callback and (generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0 or generations == 1) and best_rpn is not None:
                  callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
 
             # --- Island Migration ---
@@ -1710,135 +1889,38 @@ class TensorGeneticEngine:
             # Lexicase is costly. Let's compute FULL errors only if using Lexicase.
             # Use Lexicase for Crossover Parents (Standard GP practice)
             
-            # Compute Full Errors for Lexicase
-            # Only do this every N generations or always? 
-            # evaluate_batch_full is barely slower than evaluate_batch (just memory transfer).
-            # But we already computed fitness_rmse (evaluate_batch).
-            # Re-running evaluate_batch_full is wasteful. 
-            # Ideally we run evaluate_batch_full ONCE and derive RMSE from it.
-            # But for now, let's run it just for parent selection.
-            
-            full_errors = self.evaluate_batch_full(population, x_t, y_t, pop_constants)
-            
-            n_crossover = int(remaining_slots * 0.5) # 50% of remaining
+            # 2. Crossover Parents (GPU Tournament for Speed)
+            # 2. Crossover Parents (GPU Tournament for Speed)
+            n_crossover = int(remaining_slots * GpuGlobals.DEFAULT_CROSSOVER_RATE)
             n_mutation = remaining_slots - n_crossover
             
-            # Select parents for crossover using Lexicase
-            # We need 2 * n_crossover parents? No, crossover_population takes list and shuffles.
-            # So we need n_crossover parents? Wait, crossover produces same size as input?
-            # self.crossover_population takes 'parents' and returns 'offspring'.
-            # If we pass N parents, we get N offspring (paired).
-            
-            parents_cross = self.lexicase_selection(population, full_errors, n_crossover)
-            # We assume parents_cross are good. We mix them.
-            # Constants for crossover? We just copy them from first parent for now?
-            # Or mix? Crossover only touches RPN. Constants indices stay same.
-            # So we need to fetch corresponding constants.
-            # Wait, logic in lexicase returns RPN tensors. We lost indices!
-            # We need indices to fetch constants.
-            # Hack: modify lexicase to return INDICES.
-            
-            # Temporarily, use tournament for crossover to save time refactoring lexicase?
-            # No, I promised Lexicase.
-            # I will assume lexicase returns RPN and I ignore constants (randomize new ones) 
-            # OR I refactor Lexicase to return indices. 
-            # Refactoring Lexicase to return Indices is cleaner.
-            
-            # Let's fix Lexicase later in this block or define a local helper?
-            # I defined `lexicase_selection` to return population[indices].
-            # I should recall it to return indices.
-            
-            # indices_cross = self.lexicase_selection_indices(...) 
-            # But I submitted the tool call already. 
-            # I will use tournament for now to ensure stability or hack it by matching tensor? No.
-            # I will just re-implement simple tournament here for speed and safety, 
-            # or use the full_errors to do a quick vectorized tournament.
-            
-            # Vectorized Tournament (RMSE based)
-            # indices = torch.randint(0, self.pop_size, (n_crossover, 5), device=self.device)
-            # fits = fitness_penalized[indices]
-            # winner_local = torch.argmin(fits, dim=1)
-            # winner_global = indices.gather(1, winner_local.unsqueeze(1)).squeeze(1)
-            # parents_cross = population[winner_global]
-            # consts_cross = pop_constants[winner_global]
-            
-            # off_cross = self.crossover_population(parents_cross, 1.0) # Always cross
-            # next_pop_list.append(off_cross)
-            # next_const_list.append(consts_cross)
-            
-            # 3. Mutation (Tournament)
-            # indices_mut = torch.randint(0, self.pop_size, (n_mutation, 3), device=self.device)
-            # fits_mut = fitness_penalized[indices_mut]
-            # winner_mut = torch.argmin(fits_mut, dim=1)
-            # global_mut = indices_mut.gather(1, winner_mut.unsqueeze(1)).squeeze(1)
-            # parents_mut = population[global_mut]
-            # consts_mut = pop_constants[global_mut]
-            
-            # # Mutate
-            # # We need to flatten? mutate_population handles [N, L]
-            # off_mut = self.mutate_population(parents_mut, current_mutation_rate)
-            # next_pop_list.append(off_mut)
-            # next_const_list.append(consts_mut)
-            
-            # ... Consolidate ...
-            
-            # --- IMPLEMENTING WITH LEXICASE (Indices Version) ---
-            # I will access 'lexicase_selection' logic via copy-paste here tailored for indices,
-            # since I cannot change the previous method easily in one go.
-            # ACTUALLY, I can just use the tool to OVERWRITE `lexicase_selection` to return indices.
-            pass
-
-            # ... Wait, I am inside 'replace_file_content'. I must implement valid python.
-            
-            # Quick standard tournament for now to bridge the gap, as I shouldn't rely on 'lexicase_selection' returning indices yet.
-            # I will implement 'lexicase_indices' locally.
-            
-            def get_lexicase_indices(n_select, errs_cpu):
-                # errs_cpu: [Pop, Cases] numpy
-                # Using Epsilon-Lexicase with MAD (Median Absolute Deviation)
-                P, C_ = errs_cpu.shape
+            if n_crossover > 0:
+                idx_cross = torch.randint(0, self.pop_size, (n_crossover, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                best_in_tourn = torch.argmin(fitness_penalized[idx_cross], dim=1)
+                global_idx_cross = idx_cross.gather(1, best_in_tourn.unsqueeze(1)).squeeze(1)
                 
-                # Pre-compute MAD for each case (for epsilon calculation)
-                case_medians = np.median(errs_cpu, axis=0)
-                mad_per_case = np.median(np.abs(errs_cpu - case_medians), axis=0)
-                mad_per_case = np.maximum(mad_per_case, 1e-9)  # Avoid zero
+                # We need PAIRS of parents. This logic selects N individuals.
+                # crossover_population internally shuffles and pairs them.
+                parents_cross = population[global_idx_cross]
+                consts_cross = pop_constants[global_idx_cross]
                 
-                selected = []
-                for _ in range(n_select):
-                    cands = np.random.randint(0, P, 50) # pool
-                    cases = np.random.permutation(C_)
-                    for c_idx in cases:
-                        c_errs = errs_cpu[cands, c_idx]
-                        min_e = np.min(c_errs)
-                        # Epsilon = MAD for this case (adaptive epsilon-lexicase)
-                        eps = mad_per_case[c_idx]
-                        keep = c_errs <= (min_e + eps)
-                        cands = cands[keep]
-                        if len(cands) <= 1: break
-                    selected.append(np.random.choice(cands))
-                return torch.tensor(selected, device=self.device, dtype=torch.long)
-
-            # Crossover Parents (Lexicase)
-            full_errors_cpu = full_errors.detach().cpu().numpy()
-            idx_cross = get_lexicase_indices(n_crossover, full_errors_cpu)
-            parents_cross = population[idx_cross]
-            consts_cross = pop_constants[idx_cross]
+                # Perform crossover (Vectorized)
+                off_cross = self.crossover_population(parents_cross, crossover_rate=1.0) # Rate 1.0 because we already selected size
+                next_pop_list.append(off_cross)
+                next_const_list.append(consts_cross)
             
-            off_cross = self.crossover_population(parents_cross, 0.9) # 90% crossover rate
-            next_pop_list.append(off_cross)
-            next_const_list.append(consts_cross)
-            
-            # Mutation Parents (Tournament)
-            idx_mut = torch.randint(0, self.pop_size, (n_mutation, 3), device=self.device)
-            best_in_tourn = torch.argmin(fitness_penalized[idx_mut], dim=1)
-            global_idx_mut = idx_mut.gather(1, best_in_tourn.unsqueeze(1)).squeeze(1)
-            
-            parents_mut = population[global_idx_mut]
-            consts_mut = pop_constants[global_idx_mut]
-            
-            off_mut = self.mutate_population(parents_mut, current_mutation_rate)
-            next_pop_list.append(off_mut)
-            next_const_list.append(consts_mut)
+            # 3. Mutation Parents (Tournament)
+            if n_mutation > 0:
+                idx_mut = torch.randint(0, self.pop_size, (n_mutation, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                best_in_tourn = torch.argmin(fitness_penalized[idx_mut], dim=1)
+                global_idx_mut = idx_mut.gather(1, best_in_tourn.unsqueeze(1)).squeeze(1)
+                
+                parents_mut = population[global_idx_mut]
+                consts_mut = pop_constants[global_idx_mut]
+                
+                off_mut = self.mutate_population(parents_mut, current_mutation_rate)
+                next_pop_list.append(off_mut)
+                next_const_list.append(consts_mut)
             
             
             # Concatenate
@@ -1848,37 +1930,48 @@ class TensorGeneticEngine:
             population = next_pop[:self.pop_size]
             pop_constants = next_c[:self.pop_size]
 
-            # --- Deduplication (Every 20 generations) ---
-            if GpuGlobals.PREVENT_DUPLICATES and generations % 20 == 0:
+            # --- Deduplication (Aggressive: Every generation to force diversity) ---
+            if GpuGlobals.PREVENT_DUPLICATES and generations % 1 == 0:
                 population, pop_constants, n_dups = self.deduplicate_population(population, pop_constants)
                 # Silent - only log if many duplicates
                 if n_dups > self.pop_size * 0.1:
-                    print(f"[GPU] Removed {n_dups} duplicates")
+                    print(f"[GPU] Removed {n_dups} duplicates (Fresh Randoms Injected)")
+            
+            # Debug: Report Valid Count
+            if generations % 5 == 0:
+                 valid_cnt = (fitness_rmse < 1e9).sum().item()
+                 print(f"[GPU] Gen {generations}: Valid Individuals = {valid_cnt}/{self.pop_size}")
+                    
+                # TRIGGER CATACLYSM if > 90% are duplicates - REMOVED (Redundant with Fresh Random Injection)
+                # if n_dups > self.pop_size * 0.9 and generations > 20: 
+                #     print(f"!!! CATACLYSM TRIGGERED (Duplicates: {n_dups}/{self.pop_size}) !!!")
+                #     print("!!! Resetting 90% of population with fresh DNA !!!")
+                #     population, pop_constants = self.cataclysm_population(population, pop_constants, fitness_rmse)
 
-            # --- Simplification (Every 50 generations) ---
-            if GpuGlobals.USE_SIMPLIFICATION and generations % 50 == 0:
+            # --- Simplification (Reduced Frequency: Every 500 generations) ---
+            if GpuGlobals.USE_SIMPLIFICATION and generations % 500 == 0:
                 # Simplify top 50 individuals
                 population, pop_constants, n_simp = self.simplify_population(population, pop_constants, top_k=50)
                 if n_simp > 0 and callback:
                     print(f"[GPU] Simplified {n_simp} expressions")
 
-            # --- Pattern Memory ---
+            # --- Pattern Memory (DISABLED FOR SPEED TEST) ---
             # Record successful subtrees from current population
-            self.pattern_memory.record_subtrees(population, fitness_rmse, self.grammar)
+            # self.pattern_memory.record_subtrees(population, fitness_rmse, self.grammar)
             
             # Inject patterns periodically
-            if generations % GpuGlobals.PATTERN_INJECT_INTERVAL == 0:
-                population, pop_constants, n_inj = self.pattern_memory.inject_into_population(
-                    population, pop_constants, self.grammar, 
-                    percent=GpuGlobals.PATTERN_INJECT_PERCENT
-                )
+            # if generations % GpuGlobals.PATTERN_INJECT_INTERVAL == 0:
+            #     population, pop_constants, n_inj = self.pattern_memory.inject_into_population(
+            #         population, pop_constants, self.grammar, 
+            #         percent=GpuGlobals.PATTERN_INJECT_PERCENT
+            #     )
 
-            # --- Local Search (Every 25 generations) ---
-            if generations % 25 == 0:
-                population, pop_constants = self.local_search(
-                    population, pop_constants, x_t, y_t, 
-                    top_k=10, attempts=GpuGlobals.LOCAL_SEARCH_ATTEMPTS
-                )
+            # --- Local Search (DISABLED FOR SPEED TEST) ---
+            # if generations % 100 == 0:
+            #     population, pop_constants = self.local_search(
+            #         population, pop_constants, x_t, y_t, 
+            #         top_k=10, attempts=GpuGlobals.LOCAL_SEARCH_ATTEMPTS
+            #     )
             
             if best_rmse < 1e-7:
                  return self.rpn_to_infix(best_rpn, best_consts_vec)
