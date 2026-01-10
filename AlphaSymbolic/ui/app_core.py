@@ -143,13 +143,13 @@ def load_model(force_reload=False, preset_name=None):
                     break
             
             if has_nans:
-                print(f"⚠️ Modelo corrupto detectado (NaNs) en {source_file}. Eliminando.")
-                try:
-                    os.remove(source_file)
-                    print("✅ Archivo corrupto eliminado.")
-                except OSError as e:
-                    print(f"Error al eliminar archivo: {e}")
-                status = "⚠️ Modelo corrupto eliminado y reiniciado"
+                # print(f"⚠️ Modelo corrupto detectado (NaNs) en {source_file}. Eliminando.")
+                # try:
+                #    os.remove(source_file)
+                #    print("✅ Archivo corrupto eliminado.")
+                # except OSError as e:
+                #    print(f"Error al eliminar archivo: {e}")
+                status = "⚠️ Advertencia: NaNs detectados (pero no borrado)"
             else:
                 # Handle resizing of Positional Encoding (e.g. 50 -> 256)
                 if 'pos_encoder.pe' in state_dict:

@@ -91,7 +91,7 @@ class DataGenerator:
             # Check for validity (no NaNs, Infs, or extremely large values)
             if np.any(np.isnan(y_values)) or np.any(np.isinf(y_values)):
                 continue
-            if np.max(np.abs(y_values)) > 1e6: # Reject too large numbers
+            if np.max(np.abs(y_values)) > 1e4: # Reject too large numbers (1e6 causes NaN gradients)
                 continue
             if np.std(y_values) < 1e-6: # Reject flat lines (too simple)
                  # Optionally keep some, but mostly we want interesting curves
