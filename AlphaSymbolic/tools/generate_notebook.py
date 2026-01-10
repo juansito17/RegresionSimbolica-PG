@@ -1,10 +1,14 @@
-
 import json
 import os
 
+# Get the root directory of the project (parent of AlphaSymbolic and Code)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
+AS_ROOT = os.path.join(PROJECT_ROOT, "AlphaSymbolic")
+
 # Define file paths relative to the script location (AlphaSymbolic/tools/)
 # We want to pull C++ files from ../../Code/src
-CPP_SOURCE_DIR = "../../Code/src"
+CPP_SOURCE_DIR = os.path.join(PROJECT_ROOT, "Code/src")
 CPP_FILES = [
     'AdvancedFeatures.cpp', 'AdvancedFeatures.h',
     'ExpressionTree.cpp', 'ExpressionTree.h',
@@ -24,7 +28,17 @@ PYTHON_FILES = [
     "core/environment.py",
     "core/loss.py",
     "core/gp_bridge.py",
+    "core/gpu_engine.py",
     "core/__init__.py",
+    "core/gpu/__init__.py",
+    "core/gpu/benchmark.py",
+    "core/gpu/config.py",
+    "core/gpu/engine.py",
+    "core/gpu/ensemble.py",
+    "core/gpu/formatting.py",
+    "core/gpu/pareto.py",
+    "core/gpu/pattern_memory.py",
+    "core/gpu/sniper.py",
     "data/synthetic_data.py",
     "data/benchmark_data.py",
     "data/augmentation.py",
@@ -35,6 +49,10 @@ PYTHON_FILES = [
     "search/hybrid_search.py",
     "search/pareto.py",
     "search/__init__.py",
+    "training/train.py",
+    "training/train_enhanced.py",
+    "training/self_play.py",
+    "training/__init__.py",
     "ui/app_core.py",
     "ui/app_search.py",
     "ui/app_training.py",
@@ -46,13 +64,18 @@ PYTHON_FILES = [
     "utils/benchmark_comparison.py",
     "utils/simplify.py",
     "utils/__init__.py",
-    "run_benchmark_feynman.py",
+    "tools/run_benchmark_feynman.py",
+    "run_gpu_console.py",
+    "infinite_search.py",
+    "generate_report.py",
     "app.py"
 ]
 
 DATA_FILES = [
     "data/benchmarks/FeynmanEquations.csv",
-    "data/benchmarks/BonusEquations.csv"
+    "data/benchmarks/BonusEquations.csv",
+    "top_formulas.csv",
+    "pattern_memory.json"
 ]
 
 notebook = {
@@ -140,7 +163,7 @@ for filename in CPP_FILES:
         print(f"Warning: C++ file {local_path} not found.")
 
 # 3. Create CMakeLists.txt (Using local file content)
-cmake_local_path = "../Code/CMakeLists.txt"
+cmake_local_path = os.path.join(PROJECT_ROOT, "Code/CMakeLists.txt")
 if os.path.exists(cmake_local_path):
     with open(cmake_local_path, 'r', encoding='utf-8') as f:
         cmake_content = f.read()
@@ -220,8 +243,9 @@ notebook["cells"].append({
 
 # 5. Embed Python Files
 for rel_path in PYTHON_FILES:
-    if os.path.exists(rel_path):
-        with open(rel_path, "r", encoding="utf-8") as f:
+    local_path = os.path.join(AS_ROOT, rel_path)
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
             content = f.read()
             
         colab_path = f"AlphaSymbolic/{rel_path}"
@@ -239,8 +263,9 @@ for rel_path in PYTHON_FILES:
 
 # 6. Embed Data Files
 for rel_path in DATA_FILES:
-    if os.path.exists(rel_path):
-        with open(rel_path, "r", encoding="utf-8") as f:
+    local_path = os.path.join(AS_ROOT, rel_path)
+    if os.path.exists(local_path):
+        with open(local_path, "r", encoding="utf-8") as f:
             content = f.read()
             
         colab_path = f"AlphaSymbolic/{rel_path}"
@@ -279,18 +304,26 @@ notebook["cells"].append({
     "source": [
         "# Backup Learned Formulas to Drive (Run manually or keep active)\n",
         "import shutil\n",
-        "import time\n",
+        "import os\n",
         "\n",
-        "try:\n",
-        "    src = 'results/learned_formulas.csv'\n",
-        "    dst = '/content/drive/MyDrive/AlphaSymbolic_Models/learned_formulas.csv'\n",
-        "    if os.path.exists(src):\n",
-        "        shutil.copy(src, dst)\n",
-        "        print(f\"✅ Backup successful: {dst}\")\n",
-        "    else:\n",
-        "        print(\"⚠️ No learned formulas found yet.\")\n",
-        "except Exception as e:\n",
-        "    print(f\"❌ Backup failed: {e}\")\n"
+        "DRIVE_PATH = '/content/drive/MyDrive/AlphaSymbolic_Models'\n",
+        "FILES_TO_BACKUP = [\n",
+        "    ('AlphaSymbolic/top_formulas.csv', 'top_formulas.csv'),\n",
+        "    ('AlphaSymbolic/pattern_memory.json', 'pattern_memory.json'),\n",
+        "    ('AlphaSymbolic/top_5_detailed_report.csv', 'top_5_detailed_report.csv'),\n",
+        "    ('AlphaSymbolic/results/learned_formulas.csv', 'learned_formulas.csv')\n",
+        "]\n",
+        "\n",
+        "os.makedirs(DRIVE_PATH, exist_ok=True)\n",
+        "\n",
+        "for src, name in FILES_TO_BACKUP:\n",
+        "    dst = os.path.join(DRIVE_PATH, name)\n",
+        "    try:\n",
+        "        if os.path.exists(src):\n",
+        "            shutil.copy(src, dst)\n",
+        "            print(f\"✅ Backup successful: {name}\")\n",
+        "    except Exception as e:\n",
+        "        print(f\"❌ Backup failed for {name}: {e}\")\n"
     ]
 })
 

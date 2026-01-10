@@ -103,6 +103,29 @@ def save_top_list(top_list):
         df = df.sort_values(by='extrapolation_error', ascending=True)
     df.to_csv(CSV_FILE, index=False)
     print(f"Saved Top {len(df)} to {CSV_FILE}")
+    
+    # Auto-backup if in Colab
+    backup_to_drive()
+
+def backup_to_drive():
+    """
+    If running in Google Colab, copies the top list and pattern memory to Google Drive.
+    """
+    try:
+        import shutil
+        if os.path.exists('/content/drive/MyDrive'):
+            drive_path = '/content/drive/MyDrive/AlphaSymbolic_Models'
+            os.makedirs(drive_path, exist_ok=True)
+            
+            # Files to backup
+            files = [CSV_FILE, PATTERN_FILE]
+            for f in files:
+                if os.path.exists(f):
+                    shutil.copy(f, os.path.join(drive_path, f))
+            # print("  [Backup] Synced to Google Drive.")
+    except Exception as e:
+        # Silently fail if drive not mounted or other issues
+        pass
 
 def main():
     print("--- Infinite Formula Search Script ---")
@@ -264,7 +287,7 @@ def main():
         # We need to be careful about parens.
         # FIX: lgamma in ExpressionTree adds +1 internally (lgamma(|x|+1)).
         # So we use lgamma(x) to represent lgamma(x+1) mathematically.
-        full_formula_str = f"exp({residual_formula_str} + lgamma(x))"
+        full_formula_str = f"exp({residual_formula_str} + lgamma(x0))"
         # print(f"Reconstructed Full Formula: {full_formula_str}")
 
         # 4. Evaluate on FULL RANGE (History + Targets) w/ Reconstructed Formula
@@ -330,6 +353,7 @@ def main():
             # Update Pattern Memory with the new winner
             if update_pattern_memory(pattern_memory, full_formula_str):
                  save_pattern_memory(pattern_memory)
+                 backup_to_drive() # Also backup when pattern memory changes
 
             
             current_best = top_formulas[0].get('rmsle_global', 999)

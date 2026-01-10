@@ -184,7 +184,7 @@ def get_model():
     return MODEL, DEVICE
 
 def save_model():
-    """Save the current model."""
+    """Save the current model and all associated data (formulas, patterns)."""
     global MODEL, CURRENT_PRESET
     if MODEL is not None:
         filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
@@ -192,12 +192,28 @@ def save_model():
         torch.save(MODEL.state_dict(), local_path)
         
         # Backup to Google Drive if available
-        drive_path = "/content/drive/MyDrive/AlphaSymbolic_Models"
         if os.path.exists("/content/drive"):
+            import shutil
+            drive_path = "/content/drive/MyDrive/AlphaSymbolic_Models"
             try:
                 os.makedirs(drive_path, exist_ok=True)
+                
+                # 1. Backup Model
                 drive_filename = os.path.join(drive_path, filename)
-                torch.save(MODEL.state_dict(), drive_filename)
-                print(f"✅ Modelo respaldado en Drive: {drive_filename}")
+                shutil.copy(local_path, drive_filename)
+                
+                # 2. Backup Formula Data
+                FILES_TO_BACKUP = [
+                    ('top_formulas.csv', 'top_formulas.csv'),
+                    ('pattern_memory.json', 'pattern_memory.json'),
+                    ('results/learned_formulas.csv', 'learned_formulas.csv'),
+                    ('top_5_detailed_report.csv', 'top_5_detailed_report.csv')
+                ]
+                
+                for src, name in FILES_TO_BACKUP:
+                    if os.path.exists(src):
+                        shutil.copy(src, os.path.join(drive_path, name))
+                        
+                print(f"✅ Data & Model backed up to Drive: {drive_path}")
             except Exception as e:
                 print(f"⚠️ Error al respaldar en Drive: {e}")
