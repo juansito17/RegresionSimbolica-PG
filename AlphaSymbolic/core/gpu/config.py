@@ -8,7 +8,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
-    USE_LOG_TRANSFORMATION = True
+    USE_LOG_TRANSFORMATION = False
 
     # ----------------------------------------
     # Configuración General del Algoritmo Genético

@@ -52,6 +52,10 @@ class TensorGeneticEngine:
             fitness_threshold=GpuGlobals.PATTERN_RECORD_FITNESS_THRESHOLD,
             min_uses=GpuGlobals.PATTERN_MEM_MIN_USES
         )
+        
+        # --- Persistent Cache for Initial Population ---
+        self._cached_initial_pop = None
+        self._cached_initial_consts = None
 
     # --- Wrappers for backward compatibility and convenience ---
 
@@ -375,8 +379,6 @@ class TensorGeneticEngine:
 
 
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None):
-        start_time = time.time()
-        
         # 1. Data Setup
         if not isinstance(x_values, torch.Tensor):
             x_t = torch.tensor(x_values, dtype=torch.float64, device=self.device)
@@ -401,8 +403,18 @@ class TensorGeneticEngine:
         if y_t.ndim == 2 and y_t.shape[0] == 1: y_t = y_t.squeeze(0)
             
         # 2. Init
-        population = self.initialize_population()
-        pop_constants = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=torch.float64)
+        if self._cached_initial_pop is None:
+            # First time: Generate and cache
+            print("[GPU Engine] Generating 20,000 random formulas (First time, please wait)...")
+            population = self.initialize_population()
+            pop_constants = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=torch.float64)
+            self._cached_initial_pop = population.clone()
+            self._cached_initial_consts = pop_constants.clone()
+        else:
+            # Subsequent times: Instant clone
+            print("[GPU Engine] Reusing cached initial population (Instant).")
+            population = self._cached_initial_pop.clone()
+            pop_constants = self._cached_initial_consts.clone()
         
         # Seeds
         if seeds:
@@ -431,6 +443,7 @@ class TensorGeneticEngine:
         current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
         COMPLEXITY_PENALTY = GpuGlobals.COMPLEXITY_PENALTY
 
+        start_time = time.time()
         while True:
             # Timeout
             if timeout_sec and (time.time() - start_time) >= timeout_sec: break
@@ -592,5 +605,11 @@ class TensorGeneticEngine:
             pop_constants = torch.cat(next_c_list)[:self.pop_size]
                  
         if best_rpn is not None:
-             return self.rpn_to_infix(best_rpn, best_consts_vec)
+             formula = self.rpn_to_infix(best_rpn, best_consts_vec)
+             # Inverse Transform if needed
+             if GpuGlobals.USE_LOG_TRANSFORMATION:
+                 # If we trained on log(y), the formula predicts log(y).
+                 # To predict y, we need exp(formula).
+                 formula = f"exp({formula})"
+             return formula
         return None

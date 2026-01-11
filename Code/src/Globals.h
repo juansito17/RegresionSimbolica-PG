@@ -49,14 +49,14 @@ const std::vector<std::vector<double>> X_VALUES = {
 };extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
 
 // Flag para activar la transformación logarítmica automática
-const bool USE_LOG_TRANSFORMATION = true;
+const bool USE_LOG_TRANSFORMATION = false;
 
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
 // Controla si se utiliza la aceleración por GPU.
 // FORCE_CPU_MODE: Si es true, usa CPU aunque CUDA esté disponible (útil para comparar rendimiento)
-const bool FORCE_CPU_MODE = true;  // Cambiar a 'true' para forzar modo CPU
+const bool FORCE_CPU_MODE = false;  // Cambiar a 'true' para forzar modo CPU
 
 // USE_GPU_ACCELERATION se define automáticamente por CMake si CUDA está disponible
 // Pero si FORCE_CPU_MODE es true, se ignora y usa CPU
@@ -225,5 +225,7 @@ const int DUPLICATE_RETRIES = 10;     // Intentos para generar un individuo úni
 // ============================================================
 std::mt19937& get_rng();
 const double INF = std::numeric_limits<double>::infinity();
+const double GPU_MAX_DOUBLE = 1.7976931348623157e+308; // Max double value
+
 
 #endif // GLOBALS_H

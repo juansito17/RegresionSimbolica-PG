@@ -26,6 +26,7 @@ class GeneticAlgorithm {
         double best_fitness = INF;          // Mejor fitness histórico de la isla
         int duplicates_count = 0;           // Count of duplicate candidates in the last generation
         std::vector<double> fitness_history;// Historial de fitness (opcional)
+        std::vector<double> error_matrices; // Error matrix per individual [PopSize * NumPoints]. (New for Lexicase)
         int id;                             // Identificador de la isla
 
         // Constructor de la isla

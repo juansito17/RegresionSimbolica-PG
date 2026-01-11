@@ -365,7 +365,7 @@ void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
     // Buffer Management for Nodes
     if (total_nodes > d_nodes_cap) {
         if (d_nodes_ptr) cudaFree(d_nodes_ptr);
-        size_t new_cap = total_nodes * 1.5; // Growth factor
+        size_t new_cap = total_nodes * 1.5;
         cudaMalloc(&d_nodes_ptr, new_cap * sizeof(LinearGpuNode));
         d_nodes_cap = new_cap;
     }
@@ -777,6 +777,167 @@ void retrieve_results_sync(
     
     // Switch to other buffer for next generation
     db.current_buffer = 1 - buf;
+}
+
+// ============================================================
+// LEXICASE SELECTION SUPPORT
+// ============================================================
+
+__global__ void calculate_errors_kernel(
+    const LinearGpuNode* __restrict__ d_all_nodes,
+    const int* __restrict__ d_offsets,
+    const int* __restrict__ d_sizes,
+    int total_trees,
+    const double* __restrict__ d_targets,
+    const double* __restrict__ d_x_values,
+    int num_points,
+    int num_vars,
+    double* __restrict__ d_error_matrix // Output: [total_trees * num_points]
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x; // Tree index
+
+    if (idx < total_trees) {
+        int offset = d_offsets[idx];
+        int size = d_sizes[idx];
+        bool valid = true;
+
+        for (int p = 0; p < num_points; ++p) {
+            if (!valid) {
+                 d_error_matrix[idx * num_points + p] = GPU_MAX_DOUBLE;
+                 continue;
+            }
+
+            double stack[64]; 
+            int stack_top = -1;
+
+            for (int i = 0; i < size; ++i) {
+                LinearGpuNode node = d_all_nodes[offset + i];
+                // Reuse interpretation logic (simplified for brevity)
+                 if (node.type == NodeType::Constant) {
+                    stack[++stack_top] = node.value;
+                } else if (node.type == NodeType::Variable) {
+                    int var_idx = node.var_index;
+                    if (var_idx >= num_vars) var_idx = 0;
+                    stack[++stack_top] = d_x_values[p * num_vars + var_idx];
+                } else if (node.type == NodeType::Operator) {
+                     bool is_unary = (node.op == 's' || node.op == 'c' || node.op == 'l' || 
+                                     node.op == 'e' || node.op == '!' || node.op == '_' || node.op == 'g');
+                     if (is_unary) {
+                        if (stack_top < 0) { valid = false; break; }
+                        double val = stack[stack_top--];
+                        double res = 0.0;
+                         switch (node.op) {
+                            case 's': res = sin(val); break;
+                            case 'c': res = cos(val); break;
+                            case 'l': res = (val <= 1e-9) ? GPU_MAX_DOUBLE : log(val); break;
+                            case 'e': res = (val > 700.0) ? GPU_MAX_DOUBLE : exp(val); break;
+                            case '!': res = (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0); break;
+                            case '_': res = floor(val); break;
+                            case 'g': res = (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); break;
+                            default: res = NAN; break;
+                        }
+                        stack[++stack_top] = res;
+                     } else {
+                        if (stack_top < 1) { valid = false; break; }
+                        double r = stack[stack_top--];
+                        double l = stack[stack_top--];
+                        double res;
+                        switch (node.op) {
+                            case '+': res = l + r; break;
+                            case '-': res = l - r; break;
+                            case '*': res = l * r; break;
+                            case '/': res = (fabs(r) < 1e-9) ? GPU_MAX_DOUBLE : l / r; break;
+                            case '^': res = pow(l, r); break;
+                            case '%': res = (fabs(r) < 1e-9) ? GPU_MAX_DOUBLE : fmod(l, r); break;
+                            default: res = NAN; break;
+                        }
+                        stack[++stack_top] = res;
+                     }
+                }
+            }
+            
+            if (!valid || stack_top != 0) {
+                d_error_matrix[idx * num_points + p] = GPU_MAX_DOUBLE;
+                valid = false;
+            } else {
+                double pred = stack[0];
+                if (isnan(pred) || isinf(pred)) {
+                    d_error_matrix[idx * num_points + p] = GPU_MAX_DOUBLE;
+                    valid = false;
+                } else {
+                    double diff = pred - d_targets[p];
+                    d_error_matrix[idx * num_points + p] = fabs(diff);
+                }
+            }
+        }
+    }
+}
+
+void get_population_errors_gpu(
+    const std::vector<LinearGpuNode>& all_nodes,
+    const std::vector<int>& tree_offsets,
+    const std::vector<int>& tree_sizes,
+    const std::vector<double>& targets,
+    const std::vector<std::vector<double>>& x_values,
+    std::vector<double>& flat_errors, 
+    double* d_targets, double* d_x_values,
+    GlobalGpuBuffers& buffers)
+{
+    int total_trees = tree_offsets.size();
+    if (total_trees == 0) return;
+    
+    int num_points = x_values.size();
+    int num_vars = (num_points > 0) ? x_values[0].size() : 0;
+    
+    // Resize Input Buffers if needed
+    size_t total_nodes = all_nodes.size();
+    if (total_nodes > buffers.d_nodes_capacity) {
+        if (buffers.d_nodes) cudaFree(buffers.d_nodes);
+        size_t new_cap = total_nodes * 1.5;
+        cudaMalloc(&buffers.d_nodes, new_cap * sizeof(LinearGpuNode));
+        buffers.d_nodes_capacity = new_cap;
+    }
+    
+    if (total_trees > buffers.d_pop_capacity) {
+        if (buffers.d_offsets) cudaFree(buffers.d_offsets);
+        if (buffers.d_sizes) cudaFree(buffers.d_sizes);
+        if (buffers.d_results) cudaFree(buffers.d_results);
+        
+        size_t new_cap = total_trees * 1.5;
+        cudaMalloc(&buffers.d_offsets, new_cap * sizeof(int));
+        cudaMalloc(&buffers.d_sizes, new_cap * sizeof(int));
+        cudaMalloc(&buffers.d_results, new_cap * sizeof(double));
+        buffers.d_pop_capacity = new_cap;
+    }
+    
+    LinearGpuNode* d_all_nodes = (LinearGpuNode*)buffers.d_nodes;
+    int* d_offsets = (int*)buffers.d_offsets;
+    int* d_sizes = (int*)buffers.d_sizes;
+    
+    cudaMemcpyAsync(d_all_nodes, all_nodes.data(), total_nodes * sizeof(LinearGpuNode), cudaMemcpyHostToDevice, (cudaStream_t)buffers.cuda_stream);
+    cudaMemcpyAsync(d_offsets, tree_offsets.data(), total_trees * sizeof(int), cudaMemcpyHostToDevice, (cudaStream_t)buffers.cuda_stream);
+    cudaMemcpyAsync(d_sizes, tree_sizes.data(), total_trees * sizeof(int), cudaMemcpyHostToDevice, (cudaStream_t)buffers.cuda_stream);
+    
+    // Calculate Error Matrix (Separate Buffer)
+    double* d_error_matrix;
+    size_t matrix_size = (size_t)total_trees * num_points;
+    cudaMalloc(&d_error_matrix, matrix_size * sizeof(double));
+
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (total_trees + threadsPerBlock - 1) / threadsPerBlock;
+    
+    calculate_errors_kernel<<<blocksPerGrid, threadsPerBlock, 0, (cudaStream_t)buffers.cuda_stream>>>(
+        d_all_nodes, d_offsets, d_sizes, total_trees,
+        d_targets, d_x_values, num_points, num_vars, 
+        d_error_matrix 
+    );
+    
+    // Copy back
+    flat_errors.resize(matrix_size);
+    cudaMemcpyAsync(flat_errors.data(), d_error_matrix, matrix_size * sizeof(double), cudaMemcpyDeviceToHost, (cudaStream_t)buffers.cuda_stream);
+    
+    cudaStreamSynchronize((cudaStream_t)buffers.cuda_stream);
+    cudaFree(d_error_matrix);
 }
 
 #endif // USE_GPU_ACCELERATION_DEFINED_BY_CMAKE

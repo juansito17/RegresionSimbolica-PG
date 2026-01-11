@@ -121,5 +121,13 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
 std::pair<std::string, double> detect_target_pattern(const std::vector<double>& targets);
 NodePtr generate_pattern_based_tree(const std::string& pattern_type, double pattern_value);
 
+// Epsilon Lexicase Selection
+std::vector<int> epsilon_lexicase_selection(
+    int num_parents_needed, 
+    int current_pop_size,
+    const std::vector<double>& error_matrix, // [PopSize * NumPoints]
+    int num_points,
+    int num_vars
+);
 
 #endif // ADVANCEDFEATURES_H

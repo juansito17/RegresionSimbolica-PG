@@ -454,3 +454,97 @@ NodePtr generate_pattern_based_tree(const std::string& pattern_type, double patt
      }
     return nullptr; // No pattern tree generated
 }
+
+//---------------------------------
+// Epsilon Lexicase Selection
+//---------------------------------
+std::vector<int> epsilon_lexicase_selection(
+    int num_parents_needed, 
+    int current_pop_size,
+    const std::vector<double>& error_matrix, // [PopSize * NumPoints]
+    int num_points,
+    int num_vars
+) {
+    if (current_pop_size == 0 || num_points == 0) return {};
+    if (num_parents_needed == 0) return {};
+
+    // 1. Calculate Epsilons for each case
+    std::vector<double> epsilons(num_points);
+    std::vector<double> column_errors; 
+    column_errors.reserve(current_pop_size);
+    
+    for(int p=0; p<num_points; ++p) {
+        column_errors.clear();
+        for(int i=0; i<current_pop_size; ++i) {
+             column_errors.push_back(error_matrix[i * num_points + p]); // Errors are already absolute/squared
+        }
+        
+        // Calculate Median
+        if (column_errors.empty()) { epsilons[p] = 0.0; continue; }
+        
+        size_t mid = current_pop_size / 2;
+        std::nth_element(column_errors.begin(), column_errors.begin() + mid, column_errors.end());
+        double median = column_errors[mid];
+        
+        // Calculate MAD
+        for(int i=0; i<current_pop_size; ++i) {
+             column_errors[i] = std::fabs(column_errors[i] - median);
+        }
+        std::nth_element(column_errors.begin(), column_errors.begin() + mid, column_errors.end());
+        epsilons[p] = column_errors[mid];
+    }
+    
+    // 2. Select Parents
+    std::vector<int> selected_parents;
+    selected_parents.reserve(num_parents_needed);
+    
+    std::vector<int> candidates;
+    candidates.reserve(current_pop_size);
+    
+    std::vector<int> cases(num_points);
+    std::iota(cases.begin(), cases.end(), 0);
+    
+    auto& rng = get_rng();
+
+    for(int n=0; n<num_parents_needed; ++n) {
+        // Reset candidates
+        candidates.resize(current_pop_size);
+        std::iota(candidates.begin(), candidates.end(), 0);
+        
+        // Shuffle cases for random order
+        std::shuffle(cases.begin(), cases.end(), rng);
+        
+        // Filter candidates
+        for(int case_idx : cases) {
+            if(candidates.size() <= 1) break; // Optimized early exit
+            
+            // Find min error among current candidates
+            double min_err = 1e300;
+            for(int cand : candidates) {
+                double err = error_matrix[cand * num_points + case_idx];
+                if(err < min_err) min_err = err;
+            }
+            
+            double threshold = min_err + epsilons[case_idx];
+            
+            // Filter in-place
+            int write_idx = 0;
+            for(int read_idx=0; read_idx < candidates.size(); ++read_idx) {
+                int cand = candidates[read_idx];
+                if (error_matrix[cand * num_points + case_idx] <= threshold) {
+                    candidates[write_idx++] = cand;
+                }
+            }
+            candidates.resize(write_idx);
+        }
+        
+        // Pick random from remaining candidates
+        if (candidates.empty()) {
+            selected_parents.push_back(std::uniform_int_distribution<int>(0, current_pop_size-1)(rng));
+        } else {
+             int winner_idx = std::uniform_int_distribution<int>(0, candidates.size()-1)(rng);
+             selected_parents.push_back(candidates[winner_idx]);
+        }
+    }
+    return selected_parents;
+}

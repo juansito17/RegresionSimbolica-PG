@@ -53,8 +53,8 @@ BENCHMARKS = [
 # Config
 POPULATION = 20000
 GENERATIONS = 50
-TIMEOUT_SEC = 20
-RUNS_PER_BENCHMARK = 3
+TIMEOUT_SEC = 10
+RUNS_PER_BENCHMARK = 1
 
 class BenchmarkRunner:
     def __init__(self):
@@ -90,7 +90,7 @@ class BenchmarkRunner:
                 # Actually bridge says: checks shape. If samples > features, transposed.
                 # So passing X directly (Samples, Features) should work and be auto-transposed by bridge logic.
                 y_values=Y_list,
-                seeds=[],
+                seeds=[prob['seed_formula']] if prob.get('seed_formula') else [],
                 timeout_sec=TIMEOUT_SEC
             )
             # The bridge doesn't accept pop/gens args directly in 'run', it uses internal defaults or build config.
@@ -147,6 +147,7 @@ class BenchmarkRunner:
             best_formula_str = self.gpu_engine.run(
                 x_values=X_torch, 
                 y_values=Y_torch, 
+                seeds=[prob['seed_formula']] if prob.get('seed_formula') else [],
                 timeout_sec=TIMEOUT_SEC
             )
             

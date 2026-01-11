@@ -42,6 +42,8 @@ def _run_gp_worker(args):
             return {'formula': result, 'rmse': 999.0, 'status': 'eval_error'}
     
     return {'formula': None, 'rmse': 1e9, 'status': 'failed'}
+# Optimized Cache for GPU Engine to avoid startup overhead
+_GPU_ENGINE_CACHE = {}
 
 def hybrid_solve(
     x_values: np.ndarray,
@@ -55,7 +57,8 @@ def hybrid_solve(
     num_variables: int = 1,
     extra_seeds: Optional[List[str]] = None,
     max_neural_seeds: Optional[int] = None,
-    random_seed_selection: bool = False
+    random_seed_selection: bool = False,
+    use_gpu_gp: bool = True
 ) -> Dict[str, Any]:
     """
     Solves Symbolic Regression using a Hybrid Neuro-Evolutionary approach with Parallel GP.
@@ -66,7 +69,10 @@ def hybrid_solve(
     
     # 1. Neural Beam Search (Phase 1)
     # print(f"[Phase 1] Neural Beam Search (Width={beam_width})...")
-    neural_results = beam_solve(x_values, y_values, model, device, beam_width=beam_width, num_variables=num_variables)
+    if model is not None:
+        neural_results = beam_solve(x_values, y_values, model, device, beam_width=beam_width, num_variables=num_variables)
+    else:
+        neural_results = None
     
     seeds = []
     
@@ -126,10 +132,17 @@ def hybrid_solve(
 
     # A. Launch GPU Engine
     # ---------------------------------
-    if TensorGeneticEngine:
+    if TensorGeneticEngine and use_gpu_gp:
         try:
-            # Initialize Engine
-            gpu_engine = TensorGeneticEngine(pop_size=20000, n_islands=20, device=device)
+            # Use cached engine if available
+            cache_key = (str(device), 20000, num_variables) 
+            if cache_key in _GPU_ENGINE_CACHE:
+                gpu_engine = _GPU_ENGINE_CACHE[cache_key]
+            else:
+                # Initialize Engine once
+                gpu_engine = TensorGeneticEngine(pop_size=20000, n_islands=20, device=device, num_variables=num_variables)
+                _GPU_ENGINE_CACHE[cache_key] = gpu_engine
+                
             print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds...")
             
             # Run Evolution
@@ -157,6 +170,20 @@ def hybrid_solve(
     else:
         print("[Phase 2] TensorGeneticEngine not available. Falling back to CPU.")
         # Fallback to CPU workers if GPU not imported
+        # chunks logic
+        if not seeds:
+             # If no seeds, generating from scratch? 
+             # GP Engine (C++) generates random population if seeds are empty.
+             # We just pass empty lists to workers.
+             # But we need at least 1 chunk per worker to trigger it.
+             chunk_list = [[] for _ in range(max_workers)]
+        else:
+             # Split seeds
+             k, m = divmod(len(seeds), max_workers)
+             chunk_list = [seeds[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(max_workers)]
+             
+        cpu_chunks = chunk_list 
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
             for chunk in cpu_chunks:
                 args = (x_list, y_list, chunk, gp_timeout, gp_binary_path)

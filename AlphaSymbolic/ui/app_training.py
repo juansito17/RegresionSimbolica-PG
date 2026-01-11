@@ -536,7 +536,8 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                                 x_data, y_data, MODEL, DEVICE,
                                 beam_width=20,
                                 gp_timeout=15,    # Increased from 5s to 15s
-                                num_variables=int(num_variables)
+                                num_variables=int(num_variables),
+                                use_gpu_gp=False  # CPU is faster for small sequential problems in training
                             )
                             
                             if gp_result and gp_result.get('formula'):
@@ -1165,7 +1166,8 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                         gp_timeout=gp_timeout,
                         gp_binary_path=None,
                         max_workers=max_workers,      # Parallel Workers (Mission 1)
-                        num_variables=iter_num_vars
+                        num_variables=iter_num_vars,
+                        use_gpu_gp=False              # CPU is faster for Training loops
                     )
                     
                     # --- UI UPDATE: LIVE STATS ---

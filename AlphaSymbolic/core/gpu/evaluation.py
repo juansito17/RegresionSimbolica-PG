@@ -185,7 +185,7 @@ class GPUEvaluator:
         all_rmse = []
         
         # Pre-process Target
-        y_target_chunk = y_target.unsqueeze(0) # [1, N]
+        y_target_chunk = y_target.flatten().unsqueeze(0) # [1, N]
         
         # Transpose X for Cupy VM: [N, Vars]
         # cupy_vm expects x as [Samples, Features] and expands population against it
@@ -239,13 +239,29 @@ class GPUEvaluator:
         Evaluates population with Autograd enabled to return Loss [PopSize].
         Supports backprop to constants.
         """
+        y_flat = y_target.flatten()
+        n_samples = y_flat.shape[0]
+        
+        # Robust Shape Detection
+        if x.dim() == 1:
+            x = x.unsqueeze(1) # [Samples, 1]
+            
+        if x.dim() == 2:
+            if x.shape[0] == n_samples:
+                # [Samples, Vars]
+                pass
+            elif x.shape[1] == n_samples:
+                # [Vars, Samples]
+                x = x.T
+        
+        N_samples = x.shape[0]
         final_preds, sp, has_error = self._run_vm(population, x, constants)
         is_valid = (sp == 1) & (~has_error)
         
-        # Reshape to [B, D]
-        valid_matrix = is_valid.view(population.shape[0], x.shape[0])
-        preds = final_preds.view(population.shape[0], x.shape[0])
-        target = y_target.unsqueeze(0).expand_as(preds)
+        # Reshape to [B, N_samples]
+        valid_matrix = is_valid.view(population.shape[0], N_samples)
+        preds = final_preds.view(population.shape[0], N_samples)
+        target = y_target.flatten().unsqueeze(0).expand_as(preds)
         
         sq_err = (preds - target)**2
         sq_err = torch.clamp(sq_err, max=1e10)
@@ -256,20 +272,25 @@ class GPUEvaluator:
     
     def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         B, L = population.shape
+        y_flat = y_target.flatten()
+        n_samples = y_flat.shape[0]
         
         # Robust Shape Detection (Same as evaluate_batch)
+        if x.dim() == 1:
+            x = x.unsqueeze(1)
+
         if x.dim() == 2:
-            if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
-                # Matches [Vars, Samples]
+            if x.shape[0] == n_samples:
+                # [Samples, Vars]
                 pass
-            elif x.shape[0] == y_target.shape[0]:
-                # Matches [Samples, Vars] -> Transpose to [Vars, Samples] for consistency
+            elif x.shape[1] == n_samples:
+                # [Vars, Samples]
                 x = x.T
         
-        N_vars, D = x.shape # D is Samples
+        D = x.shape[0] # Samples
         
         # VM expects [Samples, Vars]
-        x_for_vm = x.T
+        x_for_vm = x
         
         final_preds, sp, has_error = self._run_vm(population, x_for_vm, constants) 
         is_valid = (sp == 1) & (~has_error)
@@ -280,7 +301,7 @@ class GPUEvaluator:
         
         # Reshape to [B, D]
         preds_matrix = final_preds.view(B, D)
-        target_matrix = y_target.unsqueeze(0).expand(B, -1)
+        target_matrix = y_target.flatten().unsqueeze(0).expand(B, -1)
         abs_err = torch.abs(preds_matrix - target_matrix)
         
         abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
