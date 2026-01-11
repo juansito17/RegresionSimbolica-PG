@@ -273,35 +273,41 @@ class GPUOperators:
         if not GpuGlobals.PREVENT_DUPLICATES:
             return population, constants, 0
         
-        # GPU Accelerated Deduplication
-        # torch.unique on dim=0 works for tensors.
-        # However, for very large populations, even this might be heavy, but much fast than CPU loop.
+        # GPU Accelerated Deduplication (Probabilistic Hashing)
+        # 1. Compute Hash for each individual (Row)
+        # Using pre-computed random weights for semantic hashing
+        if not hasattr(self, 'dedup_weights'):
+             # Lazy init
+             self.dedup_weights = torch.randint(-9223372036854775807, 9223372036854775807, (self.max_len,), device=self.device, dtype=torch.long)
+             
+        # Hash: (B, L) * (L,) -> Sum -> (B,)
+        # Use simple dot product equivalent with implicit wrapping for int64
+        # We assume max_len matches population L. If L < max_len?
+        curr_L = population.shape[1]
+        if curr_L != self.dedup_weights.shape[0]:
+             # Resize or re-init?
+             # Just slice if smaller, or re-init if larger
+             if curr_L > self.dedup_weights.shape[0]:
+                 self.dedup_weights = torch.randint(..., curr_L) # reinit
+             weights = self.dedup_weights[:curr_L]
+        else:
+             weights = self.dedup_weights
+             
+        hashes = (population * weights).sum(dim=1)
         
-        # Method:
-        # 1. Get unique elements and inverse indices
-        # elements: (U, L), inverse: (N,) where N=pop_size
-        _, inverse_indices = torch.unique(population, sorted=False, return_inverse=True, dim=0)
+        # 2. Unique on Hashes (1D is fast)
+        # return_inverse gives indices such that hashes = unique[inverse]
+        _, inverse_indices = torch.unique(hashes, sorted=False, return_inverse=True)
         
-        # 2. Find first occurrence of each unique index
-        # We want to identify *duplicates*, i.e., indices that are NOT the first occurrence.
-        # scatter_reduce or simply iterating unique helps? 
-        # Actually, if we sort inverse_indices, we can see repeats.
-        
-        # Efficient way to find duplicates without leaving GPU:
-        # Create a "seen" mask? No.
-        # Use inverse indices.
-        
-        # Trick:
-        # 1. Sort the inverse indices and keep original indices
+        # 3. Find Duplicates
+        # Sort inverse indices to find groups of identical hashes
         sorted_inv, sorted_idx = torch.sort(inverse_indices)
         
-        # 2. Compute difference between adjacent inverse indices in sorted array
-        # Duplicates will have diff=0
+        # Mask where sorted_inv[i] == sorted_inv[i-1] -> Duplicate
         mask_dup = torch.zeros_like(sorted_inv, dtype=torch.bool)
         mask_dup[1:] = (sorted_inv[1:] == sorted_inv[:-1])
         
-        # 3. Get indices to replace
-        # sorted_idx[mask_dup] gives the original indices of duplicates
+        # Indices of duplicates (in original population)
         dup_indices = sorted_idx[mask_dup]
         n_dups = dup_indices.shape[0]
         
@@ -313,7 +319,12 @@ class GPUOperators:
         
         # Generate replacements
         fresh_pop = self.generate_random_population(n_dups)
-        fresh_consts = torch.randn(n_dups, constants.shape[1], device=self.device, dtype=torch.float64)
+        
+        # Constants for replacements?
+        # If constants are [B, K]. 
+        # fresh_pop needs fresh constants.
+        K = constants.shape[1]
+        fresh_consts = torch.randn(n_dups, K, device=self.device, dtype=torch.float64)
         
         pop_out[dup_indices] = fresh_pop
         const_out[dup_indices] = fresh_consts

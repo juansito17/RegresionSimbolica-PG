@@ -69,13 +69,10 @@ class GPUEvaluator:
             # But simpler: pass empty tensor [B, 0]
             constants = torch.zeros((population.shape[0], 0), device=self.device, dtype=torch.float64)
             
-        from .jit_vm import run_vm_jit
         
-        # Collect IDs for JIT
+        # Collect IDs for JIT/Cupy
         # We need these to be ints.
         # Operators
-        op_add = self.grammar.token_to_id['+']
-        op_sub = self.grammar.token_to_id['-']
         op_add = self.grammar.token_to_id.get('+', -999)
         op_sub = self.grammar.token_to_id.get('-', -999)
         op_mul = self.grammar.token_to_id.get('*', -999)

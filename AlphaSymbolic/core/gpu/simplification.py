@@ -3,6 +3,12 @@ import torch
 from typing import Tuple
 from .config import GpuGlobals
 
+try:
+    import symengine
+    SYMENGINE_AVAILABLE = True
+except ImportError:
+    SYMENGINE_AVAILABLE = False
+
 # SymPy for simplification
 try:
     import sympy
@@ -31,17 +37,31 @@ class GPUSimplifier:
             if infix == "Invalid" or not infix:
                 return rpn_tensor, constants, False
             
-            # 2. SymPy Parse
+            # 2. Parse (SymEngine or SymPy)
             sym_vars = {v: symbols(v) for v in self.grammar.active_variables}
-            # Alias x -> x0 if needed
             if 'x0' in sym_vars: sym_vars['x'] = sym_vars['x0']
             
             expr_str = infix.replace('^', '**').replace('lgamma', 'loggamma')
             
-            try:
-                expr = parse_expr(expr_str, local_dict=sym_vars)
-            except:
-                expr = sympify(expr_str, locals=sym_vars)
+            # Use SymEngine if available for fast parsing
+            parsed = False
+            expr = None
+            
+            if SYMENGINE_AVAILABLE:
+                try:
+                    # SymEngine parsing
+                    se_expr = symengine.sympify(expr_str)
+                    # Convert to SymPy for full simplification features (nsimplify)
+                    expr = sympy.sympify(se_expr, locals=sym_vars)
+                    parsed = True
+                except:
+                    parsed = False
+            
+            if not parsed:
+                try:
+                    expr = parse_expr(expr_str, local_dict=sym_vars)
+                except:
+                    expr = sympify(expr_str, locals=sym_vars)
             
             # 3. Simplify
             simplified = simplify(expr)
@@ -103,22 +123,114 @@ class GPUSimplifier:
             return rpn_tensor, constants, False
 
     def simplify_population(self, population: torch.Tensor, constants: torch.Tensor, top_k: int = None) -> Tuple[torch.Tensor, torch.Tensor, int]:
-        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION:
+        if not GpuGlobals.USE_SIMPLIFICATION:
             return population, constants, 0
         
         if top_k is None:
             top_k = max(1, int(population.shape[0] * 0.1))
+            
+        # Initialize Cache and Weights if needed
+        if not hasattr(self, 'cache'):
+            self.cache = {} # Hash -> (RPN List, Const List)
+            # Use a limited size cache to prevent OOM over long runs?
+            # 100k items is fine.
+            
+        if not hasattr(self, 'hash_weights'):
+             # Create weights for hashing (max_len)
+             L = population.shape[1]
+             self.hash_weights = torch.randint(-9223372036854775807, 9223372036854775807, (L,), device=self.device, dtype=torch.long)
+
+        # Compute Hashes for Top K
+        # Slice inputs
+        pop_slice = population[:top_k] # Assume sorted by fitness? 
+        # engine.py sorts by valid/fitness usually.
+        # But here we just take first k rows.
+        
+        # Ensure weights match L
+        curr_L = population.shape[1]
+        if self.hash_weights.shape[0] < curr_L:
+             self.hash_weights = torch.randint(-9223372036854775807, 9223372036854775807, (curr_L,), device=self.device, dtype=torch.long)
+        weights = self.hash_weights[:curr_L]
+        
+        hashes = (pop_slice * weights).sum(dim=1) # [K]
+        hashes_cpu = hashes.cpu().numpy()
         
         n_simplified = 0
         pop_out = population.clone()
         const_out = constants.clone()
         
+        # Indices to process
+        process_indices = []
+        process_hashes = []
+        
         for i in range(min(top_k, population.shape[0])):
-            new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
-            if success:
-                pop_out[i] = new_rpn
-                const_out[i] = new_consts
-                n_simplified += 1
+            h = hashes_cpu[i]
+            if h in self.cache:
+                # Cache Hit
+                cached_rpn, cached_consts = self.cache[h]
+                # Convert back to tensor? No, cache should store python lists or arrays for memory?
+                # Or store tensor on CPU?
+                # Storing tensor on GPU is fast.
+                # cached_rpn is [L], consts is [K]
+                
+                # Check lengths
+                if len(cached_rpn) > pop_out.shape[1]:
+                     # If cached is longer than current max_len, skip or resize?
+                     # Simplification usually reduces length.
+                     pass 
+                else:
+                    # Write to output
+                    # Pad cached_rpn to L
+                    L = pop_out.shape[1]
+                    rpn_t = torch.tensor(cached_rpn, device=self.device) if not isinstance(cached_rpn, torch.Tensor) else cached_rpn
+                    const_t = torch.tensor(cached_consts, device=self.device) if not isinstance(cached_consts, torch.Tensor) else cached_consts
+                    
+                    if rpn_t.shape[0] < L:
+                         pop_out[i, :rpn_t.shape[0]] = rpn_t
+                         pop_out[i, rpn_t.shape[0]:] = PAD_ID
+                    else:
+                         pop_out[i] = rpn_t[:L]
+                         
+                    # Constants
+                    K = const_out.shape[1]
+                    if const_t.shape[0] < K:
+                        const_out[i, :const_t.shape[0]] = const_t
+                        const_out[i, const_t.shape[0]:] = 0
+                    else:
+                        const_out[i] = const_t[:K]
+                        
+                    n_simplified += 1
+            else:
+                # Cache Miss
+                process_indices.append(i)
+                process_hashes.append(h)
+        
+        # Process duplicates
+        # If we have multiple misses with SAME hash (duplicates in top k not caught by dedup?), 
+        # we simplify once.
+        # But Dedup runs before this. So hashes should be unique.
+        
+        for i, h in zip(process_indices, process_hashes):
+             new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
+             if success:
+                 pop_out[i] = new_rpn
+                 const_out[i] = new_consts
+                 n_simplified += 1
+                 
+                 # Update Cache
+                 # Store as CPU list to save GPU memory?
+                 # Or keeps GPU tensors if space allows. 
+                 # Let's verify size. 100k tensors is heavy?
+                 # 100k * 50 ints. 40MB. 
+                 # 100k small tensors -> Overhead.
+                 # Better store as Python list or bytearray.
+                 self.cache[h] = (new_rpn.tolist(), new_consts.tolist())
+                 
+        # Limit cache size
+        if len(self.cache) > 100000:
+            # Clear half? Random?
+            # SimpleDict clear
+            self.cache.clear()
         
         return pop_out, const_out, n_simplified
 
