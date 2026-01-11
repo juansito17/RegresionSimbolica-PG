@@ -19,17 +19,15 @@
 // Se han filtrado valores N<4 donde Q(N) es 0 o pequeño irrelevante.
 
 // MODIFICADO: RAW_TARGETS contiene los datos crudos. TARGETS se generará en runtime.
-const std::vector<double> RAW_TARGETS = {2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884};
+const std::vector<double> RAW_TARGETS = {
+    1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 
+    2680, 14200, 73712, 365596, 2279184, 14772512, 
+    95815104, 666090624, 4968057848, 39029188884, 
+    314666222712, 2691008701644, 24233937684440, 227514171973736, 2207893435808352
+};
 // MODIFICADO: X_VALUES ahora es vector<vector<double>> para soporte multivariable.
 // Inicializador por defecto para problema univariable.
 const std::vector<std::vector<double>> X_VALUES = {
-    {1, 1, 1},   // 1
-    {2, 2, 0},   // 2
-    {3, 3, 1},   // 3
-    {4, 4, 0},   // 4
-    {5, 5, 1},   // 5
-    {6, 0, 0},   // 6
-    {7, 1, 1},   // 7
     {8, 2, 0},   // 8
     {9, 3, 1},   // 9
     {10, 4, 0},  // 10
@@ -47,12 +45,11 @@ const std::vector<std::vector<double>> X_VALUES = {
     {22, 4, 0},  // 22
     {23, 5, 1},  // 23
     {24, 0, 0},  // 24
-    {25, 1, 1},  // 25
-    {26, 2, 0}   // 26
+    {25, 1, 1}   // 25
 };extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
 
 // Flag para activar la transformación logarítmica automática
-const bool USE_LOG_TRANSFORMATION = false;
+const bool USE_LOG_TRANSFORMATION = true;
 
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
@@ -80,8 +77,8 @@ const int NUM_ISLANDS = 5;               // Menos islas = más foco por isla
 const int MIN_POP_PER_ISLAND = 10;        
 
 // --- Fórmula Inicial ---
-const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "log((x1+exp((((((1.28237193+((x0+2.59195138)+8.54688985))*x0)+(log((((x2/-0.99681346)-(x0-8.00219939))/(0.35461932-x2)))+(x0+(88.95319019/((x0+x0)+x0)))))-x1)/((exp(exp(((exp(x2)*(1.39925709/x0))^exp(x0))))+0.76703064)*6.05423753)))))";
+const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
+const std::string INITIAL_FORMULA_STRING = "log((((3.69373448^(x0-4.80302398))+((x0^1.42745576)^x2))+(8.02882709^((x0-4.27302433)-3.94622166))))";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas

@@ -75,7 +75,7 @@ def optimize_constants(tree, x_data, y_data, method='L-BFGS-B', initial_guess=No
             x0,
             method=method,
             bounds=bounds if method in ['L-BFGS-B', 'SLSQP'] else None,
-            options={'maxiter': 1000, 'disp': False}
+            options={'maxiter': 100, 'disp': False}
         )
         
         # Build final constants dict

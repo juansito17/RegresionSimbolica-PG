@@ -155,8 +155,11 @@ def main():
         
         # 1. Random Sampling
         # Ensure we pick at least MIN_SAMPLE_SIZE points
-        # USER REQUEST: Start from n > 4 (Indices >= 4, since X starts at 1)
-        valid_indices = np.arange(4, len(X_FULL)) # 4, 5, ... end
+        # USER REQUEST: Train SOLO on ODDS (N>=8)
+        # 1. Filter for N >= 8
+        # 2. Filter for N % 2 != 0
+        mask_valid = (X_FULL >= 8) & (X_FULL % 2 != 0)
+        valid_indices = np.where(mask_valid)[0]
         
         # Adjust k if valid pool is small
         pool_size = len(valid_indices)
@@ -167,105 +170,161 @@ def main():
         x_sample = X_FULL[indices]
         y_sample = Y_FULL[indices]
         
-        print(f"[Iter {iteration}] Sampling {k} pts...", end=" ")
+        # USER REQUEST: Parity Split - Odds Only
+        # We don't need x2 (parity) anymore as it's constant 1.
+        # x0 = n
+        # x1 = n % 6
+        # Shape: (k, 2)
+        x_features = np.zeros((len(x_sample), 2), dtype=np.float64)
+        x_features[:, 0] = x_sample
+        x_features[:, 1] = x_sample % 6
         
-        # Prepare Seeds (Evolutionary Feedback)
+        print(f"[Iter {iteration}] Sampling {k} pts (Odds >=8)...", end=" ")
+        
+        # ... (Seeds Logic unchanged) ...
         # Prepare Seeds (Evolutionary Feedback)
         extra_seeds = []
         if top_formulas:
-            # User request: "pick 3 samples from top 5" (Updated from top 3)
+            # User request: "8 workers"
+            # W0..W4 -> Top 5 formulas
             candidates = top_formulas[:5]
             candidate_formulas = [c['formula'] for c in candidates]
-            
-            if candidate_formulas:
-                # Sample 3 seeds with replacement 
-                # (allows giving more compute to the very best if picked twice)
-                chosen = random.choices(candidate_formulas, k=3)
-                extra_seeds.extend(chosen)
-                print(f"+ {len(chosen)} Seeds")
+            extra_seeds.extend(candidate_formulas)
+            print(f"+ {len(extra_seeds)} Best")
         
-        # Inject Patterns from Memory (The Library)
         if pattern_memory:
-            # Pick top 3 most frequent patterns
-            # Sort by count desc
             sorted_patterns = sorted(pattern_memory.items(), key=lambda x: x[1], reverse=True)
-            top_patterns = [p[0] for p in sorted_patterns[:3]]
-            if top_patterns:
-                extra_seeds.extend(top_patterns)
-                # print(f"+ {len(top_patterns)} Architectures")
+            candidate_pool = [p[0] for p in sorted_patterns[:5]] 
+            if candidate_pool:
+                chosen_pattern = random.choice(candidate_pool)
+                extra_seeds.append(chosen_pattern)
+                print(f"+ 1 Pattern")
 
-
-        # 2. Search
-        # 1.5 Flattening Transformation (The "Feynman" Trick)
-        # y_flat = log(y) - lgamma(x + 1)
-        # We use log1p for safety near 0, although y is usually large integerrs.
-        # But wait, user said "log(target)". 
-        # Since we reconstruct with exp, we must be consistent.
-        # Shift y slightly to avoid log(0) if any y=0 exists (indices 1,2 are 0).
-        # We'll use a small epsilon.
+        # ... (Search Logic unchanged) ...
+        # Transform target
+        # Use abs(y) just in case, though they are positive counts usually.
+        # SIMKIN MANEUVER: Force slope correction +1.943 * x
+        # We REMOVE the factorial and ADD the slope so the AI sees a flatter line.
+        # Note: Use x_features[:, 0] (which is x0/n) for the linear correction
         epsilon = 1e-9
-        # y_sample indices corresponds to x_sample values.
-        # x_sample are values like 1, 2, ...
-        
-        # Calculate lgamma(n+1) which is log(n!)
         from scipy.special import gammaln
         factorial_term = gammaln(x_sample + 1)
         
         # Transform target
         # Use abs(y) just in case, though they are positive counts usually.
-        y_sample_flat = np.log(np.abs(y_sample) + epsilon) - factorial_term
+        # SIMKIN MANEUVER 
+        # 1. Simkin: +1.943 * x0
+        # 2. No Parity/Smoothing (Split Dataset)
+        y_sample_flat = np.log(np.abs(y_sample) + epsilon) - factorial_term + (1.943 * x_features[:, 0])
         
         # print first few to debug (in stdout)
         if iteration == 1:
-            pass # print(f"Flat Y: {y_sample_flat[:3]}")
+             pass # print(f"Flat Y: {y_sample_flat[:3]}")
 
         # 2. Search (on FLATTENED target)
         try:
             # We use a relatively small beam width for speed, relying on many iterations
             result = hybrid_solve(
-                x_sample, y_sample_flat,  # PASS FLAT Y
+                x_features, y_sample_flat,  # PASS x_features (2 vars: x0, x1)
                 MODEL, DEVICE, 
                 beam_width=10, 
-                gp_timeout=120, 
-                max_workers=4, # Use 4 parallel workers (C++ Engine)
-                num_variables=1,
-                extra_seeds=extra_seeds
+                gp_timeout=30, # User Request: 30s (Faster cycles)
+                max_workers=8, # User Request: 8 workers
+                num_variables=2, # Used x0, x1
+                extra_seeds=extra_seeds,
+                max_neural_seeds=1 # Restrict NN to just 1 seed for Worker 7
             )
         except Exception as e:
             print(f"Search failed: {e}")
             continue
             
         if not result or not result.get('formula'):
-            print("No formula found in this iteration.")
+            print("No formula found.")
             continue
             
         residual_formula_str = result['formula']
-        # print(f"Found residual candidate: {residual_formula_str}")
-        
-        # 2.5 INTELLIGENT REFINEMENT (BFGS) on Residual
-        final_formula_str = residual_formula_str # Default if refinement fails
+        final_formula_str = residual_formula_str 
         
         try:
-            # Parse residual tree
             tree = ExpressionTree.from_infix(residual_formula_str)
             if tree.is_valid:
-                # 1. Convert hardcoded numbers to 'C' and get initial values
                 initial_values = convert_and_extract_constants(tree.root)
                 
-                # Refine on ALL data (1-27) but FLATTENED
-                x_all = np.concatenate((X_FULL, X_TARGETS))
-                y_all = np.concatenate((Y_FULL, Y_TARGETS))
+                # Refine on Odds >= 8
+                # 1. History Odds
+                mask_hist_odd = (X_FULL >= 8) & (X_FULL % 2 != 0)
+                x_hist = X_FULL[mask_hist_odd]
+                y_hist = Y_FULL[mask_hist_odd]
+                
+                # 2. Target Odds
+                mask_target_odd = (X_TARGETS % 2 != 0)
+                x_targ = X_TARGETS[mask_target_odd]
+                y_targ = Y_TARGETS[mask_target_odd]
+                
+                x_all = np.concatenate((x_hist, x_targ))
+                y_all = np.concatenate((y_hist, y_targ))
+                
+                # Build x_all_features for refinement (2 vars)
+                x_all_features = np.zeros((len(x_all), 2), dtype=np.float64)
+                x_all_features[:, 0] = x_all
+                x_all_features[:, 1] = x_all % 6
                 
                 factorial_term_all = gammaln(x_all + 1)
-                y_all_flat = np.log(np.abs(y_all) + epsilon) - factorial_term_all
+                # Apply Simkin Correction to Validation Target too (No parity correction)
+                y_all_flat = np.log(np.abs(y_all) + epsilon) - factorial_term_all + (1.943 * x_all_features[:, 0])
                 
                 if initial_values:
-                    # print(f"Refining {len(initial_values)} constants on FLAT surface...")
+                    # optimization expects C-tree
+                    # print(f"Refining on Odds N>=8...")
                     
                     # optimization expects C-tree
-                    constants_dict, rmse = optimize_constants(tree, x_all, y_all_flat, initial_guess=initial_values)
+                    constants_dict, rmse_original = optimize_constants(tree, x_all_features, y_all_flat, initial_guess=initial_values)
                     
                     if constants_dict:
+                         # 2.2 INTEGER SNAPPING (New Feature)
+                         # Check if any constant is very close to an integer and snap it
+                         snapped_dict = {}
+                         snapped = False
+                         for k, v in constants_dict.items():
+                             nearest_int = round(v)
+                             if abs(v - nearest_int) < 0.02: # Tolerance 0.02
+                                 snapped_dict[k] = float(nearest_int)
+                                 snapped = True
+                             else:
+                                 snapped_dict[k] = v
+                         
+                         if snapped:
+                             # SAFETY CHECK: Verify Snapped RMSE
+                             try:
+                                 # 1. Build temporary snapped string
+                                 pos_tmp = tree.root.get_constant_positions()
+                                 inf_tmp = tree.get_infix()
+                                 snapped_str = substitute_constants(inf_tmp, snapped_dict, pos_tmp)
+                                 
+                                 # 2. Evaluate
+                                 tree_snap = ExpressionTree.from_infix(snapped_str)
+                                 if tree_snap.is_valid:
+                                    y_pred_snap = tree_snap.evaluate(x_all_features)
+                                    # Calculate RMSE on FLAT space (same as optimization objective)
+                                    mse_snap = np.mean((y_pred_snap - y_all_flat)**2)
+                                    rmse_snap = np.sqrt(mse_snap)
+                                    
+                                    # 3. Compare: Allow up to 5% degradation for the sake of simplicity
+                                    # Note: rmse_original might be nearly 0. Be careful with ratio.
+                                    # Use absolute difference tolerance for very small errors?
+                                    ratio = 1.05
+                                    if rmse_original < 1e-6: # Ultra perfect fit
+                                        ratio = 2.0 # Allow doubling error if it's tiny (1e-7 -> 2e-7 is fine)
+                                        
+                                    if rmse_snap <= rmse_original * ratio:
+                                        # Accepted!
+                                        constants_dict = snapped_dict
+                                        # print(f"  [Snap] Accepted (RMSE: {rmse_original:.5f} -> {rmse_snap:.5f})")
+                                    else:
+                                        pass # print(f"  [Snap] Rejected (Degradation too high)")
+                             except:
+                                 pass # If verification fails, keeping original
+
                          # 3. Substitute back into residual
                          positions = tree.root.get_constant_positions()
                          infix_with_Cs = tree.get_infix() 
@@ -278,16 +337,9 @@ def main():
             print(f"Refinement failed: {e}") 
         
         # 3. RECONSTRUCTION & Transformation
-        # Formula = exp( Residual + lgamma(x+1) )
-        # We construct this string.
-        # Note: lgamma(x+1) is 'lgamma(x+1)' in our language (or similar).
-        # Our language has 'lgamma'. Input is 'x'.
-        # So we string concat: "exp(" + residual + " + lgamma(x + 1))"
-        
-        # We need to be careful about parens.
-        # FIX: lgamma in ExpressionTree adds +1 internally (lgamma(|x|+1)).
-        # So we use lgamma(x) to represent lgamma(x+1) mathematically.
-        full_formula_str = f"exp({residual_formula_str} + lgamma(x0))"
+        # Formula = exp( Residual + lgamma(x+1) - 1.943*x )
+        # No parity correction subtraction needed.
+        full_formula_str = f"exp({residual_formula_str} - (1.943 * x0) + lgamma(x0))"
         # print(f"Reconstructed Full Formula: {full_formula_str}")
 
         # 4. Evaluate on FULL RANGE (History + Targets) w/ Reconstructed Formula
