@@ -54,7 +54,7 @@ class GPUGrammar:
             # if GpuGlobals.USE_OP_FLOOR: self.operators.append('_') 
             if GpuGlobals.USE_OP_GAMMA: self.operators.append('g')
             if GpuGlobals.USE_OP_ASIN:  self.operators.append('S')
-            if GpuGlobals.USE_OP_ACOS:  self.operators.append('C')
+            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos') # Avoid 'C' collision
             if GpuGlobals.USE_OP_ATAN:  self.operators.append('T')
         else:
             # Fallback set

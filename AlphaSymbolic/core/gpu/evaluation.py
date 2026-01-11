@@ -30,7 +30,7 @@ class GPUEvaluator:
         self.op_cos = self.grammar.token_to_id.get('cos', -100)
         self.op_tan = self.grammar.token_to_id.get('tan', -100)
         self.op_asin = self.grammar.token_to_id.get('S', -100)
-        self.op_acos = self.grammar.token_to_id.get('C', -100)
+        self.op_acos = self.grammar.token_to_id.get('acos', -100)
         self.op_atan = self.grammar.token_to_id.get('T', -100)
         self.op_exp = self.grammar.token_to_id.get('e', -100) # 'e' operator
         self.op_log = self.grammar.token_to_id.get('log', -100)
@@ -48,7 +48,7 @@ class GPUEvaluator:
         self.pi_val = torch.tensor(np.pi, device=self.device, dtype=torch.float64)
         self.e_val = torch.tensor(np.e, device=self.device, dtype=torch.float64)
 
-    @torch.compile(mode="reduce-overhead", dynamic=False)
+    # @torch.compile(mode="reduce-overhead", dynamic=False)
     def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Internal VM interpreter to evaluate RPN population on the GPU.
@@ -151,23 +151,24 @@ class GPUEvaluator:
                 m = (token == self.op_sub) & valid_op; res[m] = val_a[m] - val_b[m]
                 m = (token == self.op_mul) & valid_op; res[m] = val_a[m] * val_b[m]
                 
+                
                 m = (token == self.op_div) & valid_op
                 if m.any(): 
                     d = val_b[m]; bad = d.abs() < 1e-9
                     sd = torch.where(bad, torch.tensor(1.0, device=self.device, dtype=torch.float64), d)
-                    out = val_a[m] / sd; out[bad] = 1e150; res[m] = out
+                    out = val_a[m] / sd; out = torch.where(bad, torch.tensor(1e150, device=self.device, dtype=torch.float64), out); res[m] = out
                     
                 m = (token == self.op_mod) & valid_op
                 if m.any():
                     d = val_b[m]; bad = d.abs() < 1e-9
                     sd = torch.where(bad, torch.tensor(1.0, device=self.device, dtype=torch.float64), d)
-                    out = torch.fmod(val_a[m], sd); out[bad] = 1e150; res[m] = out
+                    out = torch.fmod(val_a[m], sd); out = torch.where(bad, torch.tensor(1e150, device=self.device, dtype=torch.float64), out); res[m] = out
                     
                 m = (token == self.op_pow) & valid_op; 
                 if m.any(): 
                     p = torch.pow(val_a[m], val_b[m])
                     bad_p = torch.isnan(p) | torch.isinf(p)
-                    p[bad_p] = 1e300
+                    p = torch.where(bad_p, torch.tensor(1e300, device=self.device, dtype=torch.float64), p)
                     res[m] = p
                 
                 wp = torch.clamp(sp - 2, 0, MAX_STACK-1)
@@ -196,11 +197,17 @@ class GPUEvaluator:
                 
                 m = (token == self.op_log) & valid_op
                 if m.any(): 
-                    inv = val_a[m]; s = inv > 1e-9; out = torch.full_like(inv, 1e150); out[s] = torch.log(inv[s]); res[m] = out
+                    inv = val_a[m]; s = inv > 1e-9; out = torch.full_like(inv, 1e150); 
+                    safe_inv = torch.where(s, inv, torch.tensor(1.0, device=self.device, dtype=torch.float64))
+                    valid_log = torch.log(safe_inv)
+                    out = torch.where(s, valid_log, out); res[m] = out
                 
                 m = (token == self.op_exp) & valid_op
                 if m.any(): 
-                    inv = val_a[m]; s = inv <= 700.0; out = torch.full_like(inv, 1e150); out[s] = torch.exp(inv[s]); res[m] = out
+                    inv = val_a[m]; s = inv <= 700.0; out = torch.full_like(inv, 1e150); 
+                    safe_inv = torch.where(s, inv, torch.tensor(0.0, device=self.device, dtype=torch.float64))
+                    valid_exp = torch.exp(safe_inv)
+                    out = torch.where(s, valid_exp, out); res[m] = out
                     
                 m = (token == self.op_sqrt) & valid_op; res[m] = torch.sqrt(val_a[m].abs())
                 m = (token == self.op_abs) & valid_op; res[m] = torch.abs(val_a[m])
@@ -214,12 +221,14 @@ class GPUEvaluator:
                 m = (token == self.op_fact) & valid_op
                 if m.any():
                     inv = val_a[m]; u = (inv < 0) | (inv > 170.0); out = torch.full_like(inv, 1e150)
-                    si = inv.clone(); si[u] = 1.0; vc = torch.special.gamma(si + 1.0); out[~u] = vc[~u]; res[m] = out
+                    si = torch.where(u, torch.tensor(1.0, device=self.device, dtype=torch.float64), inv)
+                    vc = torch.special.gamma(si + 1.0); out = torch.where(~u, vc, out); res[m] = out
                     
                 m = (token == self.op_gamma) & valid_op
                 if m.any():
                     inv = val_a[m]; u = (inv <= -1.0); out = torch.full_like(inv, 1e150)
-                    si = inv.clone(); si[u] = 1.0; vc = torch.special.gammaln(si + 1.0); out[~u] = vc[~u]; res[m] = out
+                    si = torch.where(u, torch.tensor(1.0, device=self.device, dtype=torch.float64), inv)
+                    vc = torch.special.gammaln(si + 1.0); out = torch.where(~u, vc, out); res[m] = out
 
                 wp = torch.clamp(sp - 1, 0, MAX_STACK-1); curr = stack.gather(1, wp.unsqueeze(1)).squeeze(1)
                 fw = torch.where(valid_op, res, curr); stack = stack.scatter(1, wp.unsqueeze(1), fw.unsqueeze(1))

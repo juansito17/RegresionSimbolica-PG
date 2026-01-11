@@ -273,34 +273,50 @@ class GPUOperators:
         if not GpuGlobals.PREVENT_DUPLICATES:
             return population, constants, 0
         
-        pop_size = population.shape[0]
-        pop_cpu = population.cpu().numpy()
+        # GPU Accelerated Deduplication
+        # torch.unique on dim=0 works for tensors.
+        # However, for very large populations, even this might be heavy, but much fast than CPU loop.
         
-        seen_hashes = {}
-        duplicate_indices = []
+        # Method:
+        # 1. Get unique elements and inverse indices
+        # elements: (U, L), inverse: (N,) where N=pop_size
+        _, inverse_indices = torch.unique(population, sorted=False, return_inverse=True, dim=0)
         
-        for i in range(pop_size):
-            tokens = pop_cpu[i]
-            non_pad = tokens[tokens != PAD_ID]
-            hash_key = tuple(non_pad.tolist())
-            
-            if hash_key in seen_hashes:
-                duplicate_indices.append(i)
-            else:
-                seen_hashes[hash_key] = i
+        # 2. Find first occurrence of each unique index
+        # We want to identify *duplicates*, i.e., indices that are NOT the first occurrence.
+        # scatter_reduce or simply iterating unique helps? 
+        # Actually, if we sort inverse_indices, we can see repeats.
         
-        n_dups = len(duplicate_indices)
+        # Efficient way to find duplicates without leaving GPU:
+        # Create a "seen" mask? No.
+        # Use inverse indices.
+        
+        # Trick:
+        # 1. Sort the inverse indices and keep original indices
+        sorted_inv, sorted_idx = torch.sort(inverse_indices)
+        
+        # 2. Compute difference between adjacent inverse indices in sorted array
+        # Duplicates will have diff=0
+        mask_dup = torch.zeros_like(sorted_inv, dtype=torch.bool)
+        mask_dup[1:] = (sorted_inv[1:] == sorted_inv[:-1])
+        
+        # 3. Get indices to replace
+        # sorted_idx[mask_dup] gives the original indices of duplicates
+        dup_indices = sorted_idx[mask_dup]
+        n_dups = dup_indices.shape[0]
+        
         if n_dups == 0:
             return population, constants, 0
-        
+            
         pop_out = population.clone()
         const_out = constants.clone()
         
+        # Generate replacements
         fresh_pop = self.generate_random_population(n_dups)
         fresh_consts = torch.randn(n_dups, constants.shape[1], device=self.device, dtype=torch.float64)
         
-        pop_out[duplicate_indices] = fresh_pop
-        const_out[duplicate_indices] = fresh_consts
+        pop_out[dup_indices] = fresh_pop
+        const_out[dup_indices] = fresh_consts
         
         return pop_out, const_out, n_dups
 
