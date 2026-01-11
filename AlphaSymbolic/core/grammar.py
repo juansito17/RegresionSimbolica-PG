@@ -447,27 +447,31 @@ class ExpressionTree:
         op_weights = []
         for op in ops:
             weighted_ops.append(op)
-            if op in ['+', '-', '*']: w = 20
-            elif op == '/': w = 15
-            elif op in ['^', 'sin', 'cos']: w = 10
-            elif op in ['log', 'exp']: w = 5
-            else: w = 1 # !, _, g, S, C, T
+            if op in ['+', '-', '*', '/']: w = 20
+            elif op in ['pow', 'sin', 'cos']: w = 20 # Boosted Trig/Pow
+            elif op in ['log', 'exp']: w = 15 # Boosted Trans
+            else: w = 2 # Boosted others slightly
             op_weights.append(w)
             
         def _gen(depth):
-            if depth >= max_depth or (depth > 1 and random.random() < p_terminal):
+            # Dynamic terminal probability: increase as depth increases
+            current_p_terminal = p_terminal + (depth / max_depth) * 0.5
+            
+            if depth >= max_depth or (depth > 0 and random.random() < current_p_terminal):
                 # Terminal
-                if random.random() < 0.75: # Variable (0.75 matches C++ config)
+                if random.random() < 0.90: # Variable (Increased from 0.75 to 0.90)
                      return Node(random.choice(valid_vars))
                 else: # Constant
-                     # C++ uses range -10 to 10
-                     # We can generate a random float string or use 'C' for optimization
-                     # Using 'C' allows optimize_constants to work later.
-                     # But initially, some random numbers are good.
+                     # Randomly pick from CONSTANTS (includes C, 1, 2, pi...)
+                     # or generate a random float
                      if random.random() < 0.5:
-                         val = random.uniform(-5.0, 5.0)
-                         return Node(f"{val:.4f}")
+                         # Use predefined constant/literal
+                         # CONSTANTS list has 'C', '0', '1', ...
+                         return Node(random.choice(CONSTANTS))
                      else:
+                         # Implicit constant (mapped to C later but value lost? Or Random Float)
+                         # To preserve value, we'd need mechanism. For now, use 'C'
+                         # But let's stick to C or literals to be safe
                          return Node('C')
             else:
                 # Operator (Weighted)

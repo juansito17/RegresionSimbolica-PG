@@ -89,6 +89,7 @@ class GPUOptimizer:
         pos[:, 1:, :] += noise
         
         vel = torch.randn_like(pos) * 0.1
+        vel = vel.reshape(-1, K) # [B*P, K]
         
         # Flatten for batch evaluation
         flat_pos = pos.reshape(-1, K) # [B*P, K]
@@ -122,10 +123,7 @@ class GPUOptimizer:
             if improved_g.any():
                 gbest_err[improved_g] = min_errs[improved_g]
                 # Get indices in flat array
-                # flat_idx = row_idx * P + col_idx
-                # We need best pos
-                # Actually min_indices is index 0..P-1
-                # Gather from pbest_pos view?
+                
                 pbest_pos_view = pbest_pos.view(B, num_particles, K)
                 
                 # Expand indices to [B, 1, K] to gather

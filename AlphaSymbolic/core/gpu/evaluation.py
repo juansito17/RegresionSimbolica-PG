@@ -142,43 +142,97 @@ class GPUEvaluator:
 
     def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         """
-        Evaluates the RPN population on the GPU.
+        Evaluates the RPN population on the GPU over multiple samples.
+        x: [Vars, Samples]
+        y_target: [Samples]
+        constants: [PopSize, K]
         Returns: RMSE per individual [PopSize]
         """
-        B, L = population.shape
-        D = x.shape[0]
+        B_pop, L = population.shape
         
-        final_preds, sp, has_error = self._run_vm(population, x, constants)
+        # Determine number of samples
+        # x is [Vars, Samples]
+        if x.dim() == 1:
+            # Single variable, N samples? Or 1 sample D vars?
+            # Assume 1 var, N samples if 1D?
+            # But grammar usually expects [Vars, N].
+            # Let's force [Vars, N] in engine/caller.
+            x = x.unsqueeze(0)
+            
+        # Robust Shape Detection
+        # Expectation: x can be [Vars, Samples] (Legacy) or [Samples, Vars] (Standard)
+        # We need internally: [Vars, Samples] so that x.T becomes [Samples, Vars] for VM
         
-        is_valid = (sp == 1) & (~has_error)
+        if x.dim() == 2:
+            if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
+                # Matches [Vars, Samples] - Do nothing
+                pass
+            elif x.shape[0] == y_target.shape[0]:
+                # Matches [Samples, Vars] -> Transpose
+                x = x.T
         
-        final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
-                                  final_preds, 
+        N_vars, N_samples = x.shape
+        
+        # We need to run B_pop * N_samples executions
+        
+        # 1. Expand Population: Virtual (Chunking handles it)
+        # We process in chunks to avoid OOM
+        
+        # We process in chunks to avoid OOM
+        max_chunk_inds = 2000 # 2000 individuals per chunk -> 200k executions
+        
+        # Output buffer for RMSE only
+        all_rmse = []
+        
+        # Pre-process Target
+        y_target_chunk = y_target.unsqueeze(0) # [1, N]
+        
+        # Transpose X for Cupy VM: [N, Vars]
+        # cupy_vm expects x as [Samples, Features] and expands population against it
+        x_for_vm = x.T # [N, Vars]
+        
+        for i in range(0, B_pop, max_chunk_inds):
+            end_i = min(B_pop, i + max_chunk_inds)
+            
+            # Sub-batch of population
+            sub_pop = population[i:end_i]
+            sub_c = constants[i:end_i] if constants is not None else None
+            
+            # Run VM - Let Cupy VM handle expansion [B, N]
+            # We pass x_for_vm [N, Vars]. 
+            # Cupy VM expands sub_pop to [current_B * N]
+            f_preds, sp, err = self._run_vm(sub_pop, x_for_vm, sub_c)
+            
+            current_B = sub_pop.shape[0]
+            
+            # Process Validity within chunk
+            # f_preds is flattened [current_B * N]
+            is_valid = (sp == 1) & (~err)
+            f_preds = torch.where(is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds), 
+                                  f_preds, 
                                   torch.tensor(1e300, device=self.device, dtype=torch.float64))
+            
+            # Reshape to [current_B, N]
+            preds_mat = f_preds.view(current_B, N_samples)
+            
+            # Compare (Broadcasting y_target [1, N])
+            diff = preds_mat - y_target_chunk
+            sq_diff = diff**2
+            mse = torch.mean(sq_diff, dim=1) # [current_B]
+            
+            rmse = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
+                                          torch.tensor(1e150, device=self.device, dtype=torch.float64), 
+                                          mse))
+                                          
+            all_rmse.append(rmse)
+             
+            # Cleanup
+            del sub_pop, sub_c, f_preds, sp, err, preds_mat, diff, sq_diff, mse, rmse
+            # torch.cuda.empty_cache() 
+            
+        final_rmse = torch.cat(all_rmse)
         
-        preds_matrix = final_preds.view(B, D)
-        target_matrix = y_target.unsqueeze(0).expand(B, -1)
-        
-        diff = preds_matrix - target_matrix
-        sq_diff = diff**2
-        mse = torch.mean(sq_diff, dim=1)
-        
-        rmse = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
-                                      torch.tensor(1e150, device=self.device, dtype=torch.float64), 
-                                      mse))
-        
-        # DEBUG: Check for suspicious 0 fitness
-        if rmse.min() < 1e-6:
-             min_val, min_idx = torch.min(rmse, dim=0)
-             print(f"\n[DEBUG EVAL] Found RMSE ~ 0: {min_val.item()} at idx {min_idx.item()}")
-             print(f"  SP: {sp[min_idx].item()}")
-             print(f"  HasError: {has_error[min_idx].item()}")
-             print(f"  IsValid: {is_valid[min_idx].item()}")
-             print(f"  Preds: {preds_matrix[min_idx][:5].tolist()}...")
-             print(f"  Target: {target_matrix[min_idx][:5].tolist()}...")
-             print(f"  Pop: {population[min_idx].tolist()}")
-        
-        return rmse
+        return final_rmse
 
     def evaluate_differentiable(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor) -> torch.Tensor:
         """
@@ -202,14 +256,29 @@ class GPUEvaluator:
     
     def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         B, L = population.shape
-        D = x.shape[0]
-        final_preds, sp, has_error = self._run_vm(population, x, constants) # Added has_error
+        
+        # Robust Shape Detection (Same as evaluate_batch)
+        if x.dim() == 2:
+            if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
+                # Matches [Vars, Samples]
+                pass
+            elif x.shape[0] == y_target.shape[0]:
+                # Matches [Samples, Vars] -> Transpose to [Vars, Samples] for consistency
+                x = x.T
+        
+        N_vars, D = x.shape # D is Samples
+        
+        # VM expects [Samples, Vars]
+        x_for_vm = x.T
+        
+        final_preds, sp, has_error = self._run_vm(population, x_for_vm, constants) 
         is_valid = (sp == 1) & (~has_error)
         
         final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
                                   final_preds, 
                                   torch.tensor(1e300, device=self.device, dtype=torch.float64))
         
+        # Reshape to [B, D]
         preds_matrix = final_preds.view(B, D)
         target_matrix = y_target.unsqueeze(0).expand(B, -1)
         abs_err = torch.abs(preds_matrix - target_matrix)

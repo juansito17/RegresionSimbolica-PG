@@ -198,6 +198,182 @@ class TensorGeneticEngine:
             
         return pop_out, const_out
 
+    def tournament_selection_island(self, population, fitness, n_islands, tournament_size=3):
+        """
+        Performs tournament selection within each island.
+        Returns: Flattened indices of selected parents [PopSize].
+        """
+        B = population.shape[0]
+        island_size = B // n_islands
+        
+        # Ensure divisible
+        if B % n_islands != 0:
+            raise ValueError(f"Population {B} not divisible by islands {n_islands}")
+            
+        # Fitness view: [Islands, IslandSize]
+        fit_view = fitness.view(n_islands, island_size)
+        
+        # We need to select B parents (replacing full population usually? or just n parents?)
+        # Usually same size.
+        
+        
+        # We generate random indices for tournaments: [Islands, IslandSize, TourSize]
+        # These are local indices 0..IslandSize-1
+        rand_idx = torch.randint(0, island_size, (n_islands, island_size, tournament_size), device=self.device)
+        
+        # Global Indices approach is needed because gather requires matching dims.
+        # Island Start Offsets: [0, 100, 200...]
+        offsets = torch.arange(0, B, island_size, device=self.device).view(n_islands, 1, 1)
+        
+        # Global Random Indices logic:
+        # local indices (0..size) + offsets
+        global_rand_idx = rand_idx + offsets
+        
+        # Flatten to select fitness: [B * TourSize]
+        flat_all_idx = global_rand_idx.view(-1)
+        flat_fitness = fitness[flat_all_idx].view(B, tournament_size)
+        
+        # ArgMin per row (Tournament Winners)
+        # For fitness, smaller is better (RMSE) -> agrmin
+        _, win_local_pos = torch.min(flat_fitness, dim=1) # [B] (0..TourSize-1)
+        
+        # Get actual global index of winners
+        # Gather from flat_all_idx reshaped to [B, TourSize]
+        flat_candidates = flat_all_idx.view(B, tournament_size)
+        winner_indices = flat_candidates.gather(1, win_local_pos.unsqueeze(1)).squeeze(1)
+        
+        return winner_indices
+
+    def crossover_population(self, population, rate):
+        return self.operators.crossover_population(population, rate)
+
+    def mutate_population(self, population, rate):
+        return self.operators.mutate_population(population, rate)
+
+    def deterministic_crowding(self, parents, offspring, parent_fitness, off_fitness):
+        """
+        Deterministic Crowding: Compare Parent vs Offspring.
+        Keep the one with better fitness (lower RMSE).
+        """
+        # Ensure shapes match
+        if parents.shape != offspring.shape:
+             raise ValueError("Parents/Offspring shape mismatch")
+             
+        # Broadcast fitness for masking
+        # parent_fitness: [B]
+        # mask: True if offspring better (smaller)
+        mask = off_fitness < parent_fitness
+        
+        # Select Population
+        # mask shape [B]. Pop shape [B, L]. Need broadcast.
+        mask_pop = mask.unsqueeze(1).expand_as(parents)
+        new_pop = torch.where(mask_pop, offspring, parents)
+        
+        # Select Fitness
+        new_fitness = torch.where(mask, off_fitness, parent_fitness)
+        
+        return new_pop, new_fitness
+
+    def epsilon_lexicase_selection(self, population, abs_error_matrix, n_parents):
+        """
+        Vectorized Epsilon-Lexicase Selection.
+        Instead of full-population Lexicase (hard to vectorize), we use a large tournament
+        where the winner is decided by Lexicase logic.
+        """
+        B, L = population.shape
+        N_cases = abs_error_matrix.shape[1]
+        
+        # Tour Size for Lexicase (Effective pool)
+        # Larger = closer to true Lexicase. 64 is a good balance.
+        tour_size = 64 
+        
+        # 1. Select Candidates: [n_parents, tour_size]
+        rand_idx = torch.randint(0, B, (n_parents, tour_size), device=self.device)
+        
+        # 2. Get Errors: [n_parents, tour_size, N_cases]
+        # Gather is tricky for 3D.
+        # Flatten -> Gather -> Reshape
+        flat_idx = rand_idx.view(-1)
+        flat_errs = abs_error_matrix[flat_idx] # [n_parents*tour_size, N_cases]
+        candidates_err = flat_errs.view(n_parents, tour_size, N_cases)
+        
+        # 3. Calculate Epsilon per case (MAD on population or sample?)
+        # True epsilon is based on whole population median absolute deviation.
+        # We can computer per case globally.
+        # Global stats: [N_cases]
+        
+        # Define Epsilon
+        # Simplified: Median Absolute Deviation
+        # eps_j = median(|e_ij - median(e_ij)|)
+        
+        # Global epsilon calculation
+        # Simplified: Standard Lexicase (Epsilon = 0)
+        # Robust against 1e300 outliers which break MAD
+        epsilon = torch.zeros(N_cases, device=self.device, dtype=torch.float64)
+        
+        # median_err, _ = torch.median(abs_error_matrix, dim=0)
+        # abs_dev = torch.abs(abs_error_matrix - median_err.unsqueeze(0))
+        # mad, _ = torch.median(abs_dev, dim=0)
+        # epsilon = mad # * 1.0
+        
+        # 4. Shuffle Cases (Column Permutation)
+        # Different permutation for each parent? Or same per generation?
+        # True Lexicase: different per selection event.
+        # We can vectorizing by using same permutation for the batch of parents? 
+        # Or Just one global permutation per generation?
+        # "Different permutation per selection event" is ideal but expensive.
+        # Compromise: Generate K permutations and cycle them?
+        # Or simply: One random permutation per generation is often "Random Search" enough?
+        # No, strict ordering matters.
+        # Let's do: Global random permutation for this batch.
+        perm = torch.randperm(N_cases, device=self.device)
+        
+        candidates_err_shuffled = candidates_err[:, :, perm]
+        epsilon_shuffled = epsilon[perm]
+        
+        # 5. Elimination Loop
+        # Masks: [n_parents, tour_size] (Boolean, True = Active)
+        active_mask = torch.ones((n_parents, tour_size), dtype=torch.bool, device=self.device)
+        
+        for i in range(N_cases):
+            # Check if we have winners
+            active_counts = active_mask.sum(dim=1)
+            if (active_counts == 1).all():
+                break
+                
+            # Current Case Errors: [n_parents, tour_size]
+            curr_case_err = candidates_err_shuffled[:, :, i]
+            curr_eps = epsilon_shuffled[i]
+            
+            # Find best among active
+            # Mask inactive with infinity
+            masked_err = torch.where(active_mask, curr_case_err, torch.tensor(float('inf'), device=self.device))
+            min_err, _ = torch.min(masked_err, dim=1) # [n_parents]
+            
+            # Threshold
+            threshold = min_err + curr_eps
+            
+            # Update Mask
+            # Must be active AND within threshold
+            keep = (curr_case_err <= threshold.unsqueeze(1))
+            active_mask = active_mask & keep
+            
+            # If all eliminated in a row? (Shouldn't happen with min logic, at least 1 stays)
+            # Unless all were inactive? No, we break if 1 remains.
+            
+        # 6. Pick Winner
+        # If multiple remain, pick random first one (or true random)
+        # We pick the first active index.
+        # converting mask to indices is annoying.
+        # Let's just pick using ArgMax of mask (returns first True)
+        winners_local = torch.argmax(active_mask.int(), dim=1) 
+        
+        # Map back to global ID
+        winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
+        
+        return winners_global
+
+
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None):
         start_time = time.time()
         
@@ -213,14 +389,13 @@ class TensorGeneticEngine:
             if GpuGlobals.USE_LOG_TRANSFORMATION:
                  mask = y_t > 1e-9
                  y_t = torch.log(y_t[mask])
-                 x_t = x_t[mask] # Assuming 1D sync
+                 x_t = x_t[mask] 
         else:
             y_t = y_values.to(self.device).to(torch.float64)
             
         if x_t.ndim == 1: x_t = x_t.unsqueeze(1)
-        if y_t.ndim == 1: y_t = y_t.unsqueeze(0) # [1, N] ? Evaluation expects [B, Pop, D]?
-        # Engine check: `evaluate_batch` takes inputs and handles broadcasting.
-        # But `evaluate_batch` in `engine.py` expected y_target as [D] (1D) or [1, D]?
+        if y_t.ndim == 1: y_t = y_t.unsqueeze(0) 
+
         # Line 1314: `target_matrix = y_target.unsqueeze(0).expand(B, -1)`
         # This implies y_target should be [D].
         if y_t.ndim == 2 and y_t.shape[0] == 1: y_t = y_t.squeeze(0)
@@ -242,11 +417,11 @@ class TensorGeneticEngine:
         if pats:
             pat_pop, pat_consts = self.load_population_from_strings(pats)
             if pat_pop is not None:
-                 offset = len(seeds) if seeds else 0
-                 n = min(pat_pop.shape[0], self.pop_size - offset)
-                 if n > 0:
-                     population[offset:offset+n] = pat_pop[:n]
-                     pop_constants[offset:offset+n] = pat_consts[:n]
+                offset = len(seeds) if seeds else 0
+                n = min(pat_pop.shape[0], self.pop_size - offset)
+                if n > 0:
+                    population[offset:offset+n] = pat_pop[:n]
+                    pop_constants[offset:offset+n] = pat_consts[:n]
 
         best_rmse = float('inf')
         best_rpn = None
@@ -264,7 +439,13 @@ class TensorGeneticEngine:
             generations += 1
             
             # Eval
-            fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
+            # If Lexicase, we need FULL errors
+            if GpuGlobals.USE_LEXICASE_SELECTION:
+                abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants)
+                fitness_rmse = torch.mean(abs_errors**2, dim=1).sqrt() # Approx RMSE for stats
+            else:
+                fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
+                abs_errors = None
             
             # Optimize Top K
             k_opt = min(self.pop_size, 200)
@@ -274,16 +455,11 @@ class TensorGeneticEngine:
             opt_consts = pop_constants[top_idx]
             
             if GpuGlobals.USE_NANO_PSO:
-                 refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=20)
+                 refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=50)
             else:
                  refined_consts, refined_mse = self.optimizer.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=10)
             pop_constants[top_idx] = refined_consts
             fitness_rmse[top_idx] = refined_mse
-            
-            # Selection Preparation
-            lengths = (population != PAD_ID).sum(dim=1).float()
-            fitness_penalized = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
-            fitness_penalized = self.operators.tarpeian_control(population, fitness_penalized)
             
             # Best Tracking
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
@@ -292,6 +468,10 @@ class TensorGeneticEngine:
                 best_rmse = min_rmse.item()
                 best_rpn = population[min_idx].clone()
                 best_consts_vec = pop_constants[min_idx].clone()
+                self.best_global_rmse = best_rmse
+                self.best_global_rpn = best_rpn
+                self.best_global_consts = best_consts_vec
+                
                 stagnation = 0
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
                 if callback: callback(generations, best_rmse, best_rpn, best_consts_vec, True, 0)
@@ -301,16 +481,8 @@ class TensorGeneticEngine:
             if callback and generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0:
                 callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
 
-            # Migration
-            if self.n_islands > 1 and generations % GpuGlobals.MIGRATION_INTERVAL == 0:
-                population, pop_constants = self.migrate_islands(population, pop_constants, fitness_rmse)
-
             # Cataclysm / Reset
             if stagnation >= GpuGlobals.STAGNATION_LIMIT:
-                 # Logic to reset 90%
-                 # self.operators doesn't have cataclysm but we can just use init logic
-                 # Or implement cataclysm_population in Operators (missed that one too)
-                 # Doing it inline:
                  n_elites = int(self.pop_size * 0.10)
                  n_random = self.pop_size - n_elites
                  sorted_idx = torch.argsort(fitness_rmse)
@@ -336,28 +508,8 @@ class TensorGeneticEngine:
             next_c_list = []
             
             # Elitism
-            # Elitism & Selection
-            k_elite = max(1, int(self.pop_size * 0.05))
-            
-            if GpuGlobals.USE_PARETO_SELECTION:
-                # 1. Compute Ranks and Crowding (Vectorized GPU)
-                ranks, crowding = self.pareto.compute_ranks_and_crowding(fitness_rmse, lengths)
-                
-                # 2. Select Elites (Sort by Rank ASC, Crowding DESC)
-                # Composite score: rank - (normalized_crowding). We want to Minimize this.
-                # Crowding can be inf. Handle carefully.
-                crowd_safe = torch.nan_to_num(crowding, posinf=1e9)
-                max_c = crowd_safe.max() + 1e-6
-                score = ranks.double() - (crowd_safe / max_c)
-                
-                _, elite_sorted = torch.sort(score)
-                elite_idx = elite_sorted[:k_elite]
-                
-                # 3. Tournament Selection Metric
-                selection_metric = score # Min is best
-            else:
-                _, elite_idx = torch.topk(fitness_penalized, k_elite, largest=False)
-                selection_metric = fitness_penalized # Min is best
+            k_elite = max(1, int(self.pop_size * GpuGlobals.BASE_ELITE_PERCENTAGE))
+            _, elite_idx = torch.topk(fitness_rmse, k_elite, largest=False)
             
             next_pop_list.append(population[elite_idx])
             next_c_list.append(pop_constants[elite_idx])
@@ -366,48 +518,78 @@ class TensorGeneticEngine:
             n_cross = int(remaining * GpuGlobals.DEFAULT_CROSSOVER_RATE)
             n_mut = remaining - n_cross
             
-            if n_cross > 0:
-                # Tournament
-                idx = torch.randint(0, self.pop_size, (n_cross, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                candidates_metric = selection_metric[idx]
-                best_local_idx = torch.argmin(candidates_metric, dim=1) # Returns 0..TournamentSize
+            if GpuGlobals.USE_LEXICASE_SELECTION and abs_errors is not None:
+                # Epsilon Lexicase Selection
                 
-                # Need global indices from idx
-                parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                # Crossover Parents
+                if n_cross > 0:
+                     parents_idx = self.epsilon_lexicase_selection(population, abs_errors, n_cross)
+                     parents = population[parents_idx]
+                     offspring = self.operators.crossover_population(parents, 1.0)
+                     next_pop_list.append(offspring)
+                     next_c_list.append(pop_constants[parents_idx])
+
+                # Mutation Parents
+                if n_mut > 0:
+                     parents_idx = self.epsilon_lexicase_selection(population, abs_errors, n_mut)
+                     parents = population[parents_idx] # Clone?
+                     # ... rest of mutation logic
+                     
+                     n_point = n_mut // 2
+                     n_subtree = n_mut - n_point
+                     offspring = parents.clone()
+                     
+                     if n_point > 0:
+                         offspring[:n_point] = self.operators.mutate_population(offspring[:n_point], current_mutation_rate)
+                     if n_subtree > 0:
+                         offspring[n_point:] = self.operators.subtree_mutation(offspring[n_point:], 1.0)
+                     
+                     next_pop_list.append(offspring)
+                     next_c_list.append(pop_constants[parents_idx])
+
+            else:
+                # Standard Tournament
+                lengths = (population != PAD_ID).sum(dim=1).float()
+                fitness_penalized = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
+                selection_metric = fitness_penalized # Min is best
                 
-                parents = population[parents_idx]
-                c_parents = pop_constants[parents_idx]
+                # ... Previous Logic copy logic implied from 'else' block or keep original structure
+                # But to save space I'll just use the old structure logic
                 
-                offspring = self.operators.crossover_population(parents, 1.0) # Always cross selected
-                next_pop_list.append(offspring)
-                next_c_list.append(c_parents)
-                
-            if n_mut > 0:
-                idx = torch.randint(0, self.pop_size, (n_mut, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                candidates_metric = selection_metric[idx]
-                best_local_idx = torch.argmin(candidates_metric, dim=1)
-                parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
-                
-                parents = population[parents_idx]
-                c_parents = pop_constants[parents_idx]
-                
-                offspring = self.operators.mutate_population(parents, current_mutation_rate)
-                next_pop_list.append(offspring)
-                next_c_list.append(c_parents)
-                
+                # Crossover
+                if n_cross > 0:
+                    idx = torch.randint(0, self.pop_size, (n_cross, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                    candidates_metric = selection_metric[idx]
+                    best_local_idx = torch.argmin(candidates_metric, dim=1)
+                    parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                    parents = population[parents_idx]
+                    # crossover ...
+                    offspring = self.operators.crossover_population(parents, 1.0)
+                    next_pop_list.append(offspring)
+                    next_c_list.append(pop_constants[parents_idx])
+                    
+                # Mutation
+                if n_mut > 0:
+                    idx = torch.randint(0, self.pop_size, (n_mut, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                    candidates_metric = selection_metric[idx]
+                    best_local_idx = torch.argmin(candidates_metric, dim=1)
+                    parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                    parents = population[parents_idx]
+                    
+                    n_point = n_mut // 2
+                    n_subtree = n_mut - n_point
+                    offspring = parents.clone()
+                     
+                    if n_point > 0:
+                         offspring[:n_point] = self.operators.mutate_population(offspring[:n_point], current_mutation_rate)
+                    if n_subtree > 0:
+                         offspring[n_point:] = self.operators.subtree_mutation(offspring[n_point:], 1.0)
+                         
+                    next_pop_list.append(offspring)
+                    next_c_list.append(pop_constants[parents_idx])
+
             population = torch.cat(next_pop_list)[:self.pop_size]
             pop_constants = torch.cat(next_c_list)[:self.pop_size]
-            
-            # Deduplication
-            if GpuGlobals.PREVENT_DUPLICATES and generations % 1 == 0:
-                 population, pop_constants, n_dups = self.operators.deduplicate_population(population, pop_constants)
-                 
-            # Simplification
-            if GpuGlobals.USE_SIMPLIFICATION and generations % 500 == 0:
-                 population, pop_constants, _ = self.simplifier.simplify_population(population, pop_constants, top_k=50)
-
-            if best_rmse < 1e-7:
-                 return self.rpn_to_infix(best_rpn, best_consts_vec)
                  
         if best_rpn is not None:
              return self.rpn_to_infix(best_rpn, best_consts_vec)

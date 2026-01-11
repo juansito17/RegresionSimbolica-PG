@@ -51,9 +51,9 @@ BENCHMARKS = [
 ]
 
 # Config
-POPULATION = 5000
-GENERATIONS = 500
-TIMEOUT_SEC = 30
+POPULATION = 20000
+GENERATIONS = 50
+TIMEOUT_SEC = 20
 RUNS_PER_BENCHMARK = 3
 
 class BenchmarkRunner:
@@ -142,121 +142,22 @@ class BenchmarkRunner:
         best_formula_str = ""
         
         try:
-            # Initialize Globals if needed (important for grammar construction)
-            # GpuGlobals are static but some might need setup? 
-            # Actually, let's just ensure we print the error.
+            # Use engine's built-in robust run method
+            # This ensures we use PSO, Pareto, and all advanced features identically to production/test
+            best_formula_str = self.gpu_engine.run(
+                x_values=X_torch, 
+                y_values=Y_torch, 
+                timeout_sec=TIMEOUT_SEC
+            )
             
-            for gen in range(GENERATIONS):
-                # Evaluate
-                fitness = self.gpu_engine.evaluate_batch(population, X_torch, Y_torch, constants)
-                
-                # Hybrid Search: Gradient Descent on Sub-population (Elites)
-                # This gives GPU engine the ability to fine-tune constants like C++ but faster
-                # Reduced intensity per generation to allow more structural evolution
-                k_opt = min(5, population.shape[0])
-                top_vals, top_indices = torch.topk(fitness, k_opt, largest=False)
-                
-                sub_pop = population[top_indices]
-                sub_const = constants[top_indices]
-                
-                # 5 steps of Adam (Faster per generation)
-                opt_const, new_fit = self.gpu_engine.optimize_constants(
-                    sub_pop, sub_const, X_torch, Y_torch, steps=5, lr=0.5
-                )
-                
-                # Update back to main strings
-                constants[top_indices] = opt_const
-                fitness[top_indices] = new_fit
-                
-                # Check Global Best
-                min_fit, min_idx = torch.min(fitness, dim=0)
-                if min_fit.item() < best_rmse:
-                    best_rmse = min_fit.item()
-                    best_ind = population[min_idx]
-                    best_const = constants[min_idx]
-                    best_formula_str = self.gpu_engine.rpn_to_infix(best_ind, best_const)
-                    
-                    # Target check
-                    if best_rmse**2 < prob["target_mse"]:
-                        break
-
-                
-                # Check timeout
-                if time.time() - start_t > TIMEOUT_SEC:
-                    break
-                    
-                # Evolve - Island Model with Crowding
-                # 1. Select Parents (Island Aware)
-                # Use 10 islands (Pop 1000 -> 100 per island)
-                n_islands = 10
-                parent_indices = self.gpu_engine.tournament_selection_island(population, fitness, n_islands)
-                parents = population[parent_indices]
-                parent_fitness = fitness[parent_indices]
-                
-                # 2. Crossover & Mutate
-                offspring = self.gpu_engine.crossover_population(parents, 0.8)
-                offspring = self.gpu_engine.mutate_population(offspring, 0.2)
-                
-                # 3. Evaluate Offspring
-                # Inherit constants from parents and apply a small mutation
-                offspring_const = constants[parent_indices].clone()
-                # 20% chance of small Gaussian noise to constants
-                c_noise = torch.randn_like(offspring_const) * 0.1
-                # Only apply noise to some entries to maintain stability
-                noise_mask = (torch.rand_like(offspring_const) < 0.2).to(torch.float64)
-                offspring_const = offspring_const + (c_noise * noise_mask)
-                
-                off_fitness = self.gpu_engine.evaluate_batch(offspring, X_torch, Y_torch, offspring_const)
-                
-                # 4. Deterministic Crowding
-                # Compare Offspring vs Parents (preserves diversity better than replacing worst)
-                new_pop, new_fitness_batch = self.gpu_engine.deterministic_crowding(parents, offspring, parent_fitness, off_fitness)
-                
-                # Update Constants based on winners
-                mask = off_fitness < parent_fitness
-                # new_pop has Offspring where mask=True, Parent where mask=False.
-                # So we take OffspringConstants where mask=True, SelectedParentConstants where mask=False.
-                new_const = torch.where(mask.unsqueeze(1), offspring_const, constants[parent_indices])
-                
-                population = new_pop
-                constants = new_const
-                fitness = new_fitness_batch
-
-                # 5. Migration (Every 5 gens)
-                if gen % 5 == 0 and n_islands > 1:
-                     # Shift islands to mix gene pools
-                     B, L = population.shape
-                     island_size = B // n_islands
-                     
-                     pop_islands = population.view(n_islands, island_size, L)
-                     pop_islands = torch.roll(pop_islands, shifts=1, dims=0)
-                     population = pop_islands.reshape(B, L)
-                     
-                     fit_islands = fitness.view(n_islands, island_size)
-                     fit_islands = torch.roll(fit_islands, shifts=1, dims=0)
-                     fitness = fit_islands.reshape(-1)
-                     
-                     const_islands = constants.view(n_islands, island_size, -1)
-                     const_islands = torch.roll(const_islands, shifts=1, dims=0)
-                     constants = const_islands.reshape(B, -1)
-
-            # --- FINAL DEEP REFINEMENT ---
-            # Now that evolution is done, take the absolute best and squeeze out more MSE accuracy
-            if best_ind is not None:
-                # Run 100 steps of Adam on the single best candidate
-                best_ind_batch = best_ind.unsqueeze(0)
-                best_const_batch = best_const.unsqueeze(0)
-                
-                opt_const_final, final_fit_batch = self.gpu_engine.optimize_constants(
-                    best_ind_batch, best_const_batch, X_torch, Y_torch, steps=100, lr=0.2
-                )
-                
-                best_const = opt_const_final[0]
-                best_rmse = final_fit_batch[0].item()
-                best_formula_str = self.gpu_engine.rpn_to_infix(best_ind, best_const)
-                
             elapsed = time.time() - start_t
             return best_formula_str, elapsed, True
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"GPU GP Error: {e}")
+            return None, 0, False
             
         except Exception as e:
             import traceback

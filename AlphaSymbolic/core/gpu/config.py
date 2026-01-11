@@ -53,8 +53,8 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    USE_OP_SIN      = False
-    USE_OP_COS      = False
+    USE_OP_SIN      = True  # ENABLED for Trig Benchmark
+    USE_OP_COS      = True  # ENABLED for Trig Benchmark
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = False
@@ -87,12 +87,12 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
     # ----------------------------------------
-    BASE_MUTATION_RATE = 0.30
-    BASE_ELITE_PERCENTAGE = 0.15
-    DEFAULT_CROSSOVER_RATE = 0.60
-    DEFAULT_TOURNAMENT_SIZE = 4
-    MAX_TREE_DEPTH_MUTATION = 8
-    MUTATE_INSERT_CONST_PROB = 0.6
+    BASE_MUTATION_RATE = 0.40
+    BASE_ELITE_PERCENTAGE = 0.10
+    DEFAULT_CROSSOVER_RATE = 0.50
+    DEFAULT_TOURNAMENT_SIZE = 8
+    MAX_TREE_DEPTH_MUTATION = 12
+    MUTATE_INSERT_CONST_PROB = 0.5
     MUTATE_INSERT_CONST_INT_MIN = 1
     MUTATE_INSERT_CONST_INT_MAX = 5
     MUTATE_INSERT_CONST_FLOAT_MIN = 0.5
@@ -101,7 +101,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
-    COMPLEXITY_PENALTY = 0.01
+    COMPLEXITY_PENALTY = 0.0001 # Reduced to allow growth
     USE_RMSE_FITNESS = True
     FITNESS_ORIGINAL_POWER = 1.3
     FITNESS_PRECISION_THRESHOLD = 0.001
@@ -135,7 +135,7 @@ class GpuGlobals:
     USE_SIMPLIFICATION = True
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
-    USE_PARETO_SELECTION = True  # NSGA-II multi-objective (error vs complexity)
+    USE_PARETO_SELECTION = False  # Disabled for stronger fitness pressure on simple problems
     USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
     USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
 

@@ -83,7 +83,22 @@ class GPUOperators:
                     rpn_tokens.append(node.value)
                 traverse(tree.root)
 
-                ids = [self.grammar.token_to_id.get(t, PAD_ID) for t in rpn_tokens]
+                ids = []
+                for t in rpn_tokens:
+                    if t in self.grammar.token_to_id:
+                        ids.append(self.grammar.token_to_id[t])
+                    else:
+                        # Check number
+                        try:
+                            float(t)
+                            # It's a number. Map to C (or specific literal if supported)
+                            # But wait, grammar has '1', '2' etc. but token_to_id needs exact string match.
+                            # '1.0' != '1'.
+                            # Simple logic: Always 'C' for floats, unless integer match?
+                            # Optimally: 'C'. The engine randomizes constants anyway.
+                            ids.append(self.grammar.token_to_id.get('C', PAD_ID))
+                        except ValueError:
+                             ids.append(PAD_ID)
                 if len(ids) > self.max_len:
                     ids = ids[:self.max_len]
                 else:
@@ -344,3 +359,117 @@ class GPUOperators:
     def replace_nan_inf(self, population: torch.Tensor, fitness: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Implementation if needed, or done in evaluation
         return population, fitness
+
+    def subtree_mutation(self, population: torch.Tensor, mutation_rate: float) -> torch.Tensor:
+        """
+        Replaces a random subtree with a newly generated random tree.
+        Crucial for structural exploration (Bloat control + Innovation).
+        """
+        B, L = population.shape
+        # Identify valid subtrees
+        starts_mat = self._get_subtree_ranges(population)
+        valid_mask = (starts_mat != -1)
+        
+        # Decide who to mutate
+        mutate_mask = (torch.rand(B, device=self.device) < mutation_rate)
+        
+        # If no valid subtrees for an individual, we can't mutate (skip)
+        has_valid = valid_mask.any(dim=1)
+        mutate_mask = mutate_mask & has_valid
+        
+        n_mut = mutate_mask.sum().item()
+        if n_mut == 0:
+            return population
+            
+        # Indices of mutants
+        mutant_indices = torch.nonzero(mutate_mask).squeeze(1)
+        
+        # Select random end point for each mutant
+        # We use multinomial on valid positions
+        probs = valid_mask[mutate_mask].float() + 1e-6
+        ends = torch.multinomial(probs, 1).squeeze(1) # [n_mut]
+        
+        starts = starts_mat[mutate_mask].gather(1, ends.unsqueeze(1)).squeeze(1) # [n_mut]
+        
+        # Lengths of subtrees to remove
+        remove_lens = ends - starts + 1
+        
+        # Generate NEW random subtrees (RPN)
+        # Depth 2-4 is usually good for subtrees
+        # We use generate_random_population but force small trees if possible?
+        # Standard gen uses MAX_TREE_DEPTH_INITIAL (8?). A bit large for subtree.
+        # But we filter by length below.
+        
+        # Generate replacements (over-generate slightly if needed? No, just generate N)
+        replacements = self.generate_random_population(n_mut) # [n_mut, L]
+        # Determine actual length of replacements (until first PAD)
+        repl_lengths = (replacements != PAD_ID).sum(dim=1)
+        
+        # Check size constraints
+        # New Len = Old Len - Subtree Len + New Subtree Len
+        # Old Len:
+        old_lens = (population[mutant_indices] != PAD_ID).sum(dim=1)
+        new_total_lens = old_lens - remove_lens + repl_lengths
+        
+        # Filter those that fit
+        fits = new_total_lens <= self.max_len
+        
+        if not fits.any():
+            return population
+            
+        # Apply only to fitting ones
+        # Indices relative to mutant_indices
+        valid_idx_rel = torch.nonzero(fits).squeeze(1) 
+        
+        final_mutant_pop_idx = mutant_indices[valid_idx_rel] # Indices in original pop
+        
+        # We construct the new sequences for these
+        orig_seqs = population[final_mutant_pop_idx]
+        new_seqs = replacements[valid_idx_rel]
+        
+        st = starts[valid_idx_rel]
+        en = ends[valid_idx_rel]
+        r_len = repl_lengths[valid_idx_rel]
+        
+        # Construct
+        grid = torch.arange(L, device=self.device).unsqueeze(0).expand(len(valid_idx_rel), L)
+        
+        # Output buffer
+        out_seqs = torch.full_like(orig_seqs, PAD_ID)
+        
+        # Mask Pre: idx < st
+        mask_pre = grid < st.unsqueeze(1)
+        out_seqs[mask_pre] = orig_seqs[mask_pre]
+        
+        # Mask New: idx >= st and idx < st + r_len
+        limit_new = st + r_len
+        mask_new = (grid >= st.unsqueeze(1)) & (grid < limit_new.unsqueeze(1))
+        
+        # Extract new content
+        # idx in new_seqs = grid - st
+        gather_idx = grid - st.unsqueeze(1)
+        gather_idx = torch.clamp(gather_idx, 0, L-1)
+        val_new = new_seqs.gather(1, gather_idx)
+        out_seqs[mask_new] = val_new[mask_new]
+        
+        # Mask Post: idx >= limit_new
+        # Source Post start at en + 1
+        # Target Post start at st + r_len
+        # Shift = (en + 1) - (st + r_len)
+        shift = (en + 1) - (st + r_len)
+        src_idx_post = grid + shift.unsqueeze(1)
+        
+        mask_post = (grid >= limit_new.unsqueeze(1))
+        # Ensure source valid (within [0, L-1])
+        valid_src = (src_idx_post < L) #& (src_idx_post >= 0)
+        mask_post = mask_post & valid_src
+        
+        safe_src = torch.clamp(src_idx_post, 0, L-1)
+        val_post = orig_seqs.gather(1, safe_src)
+        
+        out_seqs[mask_post] = val_post[mask_post]
+        
+        # Write back
+        population[final_mutant_pop_idx] = out_seqs
+        
+        return population
