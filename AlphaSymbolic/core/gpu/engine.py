@@ -743,110 +743,184 @@ class TensorGeneticEngine:
 
     def crossover_population(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
         """
-        Performs subtree crossover on the population (Two-Child Crossover).
-        parents: [PopSize, L] (assumed valid RPNs)
-        Uses GPU to find subtrees, CPU to splice (faster than irregular GPU scatter).
+        Performs subtree crossover on the population (Two-Child Crossover) fully on GPU.
+        parents: [PopSize, L]
         """
-        pop_size, length = parents.shape
-        # We process pairs. Shuffle.
-        indices = torch.randperm(pop_size, device=self.device)
+        B, L = parents.shape
+        n_pairs = int(B * 0.5 * crossover_rate)
+        if n_pairs == 0: return parents.clone()
         
-        # Number of crossover operations
-        n_pairs = int(pop_size * 0.5 * crossover_rate)
-        if n_pairs == 0:
-            return parents.clone()
+        # 1. Partner Selection (Random Shuffle)
+        perm = torch.randperm(B, device=self.device)
+        p1_idx = perm[:n_pairs*2:2]
+        p2_idx = perm[1:n_pairs*2:2]
         
-        # Get ranges for ALL (Parallel GPU Scan)
-        subtree_starts = self._get_subtree_ranges(parents)
+        parents_1 = parents[p1_idx] # [N, L]
+        parents_2 = parents[p2_idx] # [N, L]
         
-        # Move relevant data to CPU for splicing
-        parents_cpu = parents.detach().cpu().numpy()
-        starts_cpu = subtree_starts.detach().cpu().numpy()
-        indices_cpu = indices.detach().cpu().numpy()
+        # 2. Subtree Ranges
+        # We need starts for all potential end points
+        # _get_subtree_ranges returns [N, L] where val is start_idx or -1
+        starts_1_mat = self._get_subtree_ranges(parents_1)
+        starts_2_mat = self._get_subtree_ranges(parents_2)
         
-        offspring_cpu = parents_cpu.copy()
+        # Select random VALID crossover points
+        # A valid point is where start != -1
+        valid_mask_1 = (starts_1_mat != -1)
+        valid_mask_2 = (starts_2_mat != -1)
         
-        # Create batches of crossover
-        MAX_LEN = self.max_len
-        PAD = PAD_ID
+        # For each pair, sample one index from valid points
+        # We can use torch.multinomial on the mask (treated as weights)
+        # Add epsilon to avoid error on all-invalid (shouldn't happen for valid RPN)
+        probs_1 = valid_mask_1.float() + 1e-6
+        probs_2 = valid_mask_2.float() + 1e-6
         
-        for k in range(n_pairs):
-            idx_a = indices_cpu[2*k]
-            idx_b = indices_cpu[2*k+1]
+        end_1 = torch.multinomial(probs_1, 1).squeeze(1) # [N]
+        end_2 = torch.multinomial(probs_2, 1).squeeze(1) # [N]
+        
+        start_1 = starts_1_mat.gather(1, end_1.unsqueeze(1)).squeeze(1) # [N]
+        start_2 = starts_2_mat.gather(1, end_2.unsqueeze(1)).squeeze(1) # [N]
+        
+        # Lengths of parts
+        # P1: [0...start_1-1] [start_1...end_1] [end_1+1...L]
+        # P2: [0...start_2-1] [start_2...end_2] [end_2+1...L]
+        
+        # Segments lengths
+        # Note: slices are python style [start:end] (exclusive)
+        # So len = end - start
+        
+        # Parent 1 parts
+        len_1_pre = start_1
+        len_1_sub = end_1 - start_1 + 1
+        len_1_post = L - 1 - end_1 # Counts remaining including padding?
+        # Actually actual tokens might end earlier.
+        # But we want to preserve tails including potential useful tokens?
+        # Usually standard subtree crossover swaps indices.
+        # If we respect fixed L, we just chop/pad.
+        
+        # Let's count actual useful tail? 
+        # For efficiency, we just take everything after end_1 up to L. 
+        # But wait, max length constraint.
+        
+        # Child 1: P1_pre + P2_sub + P1_post
+        # Child 2: P2_pre + P1_sub + P2_post
+        
+        len_2_pre = start_2
+        len_2_sub = end_2 - start_2 + 1
+        
+        # New Valid Lengths (approximation, assuming tail is full or we truncate)
+        # We must truncate if new length > L.
+        # Construct Gather Map [N, L]
+        
+        # We build indices for C1 derived from P1/P2/P1
+        # Part 1: 0 to len_1_pre (indices 0..s1-1 from P1)
+        # Part 2: len_1_pre to len_1_pre + len_2_sub (indices s2..e2 from P2)
+        # Part 3: ... (indices e1+1..L from P1)
+        
+        # Vectorized Index Generation
+        # We create a base grid [N, L] with values 0..L-1
+        grid = torch.arange(L, device=self.device).unsqueeze(0).expand(n_pairs, L)
+        
+        # Mask 1: grid < len_1_pre
+        mask_c1_pre = (grid < len_1_pre.unsqueeze(1))
+        
+        # Mask 2: grid >= len_1_pre AND grid < (len_1_pre + len_2_sub)
+        cut_1 = len_1_pre + len_2_sub
+        mask_c1_mid = (grid >= len_1_pre.unsqueeze(1)) & (grid < cut_1.unsqueeze(1))
+        
+        # Mask 3: grid >= cut_1
+        mask_c1_post = (grid >= cut_1.unsqueeze(1))
+        
+        # Indices for C1
+        # If pre: index = grid
+        # If mid: index = grid - len_1_pre + start_2
+        # If post: index = grid - cut_1 + end_1 + 1
+        
+        idx_c1 = torch.zeros((n_pairs, L), dtype=torch.long, device=self.device)
+        
+        term_1 = grid
+        term_2 = grid - len_1_pre.unsqueeze(1) + start_2.unsqueeze(1)
+        term_3 = grid - cut_1.unsqueeze(1) + end_1.unsqueeze(1) + 1
+        
+        # Apply Logic
+        # Note: If term > L-1 (out of bounds), we clamp to PAD later?
+        # Or we rely on mask.
+        
+        # We need to handle truncated vs padded.
+        # If result is longer than L, the mask logic naturally truncates (we only compute L outputs).
+        # We just need to valid indices.
+        # Indices >= L should map to PAD_ID.
+        
+        # Check source bounds
+        # term can be anything.
+        # We must mask invalid sources.
+        
+        # Combining
+        # We can use torch.where chaining
+        src_idx_c1 = torch.where(mask_c1_pre, term_1, 
+                       torch.where(mask_c1_mid, term_2, term_3))
+                       
+        # Child 2 Logic
+        # C2: P2_pre + P1_sub + P2_post
+        cut_2 = len_2_pre + len_1_sub
+        
+        mask_c2_pre = (grid < len_2_pre.unsqueeze(1))
+        mask_c2_mid = (grid >= len_2_pre.unsqueeze(1)) & (grid < cut_2.unsqueeze(1))
+        # Mask 3 is implicitly rest
+        
+        term_2_1 = grid
+        term_2_2 = grid - len_2_pre.unsqueeze(1) + start_1.unsqueeze(1)
+        term_2_3 = grid - cut_2.unsqueeze(1) + end_2.unsqueeze(1) + 1
+        
+        src_idx_c2 = torch.where(mask_c2_pre, term_2_1,
+                       torch.where(mask_c2_mid, term_2_2, term_2_3))
+                       
+        
+        # Perform Gather
+        # We need to know WHICH tensor to gather from for each position.
+        # C1: P1, P2, P1
+        # C2: P2, P1, P2
+        
+        # We can construct a "Source Selector" (0=P1, 1=P2)
+        # C1_sel: 0 if pre/post, 1 if mid
+        sel_c1 = torch.where(mask_c1_mid, torch.tensor(1, device=self.device), torch.tensor(0, device=self.device))
+        
+        # C2_sel: 1 if pre/post, 0 if mid (Wait, C2 base is P2=1. So pre/post=1, mid=0)
+        sel_c2 = torch.where(mask_c2_mid, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+        
+        # Helper gather
+        def gather_mixed(idx_map, sel_map, t0, t1):
+            # idx_map: [N, L] indices
+            # sel_map: [N, L] 0 or 1
+            # t0, t1: [N, L] input tensors
             
-            pA = parents_cpu[idx_a]
-            pB = parents_cpu[idx_b]
-            starts_A = starts_cpu[idx_a]
-            starts_B = starts_cpu[idx_b]
+            # Safe clamping for indices to avoid error gather (mask later)
+            # Max index is L-1.
+            safe_idx = torch.clamp(idx_map, 0, L-1)
             
-            # Valid root points are where starts_X != -1
-            cand_A = np.where(starts_A != -1)[0]
-            cand_B = np.where(starts_B != -1)[0]
+            val0 = t0.gather(1, safe_idx)
+            val1 = t1.gather(1, safe_idx)
             
-            if len(cand_A) == 0 or len(cand_B) == 0: continue
+            res = torch.where(sel_map == 0, val0, val1)
             
-            # Pick random crossover points
-            end_A = np.random.choice(cand_A)
-            end_B = np.random.choice(cand_B)
+            # Pad masking
+            # If idx_map < 0 or >= L, result is PAD
+            # Also if we are in "post" region and we exceeded original length?
+            # Our index arithmetic naturally points to higher indices.
+            # If pointing > L-1, it's garbage/pad.
+            # Actually, we should check if idx_map >= L.
+            is_pad = (idx_map < 0) | (idx_map >= L)
+            res[is_pad] = PAD_ID
+            return res
             
-            start_A = starts_A[end_A]
-            start_B = starts_B[end_B]
-            
-            # --- Child 1: A takes B ---
-            # New A = A[:startA] + B[startB:endB+1] + A[endA+1:]
-            
-            part1 = pA[:start_A]
-            part2 = pB[start_B : end_B+1]
-            part3 = pA[end_A+1:]
-            
-            new_gene_a = np.concatenate([part1, part2, part3])
-            
-            # Validate Length A
-            valid_len_a = len(new_gene_a)
-            if valid_len_a > MAX_LEN:
-                # Check real length (last non-pad index)
-                non_pad = np.where(new_gene_a != PAD)[0]
-                if len(non_pad) == 0: real_len = 0
-                else: real_len = non_pad[-1] + 1
-                
-                if real_len <= MAX_LEN:
-                    # Fits if truncated
-                    truncated = np.full(MAX_LEN, PAD, dtype=pA.dtype)
-                    truncated[:real_len] = new_gene_a[:real_len]
-                    offspring_cpu[idx_a] = truncated
-            else:
-                # Fits, need to pad
-                padded = np.full(MAX_LEN, PAD, dtype=pA.dtype)
-                padded[:valid_len_a] = new_gene_a
-                offspring_cpu[idx_a] = padded
-
-            # --- Child 2: B takes A ---
-            # New B = B[:startB] + A[startA:endA+1] + B[endB+1:]
-            
-            part1_b = pB[:start_B]
-            part2_b = pA[start_A : end_A+1]
-            part3_b = pB[end_B+1:]
-            
-            new_gene_b = np.concatenate([part1_b, part2_b, part3_b])
-            
-            # Validate Length B
-            valid_len_b = len(new_gene_b)
-            if valid_len_b > MAX_LEN:
-                # Check real length
-                non_pad = np.where(new_gene_b != PAD)[0]
-                if len(non_pad) == 0: real_len = 0
-                else: real_len = non_pad[-1] + 1
-                
-                if real_len <= MAX_LEN:
-                    truncated = np.full(MAX_LEN, PAD, dtype=pB.dtype)
-                    truncated[:real_len] = new_gene_b[:real_len]
-                    offspring_cpu[idx_b] = truncated
-            else:
-                padded = np.full(MAX_LEN, PAD, dtype=pB.dtype)
-                padded[:valid_len_b] = new_gene_b
-                offspring_cpu[idx_b] = padded
-                
-        return torch.tensor(offspring_cpu, device=self.device, dtype=torch.long)
+        c1 = gather_mixed(src_idx_c1, sel_c1, parents_1, parents_2)
+        c2 = gather_mixed(src_idx_c2, sel_c2, parents_1, parents_2)
+        
+        # Update population
+        parents[p1_idx] = c1
+        parents[p2_idx] = c2
+        
+        return parents
 
 
 
@@ -1269,8 +1343,11 @@ class TensorGeneticEngine:
                 sp = sp + is_operand.long()
                 
             # --- 2. Binary ---
-            is_binary = (token == op_add) | (token == op_sub) | (token == op_mul) | (token == op_div) | (token == op_pow)
+            is_binary = (token == op_add) | (token == op_sub) | (token == op_mul) | (token == op_div) | (token == op_pow) | (token == op_mod)
             valid_op = is_binary & (sp >= 2)
+            
+            # Check stack underflow for binary
+            has_error = has_error | (is_binary & (sp < 2))
             
             if valid_op.any():
                 idx_b = torch.clamp(sp - 1, 0, MAX_STACK - 1).unsqueeze(1)
@@ -1319,14 +1396,15 @@ class TensorGeneticEngine:
                     
                 mask = (token == op_pow) & valid_op
                 if mask.any():
-                    # No artificial clamping for float64 unless extremely huge to avoid NaN propagation immediately
-                    # C++ just does pow(l, r)
-                    # But we can protect against complex numbers (negative base ^ float exp) -> NaN
                     base = val_a[mask]
                     expon = val_b[mask]
-                    # If base < 0 and exponent is not integer loop, result is NaN. 
-                    # We can protect base like C++ protected ops sometimes do, or just let it be NaN (yielding INF fitness)
-                    res[mask] = torch.pow(base, expon)
+                    # Protect: if base < 0 and exponent not int, nan in float.
+                    # Also 0^0, etc.
+                    # We can use torch.pow but replace NaNs if they occur
+                    p = torch.pow(base, expon)
+                    bad_pow = torch.isnan(p) | torch.isinf(p)
+                    p[bad_pow] = 1e300
+                    res[mask] = p
                 
                 write_pos = torch.clamp(sp - 2, 0, MAX_STACK-1)
                 current_at_pos = stack.gather(1, write_pos.unsqueeze(1)).squeeze(1)
@@ -1343,6 +1421,9 @@ class TensorGeneticEngine:
                        (token == op_sqrt) | (token == op_abs) | (token == op_neg) | \
                        (token == op_fact) | (token == op_floor) | (token == op_gamma)
             valid_op = is_unary & (sp >= 1)
+            
+            # Check stack underflow for unary
+            has_error = has_error | (is_unary & (sp < 1))
             
             if valid_op.any():
                 idx_a = torch.clamp(sp - 1, 0, MAX_STACK - 1).unsqueeze(1)
@@ -1364,7 +1445,9 @@ class TensorGeneticEngine:
                     # Where unsafe, we put a huge value. But we must set res.
                     # We compute log everywhere but replace bad ones? Or select?
                     out = torch.full_like(inp, 1e300) # GPU_MAX_DOUBLE proxy
-                    out[safe_mask] = torch.log(inp[safe_mask])
+                    safe_inp = torch.where(safe_mask, inp, torch.tensor(1.0, device=self.device, dtype=torch.float64))
+                    val_log = torch.log(safe_inp)
+                    out[safe_mask] = val_log[safe_mask]
                     res[mask] = out
                 
                 mask = (token == op_exp) & valid_op
@@ -1373,7 +1456,9 @@ class TensorGeneticEngine:
                     inp = val_a[mask]
                     safe_mask = inp <= 700.0
                     out = torch.full_like(inp, 1e300)
-                    out[safe_mask] = torch.exp(inp[safe_mask])
+                    safe_inp = torch.where(safe_mask, inp, torch.tensor(0.0, device=self.device, dtype=torch.float64))
+                    val_exp = torch.exp(safe_inp)
+                    out[safe_mask] = val_exp[safe_mask]
                     res[mask] = out
                 
                 mask = (token == op_sqrt) & valid_op
@@ -1408,40 +1493,41 @@ class TensorGeneticEngine:
                 
                 mask = (token == op_fact) & valid_op
                 if mask.any():
-                     # C++: (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0);
-                     inp = val_a[mask]
-                     # tgamma(n+1) = n!
-                     # We use lgamma and exp to be safe? or torch.special.gamma?
-                     # torch.special.gamma is 'tgamma' equivalent.
-                     # Protection
-                     unsafe = (inp < 0) | (inp > 170.0)
-                     out = torch.full_like(inp, 1e300)
-                     
-                     # Only compute safe to avoid NaN/Inf in gradients or runtime
-                     safe_inp = inp.clone()
-                     safe_inp[unsafe] = 1.0 # dummy
-                     
-                     val_computed = torch.special.gamma(safe_inp + 1.0)
-                     out[~unsafe] = val_computed[~unsafe]
-                     res[mask] = out
+                    # C++: (val < 0 || val > 170.0) ? GPU_MAX_DOUBLE : tgamma(val + 1.0);
+                    inp = val_a[mask]
+                    # Safe range for fact: > -1 (approx) and <= 170
+                    is_safe = (inp > -1.0) & (inp <= 170.0)
+                    
+                    out = torch.full_like(inp, 1e300)
+                    
+                    # Compute only for safe
+                    if is_safe.any():
+                         safe_inp = inp[is_safe]
+                         # tgamma(n+1)
+                         val_computed = torch.special.gamma(safe_inp + 1.0)
+                         out[is_safe] = val_computed
+                         # Check result not inf
+                         is_inf_g = torch.isinf(out[is_safe])
+                         if is_inf_g.any():
+                             # If gamma produced inf within safe range bounds (unlikely if <=170), clamp
+                             # Actually 170! is <dbl_max, so should be fine.
+                             pass
+                             
+                    res[mask] = out
 
                 mask = (token == op_gamma) & valid_op
                 if mask.any():
                      # C++: (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); 
-                     # Wait, snippet said lgamma(val+1). Usually 'gamma' op is just gamma function?
-                     # C++ snippet: case 'g': result = (val <= -1.0) ? GPU_MAX_DOUBLE : lgamma(val + 1.0); 
-                     # This seems to be Log-Gamma of (x+1)? Or is it Gamma? 
-                     # 'lgamma' function usually computes log(|gamma(x)|).
-                     # The snippet explicitly says lgamma. So GPU op 'g' is log-gamma.
                      inp = val_a[mask]
-                     unsafe = (inp <= -1.0)
+                     is_safe = (inp > -1.0)
+                     
                      out = torch.full_like(inp, 1e300)
                      
-                     safe_inp = inp.clone()
-                     safe_inp[unsafe] = 1.0
-                     
-                     val_computed = torch.special.gammaln(safe_inp + 1.0) # lgamma matches gammaln in torch
-                     out[~unsafe] = val_computed[~unsafe]
+                     if is_safe.any():
+                         safe_inp = inp[is_safe]
+                         val_computed = torch.special.gammaln(safe_inp + 1.0)
+                         out[is_safe] = val_computed
+                         
                      res[mask] = out
 
                 write_pos = torch.clamp(sp - 1, 0, MAX_STACK-1)
@@ -1461,9 +1547,65 @@ class TensorGeneticEngine:
         rmse = torch.sqrt(torch.where(torch.isnan(mse), torch.tensor(1e300, device=self.device, dtype=torch.float64), mse))
         return rmse
 
-    def evaluate_differentiable(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor):
-        import torch.nn.functional as F
-        return self.evaluate_batch(population, x, y_target), torch.zeros_like(x).expand(population.shape[0], -1) 
+    def evaluate_differentiable(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluates population with Autograd enabled to return Loss [PopSize].
+        Supports backprop to constants.
+        """
+        # Ensure model is in training mode if using Layers (not used here)
+        # Ensure we don't detach anything inside _run_vm
+        
+        final_preds, sp, has_error = self._run_vm(population, x, constants)
+        is_valid = (sp == 1) & (~has_error)
+        
+        # Reshape to [B, D]
+        valid_matrix = is_valid.view(population.shape[0], x.shape[0])
+        preds = final_preds.view(population.shape[0], x.shape[0])
+        target = y_target.unsqueeze(0).expand_as(preds)
+        
+        sq_err = (preds - target)**2
+        
+        # Clamp squared error to prevent Inf in gradients for extremely bad individuals
+        sq_err = torch.clamp(sq_err, max=1e10)
+        
+        # Mask invalid to 0 (ignored in gradient)
+        masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=torch.float64))
+        
+        loss = masked_sq_err.mean(dim=1)
+        return loss
+
+    def optimize_constants(self, population: torch.Tensor, constants: torch.Tensor, 
+                          x: torch.Tensor, y_target: torch.Tensor, 
+                          steps: int = 10, lr: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Optimizes constants in-place using Gradient Descent (Adam).
+        Returns: optimized_constants, new_fitness
+        """
+        # We must clone start point and enable grad
+        opt_const = constants.clone().detach().requires_grad_(True)
+        
+        # Use Adam for stability
+        optimizer = torch.optim.Adam([opt_const], lr=lr)
+        
+        for i in range(steps):
+            optimizer.zero_grad()
+            
+            # Forward
+            try:
+                loss = self.evaluate_differentiable(population, opt_const, x, y_target)
+                total_loss = loss.sum()
+                total_loss.backward()
+                optimizer.step()
+            except Exception as e:
+                # Fallback if autograd fails (inplace op error or size mismatch)
+                # print(f"  [DEBUG] Opt Fail Step {i}: {e}")
+                return constants, self.evaluate_batch(population, x, y_target, constants)
+
+        # Final Eval (Detached)
+        with torch.no_grad():
+             final_fit = self.evaluate_batch(population, x, y_target, opt_const)
+             
+        return opt_const.detach(), final_fit 
 
     def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         """
@@ -1530,6 +1672,87 @@ class TensorGeneticEngine:
         weighted_mse = (errors ** 2 * weights.unsqueeze(0)).sum(dim=1)
         return torch.sqrt(weighted_mse)
 
+    def deterministic_crowding(self, parents: torch.Tensor, offspring: torch.Tensor, p_fit: torch.Tensor, o_fit: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Deterministic Crowding Selection.
+        Offspring competes with its direct parent.
+        Returns: New Population, New Fitness
+        """
+        # Assuming Offspring[i] is child of Parent[i] (or derived from).
+        # In our crossover, we put children back into p1_idx and p2_idx.
+        # So Offspring[idx] effectively replaces Parent[idx].
+        # We just need to know if it is BETTER.
+        
+        # Minimization (lower fitness is better)
+        replace = o_fit < p_fit
+        
+        # Update Population
+        mask = replace.unsqueeze(1).expand_as(parents)
+        new_pop = torch.where(mask, offspring, parents)
+        
+        # Update Fitness
+        new_fit = torch.where(replace, o_fit, p_fit)
+        
+        return new_pop, new_fit
+        
+    def tournament_selection_island(self, population: torch.Tensor, fitness: torch.Tensor, n_islands: int) -> torch.Tensor:
+        """
+        Performs tournament selection WITHIN islands.
+        population: [PopSize, L]
+        fitness: [PopSize]
+        n_islands: Number of islands
+        """
+        B, L = population.shape
+        island_size = B // n_islands
+        
+        # Reshape to [Islands, IslandSize, L]
+        # But we need indices.
+        
+        # We want to select B parents, but selection must be local.
+        # Run standard tournament but restrict indices?
+        
+        # Vectorized approach:
+        # Perform tournament on [Islands, IslandSize] tensor.
+        
+        pop_view = population.view(n_islands, island_size, L)
+        fit_view = fitness.view(n_islands, island_size)
+        
+        # Tournament indices [Islands, IslandSize]
+        # Random opponents within same island
+        tourn_size = 5
+        idx = torch.randint(0, island_size, (n_islands, island_size, tourn_size), device=self.device)
+        
+        # Gather fitness of opponents
+        # fit_view: [I, S]
+        # idx: [I, S, T]
+        # We need to gather dim 1.
+        # gather needs index same dim as input except gathered dim?
+        # expanded_fit: [I, 1, S] -> expand to [I, S, T]? No.
+        
+        # We use simple trick: add offset to indices to flatten them back to global
+        offsets = torch.arange(n_islands, device=self.device) * island_size
+        offsets = offsets.view(n_islands, 1, 1)
+        
+        global_idx = idx + offsets # [I, S, T]
+        
+        # Flatten to get fitness
+        flat_idx = global_idx.view(-1)
+        flat_fits = fitness[flat_idx].view(n_islands, island_size, tourn_size)
+        
+        # Min
+        best_vals, best_cols = torch.min(flat_fits, dim=2) # [I, S]
+        
+        # Access original indices
+        # We want the index of the winner
+        # best_cols is [0..T-1]
+        # We need actual index from `idx`
+        winner_local_idx = idx.gather(2, best_cols.unsqueeze(2)).squeeze(2) # [I, S]
+        
+        # Global winner index
+        winner_global_idx = winner_local_idx + offsets.squeeze(2) # [I, S]
+        
+        return winner_global_idx.view(-1)
+        
     def lexicase_selection(self, population: torch.Tensor, errors: torch.Tensor, n_select: int) -> torch.Tensor:
         """
         Selects n_select parents using Tournament Lexicase Selection.
