@@ -113,10 +113,16 @@ class GPUEvaluator:
         # from .jit_vm_unrolled import run_vm_jit_unrolled
         from .cupy_vm import run_vm_cupy
         
+        
+        # Determine variable mapping
+        first_var = self.grammar.active_variables[0]
+        id_x_start = self.grammar.token_to_id[first_var]
+        num_vars = len(self.grammar.active_variables)
+
         stack_top, sp, err = run_vm_cupy(
             population, x, constants,
             self.grammar.token_to_id['<PAD>'],
-            self.id_x_legacy,
+            id_x_start, num_vars,
             self.id_C,
             self.id_pi,
             self.id_e,
@@ -145,17 +151,33 @@ class GPUEvaluator:
         final_preds, sp, has_error = self._run_vm(population, x, constants)
         
         is_valid = (sp == 1) & (~has_error)
+        
         final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
                                   final_preds, 
                                   torch.tensor(1e300, device=self.device, dtype=torch.float64))
-                                  
+        
         preds_matrix = final_preds.view(B, D)
         target_matrix = y_target.unsqueeze(0).expand(B, -1)
-        mse = torch.mean((preds_matrix - target_matrix)**2, dim=1)
+        
+        diff = preds_matrix - target_matrix
+        sq_diff = diff**2
+        mse = torch.mean(sq_diff, dim=1)
         
         rmse = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
                                       torch.tensor(1e150, device=self.device, dtype=torch.float64), 
                                       mse))
+        
+        # DEBUG: Check for suspicious 0 fitness
+        if rmse.min() < 1e-6:
+             min_val, min_idx = torch.min(rmse, dim=0)
+             print(f"\n[DEBUG EVAL] Found RMSE ~ 0: {min_val.item()} at idx {min_idx.item()}")
+             print(f"  SP: {sp[min_idx].item()}")
+             print(f"  HasError: {has_error[min_idx].item()}")
+             print(f"  IsValid: {is_valid[min_idx].item()}")
+             print(f"  Preds: {preds_matrix[min_idx][:5].tolist()}...")
+             print(f"  Target: {target_matrix[min_idx][:5].tolist()}...")
+             print(f"  Pop: {population[min_idx].tolist()}")
+        
         return rmse
 
     def evaluate_differentiable(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor) -> torch.Tensor:

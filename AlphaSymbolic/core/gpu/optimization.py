@@ -48,43 +48,105 @@ class GPUOptimizer:
             
         return best_consts, torch.sqrt(best_mse)
 
-    def local_search(self, population: torch.Tensor, constants: torch.Tensor, 
-                     x: torch.Tensor, y: torch.Tensor, 
-                     top_k: int = 10, attempts: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def nano_pso(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y: torch.Tensor, 
+                steps: int = 20, num_particles: int = 20, w: float = 0.5, c1: float = 1.5, c2: float = 1.5) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Hill climbing: try single-token mutations on top individuals, keep improvements.
+        Particle Swarm Optimization (Gradient-Free) for constants.
+        Runs 'num_particles' for EACH individual in 'population' in parallel.
+        
+        Args:
+           population: [B, L]
+           constants: [B, K] (Initial guess)
+           x, y: Data
+        
+        Returns:
+           refined_constants: [B, K]
+           refined_errors: [B]
         """
-        if attempts is None:
-            attempts = GpuGlobals.LOCAL_SEARCH_ATTEMPTS
+        B, K = constants.shape
+        # Replicate population for particles
+        # We process B * num_particles individuals
         
-        pop_out = population.clone()
-        const_out = constants.clone()
+        # 1. Expand Population indices
+        # We don't need to copy full formula tensors if we use indexing trick in evaluator?
+        # But evaluator expects [Total, L].
+        # For simplicity, let's expand. [B, L] -> [B*P, L]
+        # B=200, P=20 -> 4000. Cheap.
         
-        fitness = self.evaluator.evaluate_batch(population, x, y, constants)
-        _, top_idx = torch.topk(fitness, min(top_k, len(fitness)), largest=False)
+        pop_expanded = population.repeat_interleave(num_particles, dim=0) # [B*P, L]
         
-        for idx in top_idx:
-            idx = idx.item()
-            current_rpn = population[idx:idx+1]
-            current_const = constants[idx:idx+1]
-            current_fit = fitness[idx].item()
+        # 2. Init Particles
+        # First particle is the original guess (elitism within swarm)
+        # Others are random perturbations
+        
+        # [B, P, K]
+        # Particle 0: exact copy
+        # Particle 1..P: perturbed
+        
+        pos = constants.unsqueeze(1).repeat(1, num_particles, 1) # [B, P, K]
+        # Jitter
+        noise = torch.randn(B, num_particles - 1, K, device=self.device, dtype=torch.float64) * 1.0
+        pos[:, 1:, :] += noise
+        
+        vel = torch.randn_like(pos) * 0.1
+        
+        # Flatten for batch evaluation
+        flat_pos = pos.reshape(-1, K) # [B*P, K]
+        
+        # Best Memory
+        pbest_pos = flat_pos.clone()
+        pbest_err = torch.full((B * num_particles,), float('inf'), device=self.device, dtype=torch.float64)
+        
+        # Global Best (per swarm/individual)
+        # We store this as [B, K] and [B] err
+        gbest_pos = constants.clone()
+        gbest_err = torch.full((B,), float('inf'), device=self.device, dtype=torch.float64)
+        
+        # Loop
+        for step in range(steps):
+            # 3. Evaluate Batch
+            # shape [B*P]
+            errors = self.evaluator.evaluate_batch(pop_expanded, x, y, flat_pos)
             
-            best_rpn = current_rpn.clone()
-            best_const = current_const.clone()
-            best_fit = current_fit
+            # 4. Update Personal Bests
+            improved = errors < pbest_err
+            pbest_pos[improved] = flat_pos[improved]
+            pbest_err[improved] = errors[improved]
             
-            for _ in range(attempts):
-                # Mutate
-                mutant = self.operators.mutate_population(current_rpn, mutation_rate=0.15)
-                mutant_fit = self.evaluator.evaluate_batch(mutant, x, y, current_const)[0].item()
+            # 5. Update Global Bests
+            # Reshape to [B, P]
+            reshaped_err = pbest_err.view(B, num_particles)
+            min_errs, min_indices = torch.min(reshaped_err, dim=1) # [B]
+            
+            improved_g = min_errs < gbest_err
+            if improved_g.any():
+                gbest_err[improved_g] = min_errs[improved_g]
+                # Get indices in flat array
+                # flat_idx = row_idx * P + col_idx
+                # We need best pos
+                # Actually min_indices is index 0..P-1
+                # Gather from pbest_pos view?
+                pbest_pos_view = pbest_pos.view(B, num_particles, K)
                 
-                if mutant_fit < best_fit:
-                    best_rpn = mutant.clone()
-                    best_fit = mutant_fit
+                # Expand indices to [B, 1, K] to gather
+                gather_idx = min_indices.view(B, 1, 1).expand(B, 1, K)
+                new_gbests = pbest_pos_view.gather(1, gather_idx).squeeze(1)
+                
+                gbest_pos[improved_g] = new_gbests[improved_g]
+                
+            # 6. PSO Update
+            # V = w*V + c1*r1*(Pbest - X) + c2*r2*(Gbest - X)
             
-            if best_fit < current_fit:
-                pop_out[idx] = best_rpn[0]
-                opt_const, _ = self.optimize_constants(best_rpn, best_const, x, y, steps=5)
-                const_out[idx] = opt_const[0]
-        
-        return pop_out, const_out
+            r1 = torch.rand_like(flat_pos)
+            r2 = torch.rand_like(flat_pos)
+            
+            # Broadcast Gbest [B, K] -> [B*P, K]
+            gbest_expanded = gbest_pos.repeat_interleave(num_particles, dim=0)
+            
+            # Reshape vel/pos to match? They are already flat [B*P]
+            vel = w * vel + c1 * r1 * (pbest_pos - flat_pos) + c2 * r2 * (gbest_expanded - flat_pos)
+            flat_pos += vel
+            
+             # Handle Bounds? (Optional)
+            
+        return gbest_pos, gbest_err

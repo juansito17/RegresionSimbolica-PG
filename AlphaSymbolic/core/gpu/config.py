@@ -137,6 +137,7 @@ class GpuGlobals:
     USE_LEXICASE_SELECTION = True
     USE_PARETO_SELECTION = True  # NSGA-II multi-objective (error vs complexity)
     USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
+    USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
 
     # ----------------------------------------
     # Otros Parámetros

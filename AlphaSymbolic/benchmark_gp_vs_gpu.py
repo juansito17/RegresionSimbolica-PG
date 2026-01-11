@@ -135,7 +135,7 @@ class BenchmarkRunner:
         Y_torch = torch.tensor(Y, dtype=torch.float64, device=self.device)
         
         # Init Population
-        population = self.gpu_engine._generate_random_population(POPULATION)
+        population = self.gpu_engine.initialize_population()
         constants = torch.randn(POPULATION, self.gpu_engine.max_constants, device=self.device, dtype=torch.float64)
         
         best_rmse = float('inf')

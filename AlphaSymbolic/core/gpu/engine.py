@@ -70,6 +70,9 @@ class TensorGeneticEngine:
     def rpn_to_infix(self, rpn_tensor: torch.Tensor, constants: torch.Tensor = None) -> str:
         return self.simplifier._rpn_to_infix_str(rpn_tensor, constants)
 
+    def get_tree_size(self, rpn_tensor: torch.Tensor) -> int:
+        return (rpn_tensor != PAD_ID).sum().item()
+
     def load_population_from_strings(self, formulas: List[str]) -> Tuple[torch.Tensor, torch.Tensor]:
         # Logic to load specifically valid RPN + constants (extract constants from string)
         # The simplifier's logic extracts constants. 
@@ -270,7 +273,10 @@ class TensorGeneticEngine:
             opt_pop = population[top_idx]
             opt_consts = pop_constants[top_idx]
             
-            refined_consts, refined_mse = self.optimizer.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=10)
+            if GpuGlobals.USE_NANO_PSO:
+                 refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=20)
+            else:
+                 refined_consts, refined_mse = self.optimizer.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=10)
             pop_constants[top_idx] = refined_consts
             fitness_rmse[top_idx] = refined_mse
             
@@ -281,6 +287,7 @@ class TensorGeneticEngine:
             
             # Best Tracking
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+            
             if min_rmse.item() < best_rmse:
                 best_rmse = min_rmse.item()
                 best_rpn = population[min_idx].clone()

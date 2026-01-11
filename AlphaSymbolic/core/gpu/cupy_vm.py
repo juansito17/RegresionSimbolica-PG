@@ -7,15 +7,16 @@ from torch.utils.dlpack import to_dlpack, from_dlpack
 RPN_KERNEL_SOURCE = r'''
 extern "C" __global__
 void rpn_kernel(
-    const long long* population,  // [eff_B, L] - Fixed for Windows (int64)
-    const double* x,         // [eff_B] or [eff_B, D]
+    const long long* population,  // [eff_B, L]
+    const double* x,         // [eff_B * num_vars] flattened
     const double* constants, // [eff_B, K]
     double* out_preds,       // [eff_B]
     int* out_sp,             // [eff_B]
     unsigned char* out_err,  // [eff_B]
-    int B, int D, int L, int K, int x_dim_stride,
+    int B, int D, int L, int K, int num_vars,
     // IDs
-    int PAD_ID, int id_x_legacy,
+    int PAD_ID, 
+    int id_x_start, // Start ID for variables (x0, x1...)
     int id_C, int id_pi, int id_e,
     int id_1, int id_2, int id_3, int id_5,
     // Ops
@@ -50,10 +51,14 @@ void rpn_kernel(
         double val = 0.0;
         bool push = false;
         
-        if (token == id_x_legacy) {
-            val = x[idx]; 
+        // Variable check
+        if (token >= id_x_start && token < id_x_start + num_vars) {
+            int var_idx = token - id_x_start;
+            // x layout: [eff_B, num_vars]
+            // Access: x[idx * num_vars + var_idx]
+            val = x((long long)idx * num_vars + var_idx);
             push = true;
-        } 
+        }
         else if (token == id_pi) { val = pi_val; push = true; }
         else if (token == id_e) { val = e_val; push = true; }
         else if (token == id_1) { val = 1.0; push = true; }
@@ -80,95 +85,81 @@ void rpn_kernel(
             continue;
         }
         
-        // Ops
+        // Ops - Validated Stack Size
         // Binary
-        if (sp >= 2) {
-             double b = s[sp-1];
-             double a = s[sp-2];
-             double res = 0.0;
-             bool valid = false;
-             
-             if (token == op_add) { res = a + b; valid = true; }
-             else if (token == op_sub) { res = a - b; valid = true; }
-             else if (token == op_mul) { res = a * b; valid = true; }
-             else if (token == op_div) {
+        if (token == op_add || token == op_sub || token == op_mul || token == op_div || token == op_pow || token == op_mod) {
+            if (sp < 2) { error = true; break; }
+            
+            double b = s[sp-1];
+            double a = s[sp-2];
+            double res = 0.0;
+            
+            if (token == op_add) res = a + b;
+            else if (token == op_sub) res = a - b;
+            else if (token == op_mul) res = a * b;
+            else if (token == op_div) {
                  if (abs(b) < val_1e9) res = val_1e30;
                  else res = a / b;
-                 valid = true;
-             }
-             else if (token == op_mod) {
+            }
+            else if (token == op_mod) {
                  if (abs(b) < val_1e9) res = val_1e30;
-                 else res = remainder(a, b); // fmod vs remainder?
-                 valid = true;
-             }
-             else if (token == op_pow) {
+                 else res = remainder(a, b);
+            }
+            else if (token == op_pow) {
                  res = pow(a, b);
                  if (isnan(res) || isinf(res)) res = val_1e30;
-                 valid = true;
-             }
-             
-             if (valid) {
-                 s[sp-2] = res;
-                 sp--;
-                 continue;
-             }
+            }
+            
+            s[sp-2] = res;
+            sp--;
+            continue;
         }
         
         // Unary
-        if (sp >= 1) {
-            double a = s[sp-1];
-            double res = 0.0;
-            bool valid = false;
-            
-            if (token == op_sin) { res = sin(a); valid = true; }
-            else if (token == op_cos) { res = cos(a); valid = true; }
-            else if (token == op_tan) { res = tan(a); valid = true; }
-            else if (token == op_abs) { res = abs(a); valid = true; }
-            else if (token == op_neg) { res = -a; valid = true; }
-            else if (token == op_sqrt) { res = sqrt(abs(a)); valid = true; }
-            else if (token == op_log) { 
-                if (a <= val_1e9) res = -val_1e30; 
-                else res = log(a);
-                valid = true;
-            }
-            else if (token == op_exp) {
-                if (a > 80.0) res = val_1e30;
-                else if (a < -80.0) res = 0.0;
-                else res = exp(a);
-                valid = true; 
-            }
-            else if (token == op_floor) { res = floor(a); valid = true; }
-            else if (token == op_asin) {
-                double v = a;
-                if (v > 1.0) v = 1.0;
-                if (v < -1.0) v = -1.0;
-                res = asin(v);
-                valid = true;
-            }
-            else if (token == op_acos) {
-                double v = a;
-                if (v > 1.0) v = 1.0;
-                if (v < -1.0) v = -1.0;
-                res = acos(v);
-                valid = true;
-            }
-            else if (token == op_atan) { res = atan(a); valid = true; }
-            else if (token == op_fact) {
-                if (a >= 0 && a <= 170) res = exp(lgamma(a + 1.0));
-                else res = val_1e30;
-                valid = true;
-            }
-            else if (token == op_gamma) {
-                if (a > -1.0) res = lgamma(a + 1.0);
-                else res = val_1e30;
-                valid = true;
-            }
-            
-            if (valid) {
-                s[sp-1] = res;
-                continue;
-            }
+        if (sp < 1) { error = true; break; }
+        
+        double a = s[sp-1];
+        double res = 0.0;
+        
+        if (token == op_sin) res = sin(a);
+        else if (token == op_cos) res = cos(a);
+        else if (token == op_tan) res = tan(a);
+        else if (token == op_abs) res = abs(a);
+        else if (token == op_neg) res = -a;
+        else if (token == op_sqrt) res = sqrt(abs(a));
+        else if (token == op_log) { 
+            if (a <= val_1e9) res = -val_1e30; 
+            else res = log(a);
         }
+        else if (token == op_exp) {
+            if (a > 80.0) res = val_1e30;
+            else if (a < -80.0) res = 0.0;
+            else res = exp(a);
+        }
+        else if (token == op_floor) res = floor(a);
+        else if (token == op_asin) {
+            double v = a;
+            if (v > 1.0) v = 1.0;
+            if (v < -1.0) v = -1.0;
+            res = asin(v);
+        }
+        else if (token == op_acos) {
+            double v = a;
+            if (v > 1.0) v = 1.0;
+            if (v < -1.0) v = -1.0;
+            res = acos(v);
+        }
+        else if (token == op_atan) res = atan(a);
+        else if (token == op_fact) {
+            if (a >= 0 && a <= 170) res = exp(lgamma(a + 1.0));
+            else res = val_1e30;
+        }
+        else if (token == op_gamma) {
+            if (a > -1.0) res = lgamma(a + 1.0);
+            else res = val_1e30;
+        }
+        
+        s[sp-1] = res;
     }
     
     out_sp[idx] = sp;
@@ -177,6 +168,8 @@ void rpn_kernel(
     else out_preds[idx] = val_1e30;
 }
 '''
+# Fix small syntax error: x(...) -> x[...]
+RPN_KERNEL_SOURCE = RPN_KERNEL_SOURCE.replace("val = x((long long)idx * num_vars + var_idx);", "val = x[(long long)idx * num_vars + var_idx];")
 
 rpn_kernel = cp.RawKernel(RPN_KERNEL_SOURCE, 'rpn_kernel')
 
@@ -185,7 +178,7 @@ def run_vm_cupy(
     x: torch.Tensor, 
     constants: torch.Tensor,
     # IDs
-    PAD_ID, id_x_legacy,
+    PAD_ID, id_x_start, num_vars,
     id_C, id_pi, id_e,
     id_1, id_2, id_3, id_5,
     op_add, op_sub, op_mul, op_div, op_pow, op_mod,
@@ -197,46 +190,39 @@ def run_vm_cupy(
     pi_val, e_val
 ):
     B, L = population.shape
-    D = x.shape[0]
+    D = x.shape[0] # Number of samples
+    # Check num_vars consistency
+    if x.dim() > 1:
+        x_dim = x.shape[1]
+    else:
+        x_dim = 1
+        
     eff_B = B * D
     
-    # Debug
-    # print(f"CupyVM: B={B}, L={L}, D={D}, eff_B={eff_B}")
-    # print(f"Pop shape: {population.shape}")
-    # print(f"X shape: {x.shape}")
-    
     try:
-        # Expand Population: [B, L] -> [B, D, L] -> [B*D, L]
-        # pop_indices = torch.arange(B, device=population.device).view(B, 1).expand(B, D).reshape(-1) # [0,0,0, 1,1,1...]
-        # But standard expand/reshape works:
+        # Expand Population: [B, L] -> [B, D, L] -> [eff_B, L]
+        # Repeats each formula D times for D samples
         pop_exp = population.unsqueeze(1).expand(B, D, L).reshape(eff_B, L).contiguous()
 
-        # Expand X: [D] -> [B, D] -> [B*D] (Sequential: x0..xD, x0..xD)
-        # If x is 1D:
+        # Expand X: 
+        # We need [eff_B, x_dim]. 
+        # x is [D, x_dim].
+        # We need B copies of the entire dataset.
+        # [D, x_dim] -> [B, D, x_dim] -> [B*D, x_dim]
+        # Note: population expansion was [Pop0...Pop0, Pop1...Pop1].
+        # So x expansion must be [x0...xD, x0...xD].
+        
         if x.dim() == 1:
-            x_exp = x.unsqueeze(0).expand(B, D).reshape(eff_B).contiguous()
-        # If x is 2D [D, 1]:
-        elif x.dim() == 2 and x.shape[1] == 1:
-            x_sq = x.squeeze(1)
-            x_exp = x_sq.unsqueeze(0).expand(B, D).reshape(eff_B).contiguous()
-        # If x is [D, V] or [V, D]? 
-        # Evaluate assumes x shape matches usage.
-        # Let's assume flattened for kernel if unknown
-        else:
-             # Just repeat X, B times?
-             # x: [D, ...]
-             # We want B copies of x.
-             # repeat(B, 1...)
-             x_exp = x.repeat(B, *([1]*(x.dim()-1))).reshape(eff_B, -1).contiguous()
-             if x_exp.shape[1] == 1:
-                 x_exp = x_exp.squeeze(1)
+            x = x.unsqueeze(1) # [D, 1]
+            
+        x_exp = x.unsqueeze(0).expand(B, D, x_dim).reshape(eff_B, x_dim).contiguous()
             
         const_exp = constants.unsqueeze(1).expand(B, D, constants.shape[1]).reshape(eff_B, constants.shape[1]).contiguous()
         
     except Exception as e:
         import sys
         print(f"Error in Cupy VM Expansion: {e}")
-        print(f"B={B}, L={L}, D={D}")
+        print(f"B={B}, L={L}, D={D}, x_dim={x_dim}")
         print(f"Pop: {population.shape}")
         print(f"X: {x.shape}")
         sys.stdout.flush()
@@ -260,8 +246,8 @@ def run_vm_cupy(
     
     rpn_kernel((grid_size,), (block_size,), (
         c_pop, c_x, c_const, c_out_preds, c_out_sp, c_out_err,
-        B*D, D, L, K, 1,
-        PAD_ID, id_x_legacy,
+        eff_B, D, L, K, x_dim,
+        PAD_ID, id_x_start,
         id_C, id_pi, id_e,
         id_1, id_2, id_3, id_5,
         op_add, op_sub, op_mul, op_div, op_pow, op_mod,
