@@ -329,11 +329,28 @@ class TensorGeneticEngine:
             next_c_list = []
             
             # Elitism
+            # Elitism & Selection
             k_elite = max(1, int(self.pop_size * 0.05))
+            
             if GpuGlobals.USE_PARETO_SELECTION:
-                elite_idx = self.pareto.select(population, fitness_rmse, lengths, k_elite)
+                # 1. Compute Ranks and Crowding (Vectorized GPU)
+                ranks, crowding = self.pareto.compute_ranks_and_crowding(fitness_rmse, lengths)
+                
+                # 2. Select Elites (Sort by Rank ASC, Crowding DESC)
+                # Composite score: rank - (normalized_crowding). We want to Minimize this.
+                # Crowding can be inf. Handle carefully.
+                crowd_safe = torch.nan_to_num(crowding, posinf=1e9)
+                max_c = crowd_safe.max() + 1e-6
+                score = ranks.double() - (crowd_safe / max_c)
+                
+                _, elite_sorted = torch.sort(score)
+                elite_idx = elite_sorted[:k_elite]
+                
+                # 3. Tournament Selection Metric
+                selection_metric = score # Min is best
             else:
                 _, elite_idx = torch.topk(fitness_penalized, k_elite, largest=False)
+                selection_metric = fitness_penalized # Min is best
             
             next_pop_list.append(population[elite_idx])
             next_c_list.append(pop_constants[elite_idx])
@@ -345,8 +362,11 @@ class TensorGeneticEngine:
             if n_cross > 0:
                 # Tournament
                 idx = torch.randint(0, self.pop_size, (n_cross, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                best_g = torch.argmin(fitness_penalized[idx], dim=1)
-                parents_idx = idx.gather(1, best_g.unsqueeze(1)).squeeze(1)
+                candidates_metric = selection_metric[idx]
+                best_local_idx = torch.argmin(candidates_metric, dim=1) # Returns 0..TournamentSize
+                
+                # Need global indices from idx
+                parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
                 
                 parents = population[parents_idx]
                 c_parents = pop_constants[parents_idx]
@@ -357,8 +377,9 @@ class TensorGeneticEngine:
                 
             if n_mut > 0:
                 idx = torch.randint(0, self.pop_size, (n_mut, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                best_g = torch.argmin(fitness_penalized[idx], dim=1)
-                parents_idx = idx.gather(1, best_g.unsqueeze(1)).squeeze(1)
+                candidates_metric = selection_metric[idx]
+                best_local_idx = torch.argmin(candidates_metric, dim=1)
+                parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
                 
                 parents = population[parents_idx]
                 c_parents = pop_constants[parents_idx]
