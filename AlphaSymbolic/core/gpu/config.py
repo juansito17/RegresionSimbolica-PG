@@ -16,10 +16,11 @@ class GpuGlobals:
     FORCE_CPU_MODE = False # Si es True, usa CPU aunque CUDA esté disponible
     
     # Tamaño de población - MÁXIMO para RTX 3050 (4GB VRAM)
-    POP_SIZE = 5000       # Agresivo - usa ~3GB VRAM
-    GENERATIONS = 100000  # Más generaciones
-    NUM_ISLANDS = 8       # Máxima diversidad
-    MIN_POP_PER_ISLAND = 10
+    # With torch.compile we can push this higher
+    POP_SIZE = 20000       # Massive parallelism
+    GENERATIONS = 500  # Reduced generations for benchmark speed, but high pop
+    NUM_ISLANDS = 20       # More islands
+    MIN_POP_PER_ISLAND = 50
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = False

@@ -124,40 +124,52 @@ def hybrid_solve(
     results = []
     futures = []
 
-    # A. Launch CPU Workers (Background)
+    # A. Launch GPU Engine
     # ---------------------------------
-    # ---------------------------------
-    # Prepare chunks for ALL workers
-    cpu_seeds = list(seeds) # Copy
-    cpu_chunks = []
-    
-    if max_workers > 0:
-        if not cpu_seeds:
-            cpu_chunks = [[] for _ in range(max_workers)]
-        else:
-            # Distribute seeds round-robin
-            cpu_chunks = [[] for _ in range(max_workers)]
-            for i, seed in enumerate(cpu_seeds):
-                cpu_chunks[i % max_workers].append(seed)
+    if TensorGeneticEngine:
+        try:
+            # Initialize Engine
+            gpu_engine = TensorGeneticEngine(pop_size=20000, n_islands=20, device=device)
+            print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds...")
+            
+            # Run Evolution
+            best_formula_str = gpu_engine.run(x_values, y_values, seeds=seeds, timeout_sec=gp_timeout)
+            
+            if best_formula_str:
+                # Calculate RMSE for consistency
+                # (Engine already checked target compliance, but we need the number for return dict)
+                try:
+                    tree = ExpressionTree.from_infix(best_formula_str)
+                    y_pred = tree.evaluate(x_values)
+                    mse = np.mean((y_values - y_pred)**2)
+                    rmse = np.sqrt(mse)
+                    results.append({'formula': best_formula_str, 'rmse': rmse, 'status': 'success'})
+                except:
+                    results.append({'formula': best_formula_str, 'rmse': 999.0, 'status': 'eval_error'})
+            else:
+                 print("[Phase 2] GPU Engine returned no valid formula.")
+                 
+        except Exception as e:
+            print(f"[Phase 2] GPU Engine Failed: {e}")
+            import traceback
+            traceback.print_exc()
 
-    # print(f"[Phase 2] Launching {max_workers} Parallel GP Workers (C++ SOTA)...")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-        for chunk in cpu_chunks:
-            args = (x_list, y_list, chunk, gp_timeout, gp_binary_path)
-            futures.append(executor.submit(_run_gp_worker, args))
-
-
-        # C. Collect CPU Results
-        # ----------------------
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                res = future.result()
-                if res['status'] == 'success' or res['status'] == 'eval_error':
-                    res['worker'] = 'CPU'
-                    results.append(res)
-            except Exception as e:
-                print(f"Worker exception: {e}")
+    else:
+        print("[Phase 2] TensorGeneticEngine not available. Falling back to CPU.")
+        # Fallback to CPU workers if GPU not imported
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+            for chunk in cpu_chunks:
+                args = (x_list, y_list, chunk, gp_timeout, gp_binary_path)
+                futures.append(executor.submit(_run_gp_worker, args))
+                
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    res = future.result()
+                    if res['status'] == 'success' or res['status'] == 'eval_error':
+                        res['worker'] = 'CPU'
+                        results.append(res)
+                except Exception as e:
+                    print(f"Worker exception: {e}")
 
     total_time = time.time() - start_time
 

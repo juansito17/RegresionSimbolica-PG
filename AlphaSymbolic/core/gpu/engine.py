@@ -925,37 +925,122 @@ class TensorGeneticEngine:
 
 
 
+    def infix_to_rpn_tensor(self, formula_str: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Converts an infix string to an RPN tensor (padded to max_len) and constants tensor.
+        Handles parsing constants and extracting them.
+        """
+        try:
+            # Use ExpressionTree for parsing structure
+            tree = ExpressionTree.from_infix(formula_str)
+            if not tree.is_valid:
+                return torch.zeros(self.max_len, dtype=torch.long, device=self.device), torch.zeros(self.max_constants, dtype=torch.float64, device=self.device)
+            
+            # Use traverse to get tokens in RPN order (Post-order)
+            rpn_tokens = []
+            def traverse(node):
+                if not node: return
+                for child in node.children:
+                    traverse(child)
+                rpn_tokens.append(node.value)
+            
+            traverse(tree.root)
+            
+            clean_tokens = []
+            const_values = []
+            
+            for t in rpn_tokens:
+                 # Check if constant
+                 # We support literals '1','2','3','5'. Others map to 'C'.
+                 if t in self.grammar.terminals and t not in ['C', '1', '2', '3', '5'] and not t.startswith('x'):
+                     # It's likely a variable x0..xn, keep it.
+                     clean_tokens.append(t)
+                 elif (t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit())):
+                     # Numeric literal
+                     if t in ['1', '2', '3', '5']:
+                         clean_tokens.append(t)
+                     else:
+                         clean_tokens.append('C')
+                         const_values.append(float(t))
+                 else:
+                     clean_tokens.append(t)
+            
+            # Map to IDs
+            ids = [self.grammar.token_to_id.get(t, PAD_ID) for t in clean_tokens]
+            
+            # Pad
+            if len(ids) > self.max_len:
+                ids = ids[:self.max_len]
+            else:
+                ids += [PAD_ID] * (self.max_len - len(ids))
+                
+            # Constants padding
+            if len(const_values) > self.max_constants:
+                const_values = const_values[:self.max_constants]
+            else:
+                const_values += [0.0] * (self.max_constants - len(const_values))
+                
+            return torch.tensor(ids, dtype=torch.long, device=self.device), torch.tensor(const_values, dtype=torch.float64, device=self.device)
+            
+        except Exception as e:
+            # print(f"Error parsing formula '{formula_str}': {e}")
+            return torch.zeros(self.max_len, dtype=torch.long, device=self.device), torch.zeros(self.max_constants, dtype=torch.float64, device=self.device)
+
+    def load_population_from_strings(self, formulas: List[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Loads a list of infix strings into the population tensors.
+        Returns: (population, constants)
+        """
+        rpn_list = []
+        const_list = []
+        
+        for f in formulas:
+            r, c = self.infix_to_rpn_tensor(f)
+            # Check validity (sum > 0 implies non-empty)
+            if (r != PAD_ID).any():
+                rpn_list.append(r)
+                const_list.append(c)
+                
+        if not rpn_list:
+             return None, None
+             
+        pop = torch.stack(rpn_list)
+        consts = torch.stack(const_list)
+        return pop, consts
+
     def infix_to_rpn(self, formulas: List[str]) -> torch.Tensor:
         """
-        Converts a list of infix strings to a padded RPN tensor [B, L].
+        Legacy/Simple converter without constant extraction (constants become '1.0' or ignored if not in grammar).
+        For backward compatibility or simple usage.
         """
         batch_rpn = []
-        for f in formulas:
+        for formula_str in formulas:
             try:
-                tree = ExpressionTree.from_infix(f)
+                tree = ExpressionTree.from_infix(formula_str)
                 if not tree.is_valid:
                     batch_rpn.append([PAD_ID]*self.max_len)
                     continue
-                
+
                 rpn_tokens = []
                 def traverse(node):
                     if not node: return
                     for child in node.children:
                         traverse(child)
                     rpn_tokens.append(node.value)
-                
                 traverse(tree.root)
+
                 ids = [self.grammar.token_to_id.get(t, PAD_ID) for t in rpn_tokens]
                 if len(ids) > self.max_len:
                     ids = ids[:self.max_len]
                 else:
                     ids = ids + [PAD_ID] * (self.max_len - len(ids))
+                
                 batch_rpn.append(ids)
-            except:
+            except Exception as e:
                 batch_rpn.append([PAD_ID]*self.max_len)
                 
         if not batch_rpn:
-             return torch.empty((0, self.max_len), device=self.device, dtype=torch.long)
+            return torch.empty((0, self.max_len), device=self.device, dtype=torch.long)
         return torch.tensor(batch_rpn, device=self.device, dtype=torch.long)
 
 
@@ -1036,10 +1121,11 @@ class TensorGeneticEngine:
     
 
 
-    def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    @torch.compile(mode="reduce-overhead", dynamic=False)
+    def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Internal VM interpreter to evaluate RPN population on the GPU.
-        Returns: (final_predictions, stack_pointer)
+        Returns: (final_predictions, stack_pointer, has_error)
         """
         B, L = population.shape
         D = x.shape[0]
@@ -1930,6 +2016,14 @@ class TensorGeneticEngine:
         
         if y_t.ndim > 1: y_t = y_t.flatten()
 
+        if self.num_variables == 1 and x_t.ndim == 1:
+            x_t = x_t.unsqueeze(0) # [1, N]
+        
+        if y_t.ndim == 1: 
+            y_t = y_t.unsqueeze(0) # [1, N]
+
+        # NOTE: This ensures correct broadcasting against [B, N] stack or results.
+        
         # The Sniper
         sniper_res = self.sniper.run(x_values, y_targets)
         if sniper_res: return sniper_res
@@ -1986,6 +2080,7 @@ class TensorGeneticEngine:
             
 
             # Eval (Fast Scan)
+            # print(f"DEBUG: Eval Batch Pop={population.shape}, X={x_t.shape}, Y={y_t.shape}")
             fitness_rmse = self.evaluate_batch(population, x_t, y_t, pop_constants)
             
             # --- Constant Optimization (Top K) ---
@@ -2002,9 +2097,11 @@ class TensorGeneticEngine:
             
             # Optimize (Gradient Descent)
             # Use fewer steps to keep speed up? 10 is fine.
+            # print(f"DEBUG: Optimization Start Shapes: Pop={opt_pop.shape}, Const={opt_consts.shape}, X={x_t.shape}")
             refined_consts, refined_mse = self.optimize_constants(
                 opt_pop, opt_consts, x_t, y_t, steps=10, lr=0.1
             )
+            # print(f"DEBUG: Optimization End Shapes: Refined={refined_consts.shape}, MSE={refined_mse.shape}")
             
             # Update population constants
             pop_constants[top_idx] = refined_consts
@@ -2201,4 +2298,149 @@ class TensorGeneticEngine:
                  
         if best_rpn is not None:
              return self.rpn_to_infix(best_rpn, best_consts_vec)
+        return None
+
+    def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10):
+        """
+        Full Evolutionary Loop (API compatible with GPEngine).
+        
+        Args:
+            x_values: Input data (numpy or list)
+            y_values: Target data (numpy or list)
+            seeds: Optional list of infix formulas to inject
+            timeout_sec: Maximum execution time in seconds
+            
+        Returns:
+            Best formula string found (infix)
+        """
+        start_time = time.time()
+        
+        # 1. Data Conversion
+        if not isinstance(x_values, torch.Tensor):
+            x_t = torch.tensor(x_values, dtype=torch.float64, device=self.device)
+        else:
+            x_t = x_values.to(self.device).to(torch.float64)
+            
+        if not isinstance(y_values, torch.Tensor):
+            y_t = torch.tensor(y_values, dtype=torch.float64, device=self.device)
+        else:
+            y_t = y_values.to(self.device).to(torch.float64)
+            
+        # Ensure dimensions [N, Vars]? No, usually [N] for 1D or [N, Vars]
+        if x_t.dim() == 1:
+            x_t = x_t.unsqueeze(1) # [N, 1]
+            
+        # 2. Initialization
+        population = self.initialize_population()
+        pop_constants = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=torch.float64)
+        
+        # 3. Seed Injection
+        if seeds:
+            seed_pop, seed_consts = self.load_population_from_strings(seeds)
+            if seed_pop is not None:
+                n_seeds = seed_pop.shape[0]
+                # Place seeds at the beginning
+                n_inject = min(n_seeds, self.pop_size)
+                population[:n_inject] = seed_pop[:n_inject]
+                pop_constants[:n_inject] = seed_consts[:n_inject]
+                # print(f"[GPU] Injected {n_inject} seeds.")
+        
+        # State tracking
+        best_rmse = float('inf')
+        best_rpn = None
+        best_consts_vec = None
+        stagnation_counter = 0
+        current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
+        generations = 0
+        
+        COMPLEXITY_PENALTY = 0.001
+        
+        while time.time() - start_time < timeout_sec:
+            generations += 1
+            
+            # --- EVALUATION ---
+            fitness_rmse = self.evaluate_batch(population, x_t, y_t, pop_constants)
+            
+            # --- CONSTANT OPTIMIZATION (Hybrid) ---
+            # Optimize constants for top K individuals
+            k_opt = min(10, self.pop_size)
+            _, top_indices = torch.topk(fitness_rmse, k_opt, largest=False)
+            
+            sub_pop = population[top_indices]
+            sub_const = pop_constants[top_indices]
+            
+            # 5 steps of Adam
+            opt_const, new_fit = self.optimize_constants(
+                sub_pop, sub_const, x_t, y_t, steps=5, lr=0.5
+            )
+            
+            # Update back
+            pop_constants[top_indices] = opt_const
+            fitness_rmse[top_indices] = new_fit
+            
+            # --- SELECTION & STATS ---
+            min_fit, min_idx = torch.min(fitness_rmse, dim=0)
+            if min_fit.item() < best_rmse:
+                best_rmse = min_fit.item()
+                best_rpn = population[min_idx].clone()
+                best_consts_vec = pop_constants[min_idx].clone()
+                stagnation_counter = 0
+            else:
+                stagnation_counter += 1
+            
+            if best_rmse < 1e-6:
+                break
+                
+            # --- ISLAND MIGRATION ---
+            if self.n_islands > 1 and generations % GpuGlobals.MIGRATION_INTERVAL == 0:
+                population, pop_constants = self.migrate_islands(population, pop_constants, fitness_rmse)
+                
+            # --- OFFSPRING GENERATION ---
+            # 1. Select Parents (Tournament)
+            n_islands_eff = self.n_islands if self.n_islands > 0 else 1
+            parent_indices = self.tournament_selection_island(population, fitness_rmse, n_islands_eff)
+            parents = population[parent_indices]
+            parent_fitness = fitness_rmse[parent_indices]
+            
+            # 2. Crossover & Mutate
+            offspring = self.crossover_population(parents, GpuGlobals.DEFAULT_CROSSOVER_RATE)
+            offspring = self.mutate_population(offspring, current_mutation_rate)
+            
+            # 3. Inherit Constants & Mutate
+            offspring_const = pop_constants[parent_indices].clone()
+            c_noise = torch.randn_like(offspring_const) * 0.1
+            noise_mask = (torch.rand_like(offspring_const) < 0.2).to(torch.float64)
+            offspring_const = offspring_const + (c_noise * noise_mask)
+            
+            # 4. Evaluate Offspring
+            off_fitness = self.evaluate_batch(offspring, x_t, y_t, offspring_const)
+            
+            # 5. Deterministic Crowding (Survival)
+            new_pop, new_fitness_batch = self.deterministic_crowding(parents, offspring, parent_fitness, off_fitness)
+            
+            # Update constants based on survival
+            mask = off_fitness < parent_fitness
+            new_const = torch.where(mask.unsqueeze(1), offspring_const, pop_constants[parent_indices])
+            
+            population = new_pop
+            pop_constants = new_const
+            fitness_rmse = new_fitness_batch
+            
+            # Dynamic rates
+            if stagnation_counter > 20:
+                current_mutation_rate = min(0.5, GpuGlobals.BASE_MUTATION_RATE + 0.1)
+                
+        # --- FINAL REFINEMENT ---
+        if best_rpn is not None:
+            # Deep optimization on best candidate
+            best_ind_batch = best_rpn.unsqueeze(0)
+            best_const_batch = best_consts_vec.unsqueeze(0)
+            
+            opt_const_final, final_fit_batch = self.optimize_constants(
+                best_ind_batch, best_const_batch, x_t, y_t, steps=100, lr=0.1
+            )
+            
+            best_formula = self.rpn_to_infix(best_rpn, opt_const_final[0])
+            return best_formula
+            
         return None
