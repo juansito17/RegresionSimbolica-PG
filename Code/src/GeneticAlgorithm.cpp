@@ -505,6 +505,7 @@ void GeneticAlgorithm::evaluate_all_islands() {
 // (Sin cambios)
 void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
     int current_pop_size = island.population.size(); if (current_pop_size == 0) return;
+    island.duplicates_count = 0; // Reset duplicate counter
     auto best_it = std::min_element(island.population.begin(), island.population.end(),
         [](const Individual& a, const Individual& b) {
             if (!a.tree || !a.fitness_valid) return false;
@@ -671,6 +672,7 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
                 std::string sig = tree_to_string(cand.tree);
                 if (unique_signatures.find(sig) != unique_signatures.end()) {
                     is_valid_to_add = false; 
+                    island.duplicates_count++; // Track duplicate
                 } else {
                     unique_signatures.insert(sig);
                 }
@@ -768,6 +770,15 @@ NodePtr GeneticAlgorithm::run() {
         #pragma omp parallel for
         for (int i = 0; i < islands.size(); ++i) {
              evolve_island(*islands[i], gen);
+        }
+
+        // [DEBUG] Report Duplicates
+        long long total_duplicates = 0;
+        for (const auto& island : islands) {
+             total_duplicates += island->duplicates_count;
+        }
+        if (total_duplicates > 0) {
+             std::cout << "Gen " << gen + 1 << " Duplicates Rejected: " << total_duplicates << std::endl;
         }
 
         double current_gen_best_fitness = INF;

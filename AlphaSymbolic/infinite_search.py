@@ -232,7 +232,8 @@ def main():
                 max_workers=8, # User Request: 8 workers
                 num_variables=2, # Used x0, x1
                 extra_seeds=extra_seeds,
-                max_neural_seeds=1 # Restrict NN to just 1 seed for Worker 7
+                max_neural_seeds=1, # Restrict NN to just 1 seed for Worker 7
+                random_seed_selection=True # User request: "random for infinity search"
             )
         except Exception as e:
             print(f"Search failed: {e}")

@@ -24,6 +24,7 @@ class GeneticAlgorithm {
         ParetoOptimizer pareto_optimizer;   // Optimizador Pareto de la isla
         int stagnation_counter = 0;         // Contador de estancamiento local de la isla
         double best_fitness = INF;          // Mejor fitness histórico de la isla
+        int duplicates_count = 0;           // Count of duplicate candidates in the last generation
         std::vector<double> fitness_history;// Historial de fitness (opcional)
         int id;                             // Identificador de la isla
 
