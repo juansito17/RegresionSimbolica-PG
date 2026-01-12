@@ -306,7 +306,7 @@ class TensorGeneticEngine:
         
         total_candidates = n_parents * tour_size
         all_errors = []
-        chunk_size = 1000 # Evaluate 1000 candidates at a time
+        chunk_size = 50000 # Evaluate 50k candidates at a time
         
         for i in range(0, total_candidates, chunk_size):
             end = min(total_candidates, i + chunk_size)

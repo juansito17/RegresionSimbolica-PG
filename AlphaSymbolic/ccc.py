@@ -1,89 +1,80 @@
 import math
-import matplotlib.pyplot as plt
 
-# --- 1. TUS CONSTANTES CALIBRADAS (El corazón de tu fórmula) ---
-# Derivadas de la regresión en N=24, 26 (Pares) y N=25, 27 (Impares)
-A_PAR = 0.945525
-B_PAR = 0.966099
+# --- 1. LA FÓRMULA GENÉTICA (Traducida a Python) ---
+def formula_genetica_discreta(n):
+    # Variables del contexto (según tus logs)
+    x0 = float(n)
+    x1 = float(n % 6)  # El log mostraba x1=5.0 para N=23 (23 mod 6 = 5)
+    
+    # PROTECCIÓN: Evitar división por cero si n=0 (aunque no evaluamos n=0)
+    if x0 == 0: return 0
+    
+    # --- LA ECUACIÓN RAW ---
+    # Formula: lgamma(x0 + 1) - (abs(floor((x0 * 0.1038) ^ (x1 / 5)) ^ (x0 / (x0 * 0.585))) + x0)
+    
+    # Desglose paso a paso para evitar errores de sintaxis
+    term_factorial = math.lgamma(x0 + 1)
+    
+    # Parte interna del Floor
+    # Nota: En Python '^' es bitwise, usamos '**' para potencia
+    base_floor = (x0 * 0.10380637) ** (x1 / 5.0)
+    
+    # El Floor
+    piso = math.floor(base_floor)
+    
+    # El Exponente Constante (x0 se cancela con x0, queda 1/0.585...)
+    exponente_constante = x0 / (x0 * 0.58525872)
+    
+    # El término de sustracción complejo
+    sustraccion = abs(piso ** exponente_constante) + x0
+    
+    # Resultado final en escala logarítmica
+    log_pred = term_factorial - sustraccion
+    
+    return math.exp(log_pred)
 
-A_IMPAR = 0.943389
-B_IMPAR = 0.911941
-
-# --- 2. LA VERDAD BASE (Secuencia OEIS A000170) ---
-# Soluciones exactas conocidas hasta hoy
+# --- 2. DATOS REALES (A000170) ---
 soluciones_reales = {
-    1: 1, 2: 0, 3: 0, 4: 2, 5: 10, 6: 4, 7: 40, 8: 92, 9: 352, 10: 724,
-    11: 2680, 12: 14200, 13: 73712, 14: 365596, 15: 2279184,
+    1: 1, 2: 0, 3: 0, 4: 2, 5: 10, 6: 4, 7: 40, 8: 92, 9: 352,
+    10: 724, 11: 2680, 12: 14200, 13: 73712, 14: 365596, 15: 2279184,
     16: 14772512, 17: 95815104, 18: 666090624, 19: 4968057848,
     20: 39029188884, 21: 314666222712, 22: 2691008701644,
-    23: 24233937684440, 24: 227514171973736, 25: 2207893435808352,
+    23: 24233937684440,       # VALOR CORRECTO (El que tu dataset tenía mal)
+    24: 227514171973736, 25: 2207893435808352,
     26: 22317699616364044, 27: 234907967154122528
 }
 
-def predecir_soluciones(n):
-    """Calcula soluciones estimadas usando el modelo asintótico híbrido."""
-    log_factorial = math.lgamma(n + 1) # Logaritmo de n!
-    
-    if n % 2 == 0:
-        # Fórmula para PARES: n! * e^(-An + B)
-        log_pred = log_factorial - (A_PAR * n) + B_PAR
-    else:
-        # Fórmula para IMPARES: n! * e^(-An + B)
-        log_pred = log_factorial - (A_IMPAR * n) + B_IMPAR
-        
-    return math.exp(log_pred)
+# --- 3. EVALUACIÓN ---
+print(f"{'N':<3} | {'Real':<22} | {'Predicción IA':<22} | {'Error %':<10}")
+print("-" * 65)
 
-# --- 3. EJECUCIÓN Y TABLA ---
-print(f"{'N':<3} | {'Real (Exacto)':<24} | {'Tu Fórmula':<24} | {'Error %':<10} | {'Estado'}")
-print("-" * 85)
-
-n_vals = []
 errores = []
 
-for n in range(1, 28): # De 1 a 27
+for n in range(1, 28):
     real = soluciones_reales[n]
-    estimado = predecir_soluciones(n)
+    pred = formula_genetica_discreta(n)
     
-    # Cálculo del error
+    # Cálculo de Error
     if real == 0:
-        # Caso especial para N=2 y N=3 para evitar división por cero
-        error_pct = 100.0 # Asumimos error total técnicamente
-        texto_error = "N/A (Div0)"
-        estado = "❌"
+        texto_error = "N/A (Div0)" # No se puede calcular error % de 0
     else:
-        diff = abs(real - estimado)
-        error_pct = (diff / real) * 100
-        texto_error = f"{error_pct:.4f}%"
-        
-        # Clasificación visual del éxito
-        if error_pct < 0.01: estado = "🏆 GOD"   # Precisión Divina
-        elif error_pct < 1.0: estado = "✅ Excel" # Excelente
-        elif error_pct < 5.0: estado = "⚠️ Bueno" # Aceptable
-        else: estado = "❌ Malo"                # Ruido inicial
+        diff = abs(real - pred)
+        error = (diff / real) * 100
+        texto_error = f"{error:.4f}%"
+        errores.append(error)
     
-    # Guardar datos para gráfica (filtramos los infinitos de N=2,3)
-    if n > 3:
-        n_vals.append(n)
-        errores.append(error_pct)
+    # Marcador visual para errores bajos
+    marca = "⭐" if (real > 0 and error < 1.0) else ""
+    
+    print(f"{n:<3} | {real:<22} | {pred:<22.4f} | {texto_error:<10} {marca}")
 
-    print(f"{n:<3} | {real:<24} | {estimado:<24.2e} | {texto_error:<10} | {estado}")
-
-print("-" * 85)
-print("NOTA: El error es alto en N < 12 debido al 'ruido de borde'.")
-print("      Observa cómo converge a 0.00% a medida que N crece.")
-
-# --- 4. GRÁFICA DE CONVERGENCIA (Opcional) ---
-try:
-    plt.figure(figsize=(10, 6))
-    plt.plot(n_vals, errores, marker='o', color='b', label='Error Relativo')
-    plt.axhline(y=0, color='black', linewidth=1)
-    plt.axhline(y=1, color='green', linestyle='--', label='Umbral 1%')
-    plt.title('Convergencia Asintótica de la Fórmula Peña-Usuga (N=4 a N=27)')
-    plt.xlabel('Tamaño del Tablero (N)')
-    plt.ylabel('Porcentaje de Error (%)')
-    plt.yscale('log') # Escala logarítmica para ver mejor los errores pequeños
-    plt.grid(True, which="both", ls="-")
-    plt.legend()
-    plt.show()
-except Exception as e:
-    print("\n[!] No se pudo generar la gráfica (falta matplotlib), pero la tabla es correcta.")
+print("-" * 65)
+if errores:
+    # Promedio ignorando los N pequeños que suelen ser ruidosos
+    avg_total = sum(errores) / len(errores)
+    # Promedio de la "Zona Estable" (N > 15)
+    errores_estables = errores[12:] # Desde N=16 en adelante (indices ajustados)
+    if errores_estables:
+        avg_estable = sum(errores_estables) / len(errores_estables)
+        print(f"Error Promedio Global: {avg_total:.4f}%")
+        print(f"Error Promedio (N>15): {avg_estable:.4f}%")

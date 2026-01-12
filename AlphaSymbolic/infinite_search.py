@@ -13,10 +13,12 @@ from search.hybrid_search import hybrid_solve
 from ui.app_core import get_model
 from core.grammar import ExpressionTree
 from utils.optimize_constants import optimize_constants, substitute_constants, convert_and_extract_constants
+from search.phase_manager import PhaseManager
 
 # --- CONFIGURATION ---
-X_FULL = np.array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25], dtype=np.float64)
-Y_FULL = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,2423393768440,227514171973736,2207893435808352], dtype=np.float64)
+from core.gpu.config import GpuGlobals
+X_FULL = np.arange(GpuGlobals.PROBLEM_X_START, GpuGlobals.PROBLEM_X_END + 1, dtype=np.float64)
+Y_FULL = GpuGlobals.PROBLEM_Y_FULL
 
 # Targets for Extrapolation
 X_TARGETS = np.array([26, 27], dtype=np.float64)
@@ -127,6 +129,182 @@ def backup_to_drive():
         # Silently fail if drive not mounted or other issues
         pass
 
+def evaluate_and_save(full_formula_str, residual_formula_str, top_formulas, pattern_memory, origin="Search"):
+    """
+    Evaluates a candidate formula string on the full dataset (History + Targets),
+    calculates metrics, and saves to top_formulas if good.
+    """
+    try:
+        tree = ExpressionTree.from_infix(full_formula_str)
+        if not tree.is_valid: return False
+        
+        # Combine all points for validation
+        x_all = np.concatenate((X_FULL, X_TARGETS))
+        y_all = np.concatenate((Y_FULL, Y_TARGETS))
+        
+        y_pred_all = tree.evaluate(x_all)
+        y_pred_safe = np.maximum(y_pred_all, 0)
+        
+        # RMSLE
+        log_error = np.sqrt(np.mean((np.log1p(y_pred_safe) - np.log1p(y_all))**2))
+        
+        # Extrapolation Error
+        pred_26 = y_pred_all[-2]
+        pred_27 = y_pred_all[-1]
+        extrap_error_sum = abs(pred_26 - Y_TARGETS[0]) + abs(pred_27 - Y_TARGETS[1])
+        
+        print(f"\n[SUCCESS] [{origin}] Formula: {full_formula_str}\n          RMSLE (1-27): {log_error:.6f} | Extrap Error: {extrap_error_sum:.2e}")
+        
+        # Update Top List
+        entry = {
+            'formula': full_formula_str,
+            'residual': residual_formula_str,
+            'rmsle_global': log_error,
+            'extrapolation_error': extrap_error_sum,
+            'pred_26': pred_26,
+            'pred_27': pred_27,
+            'sample_size': 25, # Full
+            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        top_formulas.append(entry)
+        
+        unique = {d['formula']: d for d in top_formulas}
+        top_formulas[:] = list(unique.values()) # In-place update
+        
+        top_formulas.sort(key=lambda x: x.get('rmsle_global', float('inf')))
+        
+        if len(top_formulas) > TOP_K:
+            del top_formulas[TOP_K:] # Slice in place
+            
+        save_top_list(top_formulas)
+        
+        if update_pattern_memory(pattern_memory, full_formula_str):
+             save_pattern_memory(pattern_memory)
+             backup_to_drive()
+             
+        return True
+    except Exception as e:
+        print(f"Eval Error: {e}")
+        return False
+
+def run_phase_search(iteration, top_formulas, phase_manager, model, device, pattern_memory):
+    """
+    Attempt to find phases (Split & Conquer) based on the current best formula's residuals.
+    """
+    if not top_formulas: return
+    
+    # Run every 5 iterations or if forced
+    if iteration % 5 != 0: return
+
+    print("\n--- [Phase Detection] Checking for regime changes ---")
+    
+    # 1. Get Best & Residuals on VALID TRAIN SET (Odds >= 8)
+    # 1. Get Best & Residuals on FULL TRAIN SET (No filtering)
+    # The AI Physicist should discover parity splits (if any) or N<8 noise automatically.
+    mask_train = np.ones_like(X_FULL, dtype=bool) 
+    x_train = X_FULL[mask_train]
+    y_train = Y_FULL[mask_train]
+    
+    best_entry = top_formulas[0]
+    
+    # We need to compute RESIDUALS in SIMKIN SPACE (Flattened)
+    # Target Flat: log(y) - lgamma + 1.943*x
+    epsilon = 1e-9
+    from scipy.special import gammaln
+    fact = gammaln(x_train + 1)
+    x_features_train = np.zeros((len(x_train), 3))
+    x_features_train[:, 0] = x_train
+    x_features_train[:, 1] = x_train % GpuGlobals.VAR_MOD_X1
+    x_features_train[:, 2] = x_train % GpuGlobals.VAR_MOD_X2
+    
+    y_flat_true = np.log(np.abs(y_train) + epsilon) - fact + (1.943 * x_features_train[:, 0])
+    
+    # Predict Flat
+    residual_str = best_entry.get('residual')
+    if not residual_str: return
+    
+    try:
+        tree_res = ExpressionTree.from_infix(residual_str)
+        if not tree_res.is_valid: return
+        y_flat_pred = tree_res.evaluate(x_features_train)
+        
+        residuals = y_flat_true - y_flat_pred
+        
+        # Detect Split (Linear OR Parity)
+        phase_info = phase_manager.detect_phase_change(x_train, residuals, min_samples=4)
+        split_type = phase_info.get('type')
+        gain = phase_info.get('gain', 0.0)
+        
+        if split_type and gain > 0.05: # 5% variance reduction
+             print(f"  [Phase] Regime Change Found! Type: {split_type.upper()} (Gain: {gain:.2f})")
+             
+             if split_type == 'parity':
+                 # PARITY SPLIT
+                 mask_L = (x_train.astype(int) % 2 == 0) # Even (Left logic)
+                 mask_R = ~mask_L                        # Odd  (Right logic)
+                 label_L, label_R = "Even", "Odd"
+                 
+             else:
+                 # LINEAR SPLIT
+                 split_val = phase_info['split_val']
+                 print(f"  [Phase] Cutoff at x={split_val:.2f}")
+                 mask_L = x_train <= split_val
+                 mask_R = x_train > split_val
+                 label_L, label_R = "Left", "Right"
+             
+             # Double check sample sizes
+             if np.sum(mask_L) < 3 or np.sum(mask_R) < 3:
+                 print("  [Phase] Abort: Fragments too small.")
+                 return
+
+             # Solve Phases
+             print(f"  [Phase] Solving {label_L} Fragment ({np.sum(mask_L)} pts)...")
+             res_L = hybrid_solve(
+                 x_features_train[mask_L], y_flat_true[mask_L], 
+                 model, device, beam_width=5, gp_timeout=30, num_variables=3, max_workers=1
+             )
+             if not res_L: return
+             f1 = res_L['formula']
+             
+             print(f"  [Phase] Solving {label_R} Fragment ({np.sum(mask_R)} pts)...")
+             res_R = hybrid_solve(
+                 x_features_train[mask_R], y_flat_true[mask_R], 
+                 model, device, beam_width=5, gp_timeout=30, num_variables=3, max_workers=1
+             )
+             if not res_R: return
+             f2 = res_R['formula']
+             
+             # Combine
+             if split_type == 'parity':
+                 # Even is f1, Odd is f2
+                 combined_res_str = phase_manager.construct_parity_formula(f1, f2)
+             else:
+                 combined_res_str = phase_manager.construct_gated_formula(f1, f2, split_val)
+             
+             # Global Refinement (Crucial for the Sigmoid K and Offset)
+             # Use ALL training data for refinement
+             tree_comb = ExpressionTree.from_infix(combined_res_str)
+             initial_vals = convert_and_extract_constants(tree_comb.root)
+             
+             print("  [Phase] Refining Composite Formula...")
+             consts, rmse = optimize_constants(tree_comb, x_features_train, y_flat_true, initial_guess=initial_vals)
+             
+             # Substitute back
+             refined_res_str = substitute_constants(tree_comb.get_infix(), consts, tree_comb.root.get_constant_positions())
+             
+             # Reconstruct Full
+             full_formula_str = f"exp({refined_res_str} - (1.943 * x0) + lgamma(x0))"
+             
+             evaluate_and_save(full_formula_str, refined_res_str, top_formulas, pattern_memory, origin="PhaseSplit")
+             
+        else:
+             print("  [Phase] No significant split found.")
+
+    except Exception as e:
+        print(f"  [Phase] Error: {e}")
+
+
 def main():
     print("--- Infinite Formula Search Script ---")
     
@@ -145,8 +323,15 @@ def main():
     top_formulas = load_or_create_top_list()
     pattern_memory = load_pattern_memory()
     print(f"Loaded Pattern Memory with {len(pattern_memory)} patterns.")
-
     
+    phase_manager = PhaseManager(MODEL, DEVICE)
+
+    # CRITICAL FIX: Disable Global Log Transformation for Infinite Search
+    # Infinite Search performs its own manual transformation (Simkin: log(y) - lgamma + ...)
+    # which produces small, sometimes negative values.
+    # Applying another log() in the engine would crash (log of negative) or double-compress.
+    print("Configuring Engine: Forcing USE_LOG_TRANSFORMATION = False for manual handling.")
+    GpuGlobals.USE_LOG_TRANSFORMATION = False
     print(f"Starting infinite search loop... (Press Ctrl+C to stop)")
     iteration = 0
     
@@ -155,17 +340,11 @@ def main():
         
         # 1. Random Sampling
         # Ensure we pick at least MIN_SAMPLE_SIZE points
-        # USER REQUEST: Train SOLO on ODDS (N>=8)
-        # 1. Filter for N >= 8
-        # 2. Filter for N % 2 != 0
-        mask_valid = (X_FULL >= 8) & (X_FULL % 2 != 0)
-        valid_indices = np.where(mask_valid)[0]
-        
-        # Adjust k if valid pool is small
-        pool_size = len(valid_indices)
+        # USER REQUEST: FULL DATASET (AI Physicist determines phases)
+        pool_size = len(X_FULL)
         k = random.randint(min(MIN_SAMPLE_SIZE, pool_size), pool_size)
         
-        indices = np.sort(np.random.choice(valid_indices, k, replace=False))
+        indices = np.sort(np.random.choice(np.arange(pool_size), k, replace=False))
         
         x_sample = X_FULL[indices]
         y_sample = Y_FULL[indices]
@@ -173,11 +352,13 @@ def main():
         # USER REQUEST: Parity Split - Odds Only
         # We don't need x2 (parity) anymore as it's constant 1.
         # x0 = n
-        # x1 = n % 6
-        # Shape: (k, 2)
-        x_features = np.zeros((len(x_sample), 2), dtype=np.float64)
+        # x1 = n % VAR_MOD_X1
+        # x2 = n % VAR_MOD_X2 (Parity)
+        # Shape: (k, 3)
+        x_features = np.zeros((len(x_sample), 3), dtype=np.float64)
         x_features[:, 0] = x_sample
-        x_features[:, 1] = x_sample % 6
+        x_features[:, 1] = x_sample % GpuGlobals.VAR_MOD_X1
+        x_features[:, 2] = x_sample % GpuGlobals.VAR_MOD_X2
         
         print(f"[Iter {iteration}] Sampling {k} pts (Odds >=8)...", end=" ")
         
@@ -230,7 +411,7 @@ def main():
                 beam_width=10, 
                 gp_timeout=120, # Increased for 1M Pop (Allows ~40 gens)
                 max_workers=1, # GPU Only (Save CPU heat)
-                num_variables=2, # Used x0, x1
+                num_variables=3, # Used x0, x1, x2
                 extra_seeds=extra_seeds,
                 max_neural_seeds=1, # Restrict NN to just 1 seed for Worker 7
                 random_seed_selection=True # User request: "random for infinity search"
@@ -411,6 +592,9 @@ def main():
             
             current_best = top_formulas[0].get('rmsle_global', 999)
             print(f"Current Best RMSLE: {current_best:.6f}")
+            
+            # 6. Phase Search (AI Physicist)
+            run_phase_search(iteration, top_formulas, phase_manager, MODEL, DEVICE, pattern_memory)
             
         except Exception as e:
             print(f"Evaluation failed: {e}")

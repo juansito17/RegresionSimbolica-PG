@@ -67,7 +67,9 @@ class GPUEvaluator:
         # We process in chunks to avoid OOM
         
         # We process in chunks to avoid OOM
-        max_chunk_inds = 2000 # 2000 individuals per chunk -> 200k executions
+        # Optimized for RTX 3050 (4GB) with small dataset (25 samples)
+        # 200,000 individuals * 25 samples * 8 bytes ~ 40MB per buffer
+        max_chunk_inds = 200000
         
         # Output buffer for RMSE only
         all_rmse = []

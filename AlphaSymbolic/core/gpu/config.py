@@ -1,4 +1,5 @@
 import math
+import numpy as np
 
 class GpuGlobals:
     # ============================================================
@@ -8,7 +9,24 @@ class GpuGlobals:
     # ----------------------------------------
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
-    USE_LOG_TRANSFORMATION = False
+    USE_LOG_TRANSFORMATION = True
+
+    # DATASET CENTRALIZADO (N-Reinas)
+    # x0 = n
+    # x1 = n % 6
+    # x2 = n % 2
+    # Targets: OEIS A000170
+    PROBLEM_Y_FULL = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,24233937684440,227514171973736,2207893435808352], dtype=np.float64)
+    
+    PROBLEM_X_START = 1
+    PROBLEM_X_END = 25 # Inclusive
+    
+    VAR_MOD_X1 = 6 # n % 6
+    VAR_MOD_X2 = 2 # n % 2 (Paridad)
+
+    # ----------------------------------------
+    # Configuración General del Algoritmo Genético
+    # ----------------------------------------
 
     # ----------------------------------------
     # Configuración General del Algoritmo Genético
@@ -102,7 +120,8 @@ class GpuGlobals:
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
     COMPLEXITY_PENALTY = 0.0001 # Reduced to allow growth
-    LOSS_FUNCTION = 'RMSLE' # Options: 'RMSE', 'RMSLE' (Root Mean Squared Logarithmic Error)
+    LOSS_FUNCTION = 'RMSE' # Changed from RMSLE because USE_LOG_TRANSFORMATION=True. 
+                           # RMSE on Log(y) == RMSLE on y. Avoids double log.
     USE_RMSE_FITNESS = True
     FITNESS_ORIGINAL_POWER = 1.3
     FITNESS_PRECISION_THRESHOLD = 0.001

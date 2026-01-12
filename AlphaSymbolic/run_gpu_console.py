@@ -8,20 +8,19 @@ from core.gpu import TensorGeneticEngine
 
 # Configuration matching C++ Globals
 # --- CONFIGURATION ---
-TARGETS = np.array([
-    1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 2680, 14200, 
-    73712, 365596, 2279184, 14772512, 95815104, 666090624, 
-    4968057848, 39029188884, 314666222712, 2691008701644, 
-    2423393768440, 227514171973736, 2207893435808352
-], dtype=np.float64)
+# Configuration matching C++ Globals
+from core.gpu.config import GpuGlobals
 
-# Generate X_VALUES procedurally to match the pattern:
-# x0 = 1..25
-# x1 = x0 % 6
-# x2 = x0 % 2
-indices = np.arange(1, 26, dtype=np.float64)
-x1_vals = indices % 6
-x2_vals = indices % 2
+# --- CONFIGURATION ---
+TARGETS = GpuGlobals.PROBLEM_Y_FULL
+
+# Generate X_VALUES procedurally to match the pattern from config:
+# x0 = start..end
+# x1 = x0 % VAR_MOD_X1
+# x2 = x0 % VAR_MOD_X2
+indices = np.arange(GpuGlobals.PROBLEM_X_START, GpuGlobals.PROBLEM_X_END + 1, dtype=np.float64)
+x1_vals = indices % GpuGlobals.VAR_MOD_X1
+x2_vals = indices % GpuGlobals.VAR_MOD_X2
 X_VALUES = np.column_stack((indices, x1_vals, x2_vals))
 
 def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, is_new_best, island_idx=-1):
@@ -121,7 +120,7 @@ if __name__ == "__main__":
     from core.gpu.config import GpuGlobals
     
     # User can override Globals here
-    GpuGlobals.POP_SIZE = 25000
+    # GpuGlobals.POP_SIZE override removed to use config default (1M)
     GpuGlobals.NUM_ISLANDS = 20
     GpuGlobals.PROGRESS_REPORT_INTERVAL = 100
     GpuGlobals.USE_PARETO_SELECTION = False  # Disable NSGA-II for speed test
