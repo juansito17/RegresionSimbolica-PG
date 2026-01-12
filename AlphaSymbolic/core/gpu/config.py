@@ -16,10 +16,28 @@ class GpuGlobals:
     # x1 = n % 6
     # x2 = n % 2
     # Targets: OEIS A000170
-    PROBLEM_Y_FULL = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,24233937684440,227514171973736,2207893435808352], dtype=np.float64)
+    _PROBLEM_Y_RAW = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,24233937684440,227514171973736,2207893435808352], dtype=np.float64)
     
     PROBLEM_X_START = 1
     PROBLEM_X_END = 25 # Inclusive
+    
+    DATA_FILTER_TYPE = "ALL" # Options: "ALL", "ODD", "EVEN"
+
+    # Filter Logic
+    _indices_raw = np.arange(PROBLEM_X_START, PROBLEM_X_END + 1)
+    
+    if DATA_FILTER_TYPE == "ODD":
+        _mask = _indices_raw % 2 != 0
+    elif DATA_FILTER_TYPE == "EVEN":
+        _mask = _indices_raw % 2 == 0
+    else:
+        _mask = np.ones(len(_indices_raw), dtype=bool)
+
+    PROBLEM_X_FILTERED = _indices_raw[_mask]
+    PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[_mask]
+    
+    # Legacy/Direct Access Alias (pointing to FILTERED data to ensure usage)
+    PROBLEM_Y_FULL = PROBLEM_Y_FILTERED 
     
     VAR_MOD_X1 = 6 # n % 6
     VAR_MOD_X2 = 2 # n % 2 (Paridad)
@@ -34,15 +52,19 @@ class GpuGlobals:
     FORCE_CPU_MODE = False # Si es True, usa CPU aunque CUDA esté disponible
     
     # Tamaño de población - MÁXIMO para RTX 3050 (4GB VRAM)
-    # With torch.compile we can push this higher
-    POP_SIZE = 1_000_000 # Increased to 1 Million (CUDA Optimized)
-    GENERATIONS = 500  # Restored generations
-    NUM_ISLANDS = 20 # Increased for 1M population (50k per island)
+    # Analysis (Optimized Engine 2025-01-12):
+    # - With Chunked Reproduction: 4.0M Population is STABLE.
+    # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
+    # - Island Migration limit hit at 5.0M.
+    # Recommended: 4,000,000
+    POP_SIZE = 4_000_000 
+    GENERATIONS = 500  
+    NUM_ISLANDS = 40 # 4M / 40 = 100k per island
     MIN_POP_PER_ISLAND = 50
 
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = False
-    INITIAL_FORMULA_STRING = "log((x1+exp((((((1.28237193+((x0+2.59195138)+8.54688985))*x0)+(log((((x2/-0.99681346)-(x0-8.00219939))/(0.35461932-x2)))+(x0+(88.95319019/((x0+x0)+x0)))))-x1)/((exp(exp(((exp(x2)*(1.39925709/x0))^exp(x0))))+0.76703064)*6.05423753)))))"
+    USE_INITIAL_FORMULA = True
+    INITIAL_FORMULA_STRING = "(log((((log(lgamma(lgamma(x0))) / (x0 - lgamma(x0))) + x2) + x0)) - (floor((x0 + log(sqrt(((log(x0) - x0) + x2))))) - lgamma(x0)))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas

@@ -222,19 +222,43 @@ class GPUEvaluator:
         # VM expects [Vars, Samples]
         x_for_vm = x
         
-        final_preds, sp, has_error = self._run_vm(population, x_for_vm, constants) 
-        is_valid = (sp == 1) & (~has_error)
+        # Logic mirrors evaluate_batch but returns full [B, D] errors
+        max_chunk_inds = 100000 # Smaller chunk size for full matrix (D=25 -> 2.5M elems per chunk)
         
-        final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
-                                  final_preds, 
-                                  torch.tensor(1e300, device=self.device, dtype=torch.float64))
+        all_abs_errors = []
         
-        # Reshape to [B, D]
-        preds_matrix = final_preds.view(B, D)
-        target_matrix = y_target.flatten().unsqueeze(0).expand(B, -1)
-        abs_err = torch.abs(preds_matrix - target_matrix)
-        
-        abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
-                              torch.tensor(1e300, device=self.device, dtype=torch.float64), 
-                              abs_err)
-        return abs_err
+        # Pre-process Target [1, D]
+        target_matrix_chunk = y_target.flatten().unsqueeze(0) 
+
+        for i in range(0, B, max_chunk_inds):
+            end_i = min(B, i + max_chunk_inds)
+            
+            sub_pop = population[i:end_i]
+            sub_c = constants[i:end_i] if constants is not None else None
+            current_B = sub_pop.shape[0]
+            
+            # Run VM
+            final_preds, sp, has_error = self._run_vm(sub_pop, x_for_vm, sub_c)
+            is_valid = (sp == 1) & (~has_error)
+            
+            final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
+                                      final_preds, 
+                                      torch.tensor(1e300, device=self.device, dtype=torch.float64))
+            
+            # Reshape to [current_B, D]
+            preds_matrix = final_preds.view(current_B, D)
+            
+            # Broadcast Target
+            # target is [1, D], preds is [cur_B, D] => Broadcast works automatically
+            abs_err = torch.abs(preds_matrix - target_matrix_chunk)
+            
+            abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
+                                  torch.tensor(1e300, device=self.device, dtype=torch.float64), 
+                                  abs_err)
+            
+            all_abs_errors.append(abs_err)
+            
+            del sub_pop, sub_c, final_preds, sp, has_error, preds_matrix, abs_err
+            # torch.cuda.empty_cache() # Optional speed vs memory trade-off
+
+        return torch.cat(all_abs_errors, dim=0)

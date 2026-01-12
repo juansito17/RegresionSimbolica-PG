@@ -507,92 +507,102 @@ class TensorGeneticEngine:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
                 
             # Evolution Step
-            next_pop_list = []
-            next_c_list = []
+            # Evolution Step (Optimized Memory)
+            # Pre-allocate next generation tensors to avoid torch.cat spikes
+            next_pop = torch.empty_like(population)
+            next_c = torch.empty_like(pop_constants)
+            
+            p_ptr = 0 # Write pointer
             
             # Elitism
             k_elite = max(1, int(self.pop_size * GpuGlobals.BASE_ELITE_PERCENTAGE))
             _, elite_idx = torch.topk(fitness_rmse, k_elite, largest=False)
             
-            next_pop_list.append(population[elite_idx])
-            next_c_list.append(pop_constants[elite_idx])
+            # Copy Elites
+            next_pop[p_ptr : p_ptr + k_elite] = population[elite_idx]
+            next_c[p_ptr : p_ptr + k_elite] = pop_constants[elite_idx]
+            p_ptr += k_elite
             
             remaining = self.pop_size - k_elite
             n_cross = int(remaining * GpuGlobals.DEFAULT_CROSSOVER_RATE)
             n_mut = remaining - n_cross
             
-            if GpuGlobals.USE_LEXICASE_SELECTION:
-                # Epsilon Lexicase Selection (Low VRAM Version)
-                
-                # Crossover Parents
-                if n_cross > 0:
-                     parents_idx = self.epsilon_lexicase_selection(population, n_cross, x_t, y_t, pop_constants)
-                     parents = population[parents_idx]
-                     offspring = self.operators.crossover_population(parents, 1.0)
-                     next_pop_list.append(offspring)
-                     next_c_list.append(pop_constants[parents_idx])
-
-                # Mutation Parents
-                if n_mut > 0:
-                     parents_idx = self.epsilon_lexicase_selection(population, n_mut, x_t, y_t, pop_constants)
-                     parents = population[parents_idx]
-                     # ... rest of mutation logic
-                     
-                     n_point = n_mut // 2
-                     n_subtree = n_mut - n_point
-                     offspring = parents.clone()
-                     
-                     if n_point > 0:
-                         offspring[:n_point] = self.operators.mutate_population(offspring[:n_point], current_mutation_rate)
-                     if n_subtree > 0:
-                         offspring[n_point:] = self.operators.subtree_mutation(offspring[n_point:], 1.0)
-                     
-                     next_pop_list.append(offspring)
-                     next_c_list.append(pop_constants[parents_idx])
-
-            else:
-                # Standard Tournament
+            # Helper for selection metrics (Tournament only)
+            selection_metric = None
+            if not GpuGlobals.USE_LEXICASE_SELECTION:
                 lengths = (population != PAD_ID).sum(dim=1).float()
-                fitness_penalized = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
-                selection_metric = fitness_penalized # Min is best
-                
-                # ... Previous Logic copy logic implied from 'else' block or keep original structure
-                # But to save space I'll just use the old structure logic
-                
-                # Crossover
-                if n_cross > 0:
-                    idx = torch.randint(0, self.pop_size, (n_cross, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                    candidates_metric = selection_metric[idx]
-                    best_local_idx = torch.argmin(candidates_metric, dim=1)
-                    parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
-                    parents = population[parents_idx]
-                    # crossover ...
-                    offspring = self.operators.crossover_population(parents, 1.0)
-                    next_pop_list.append(offspring)
-                    next_c_list.append(pop_constants[parents_idx])
-                    
-                # Mutation
-                if n_mut > 0:
-                    idx = torch.randint(0, self.pop_size, (n_mut, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                    candidates_metric = selection_metric[idx]
-                    best_local_idx = torch.argmin(candidates_metric, dim=1)
-                    parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
-                    parents = population[parents_idx]
-                    
-                    n_point = n_mut // 2
-                    n_subtree = n_mut - n_point
-                    offspring = parents.clone()
-                     
-                    if n_point > 0:
-                         offspring[:n_point] = self.operators.mutate_population(offspring[:n_point], current_mutation_rate)
-                    if n_subtree > 0:
-                         offspring[n_point:] = self.operators.subtree_mutation(offspring[n_point:], 1.0)
-                         
-                    next_pop_list.append(offspring)
-                    next_c_list.append(pop_constants[parents_idx])
+                # Recalculate penalized fitness once
+                selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
 
-            population = torch.cat(next_pop_list)[:self.pop_size]
-            pop_constants = torch.cat(next_c_list)[:self.pop_size]
+            # --- CHUNKED CROSSOVER ---
+            chunk_size = 50000 
+            
+            for i in range(0, n_cross, chunk_size):
+                curr_size = min(chunk_size, n_cross - i)
+                
+                # Select Parents
+                if GpuGlobals.USE_LEXICASE_SELECTION:
+                     parents_idx = self.epsilon_lexicase_selection(population, curr_size, x_t, y_t, pop_constants)
+                else:
+                     # Tournament
+                     idx = torch.randint(0, self.pop_size, (curr_size, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                     candidates_metric = selection_metric[idx]
+                     best_local_idx = torch.argmin(candidates_metric, dim=1)
+                     parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                
+                parents = population[parents_idx]
+                
+                # Generate Offspring
+                offspring = self.operators.crossover_population(parents, 1.0)
+                
+                # Write to Buffer
+                next_pop[p_ptr : p_ptr + curr_size] = offspring
+                next_c[p_ptr : p_ptr + curr_size] = pop_constants[parents_idx]
+                p_ptr += curr_size
+                
+                # Cleanup
+                del parents, offspring, parents_idx
+                # torch.cuda.empty_cache() # Too frequent? Maybe every few chunks.
+                
+            # --- CHUNKED MUTATION ---
+            for i in range(0, n_mut, chunk_size):
+                curr_size = min(chunk_size, n_mut - i)
+                
+                # Select Parents
+                if GpuGlobals.USE_LEXICASE_SELECTION:
+                     parents_idx = self.epsilon_lexicase_selection(population, curr_size, x_t, y_t, pop_constants)
+                else:
+                     idx = torch.randint(0, self.pop_size, (curr_size, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                     candidates_metric = selection_metric[idx]
+                     best_local_idx = torch.argmin(candidates_metric, dim=1)
+                     parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                     
+                parents = population[parents_idx]
+                offspring = parents.clone()
+                
+                # Mutate (Sub-batches logic within operators? No, we apply to this chunk)
+                n_point = curr_size // 2
+                n_subtree = curr_size - n_point
+                
+                if n_point > 0:
+                     offspring[:n_point] = self.operators.mutate_population(offspring[:n_point], current_mutation_rate)
+                if n_subtree > 0:
+                     offspring[n_point:] = self.operators.subtree_mutation(offspring[n_point:], 1.0)
+                     
+                # Write
+                next_pop[p_ptr : p_ptr + curr_size] = offspring
+                next_c[p_ptr : p_ptr + curr_size] = pop_constants[parents_idx]
+                p_ptr += curr_size
+                
+                del parents, offspring, parents_idx
+            
+            # Swap Buffers
+            population = next_pop
+            pop_constants = next_c
+            
+            # Ensure final size matches (sanity check)
+            population = population[:self.pop_size]
+            pop_constants = pop_constants[:self.pop_size]
                  
         if best_rpn is not None:
              formula = self.rpn_to_infix(best_rpn, best_consts_vec)

@@ -17,7 +17,7 @@ from search.phase_manager import PhaseManager
 
 # --- CONFIGURATION ---
 from core.gpu.config import GpuGlobals
-X_FULL = np.arange(GpuGlobals.PROBLEM_X_START, GpuGlobals.PROBLEM_X_END + 1, dtype=np.float64)
+X_FULL = np.array(GpuGlobals.PROBLEM_X_FILTERED, dtype=np.float64)
 Y_FULL = GpuGlobals.PROBLEM_Y_FULL
 
 # Targets for Extrapolation

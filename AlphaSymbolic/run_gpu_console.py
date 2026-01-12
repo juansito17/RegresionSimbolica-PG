@@ -18,7 +18,7 @@ TARGETS = GpuGlobals.PROBLEM_Y_FULL
 # x0 = start..end
 # x1 = x0 % VAR_MOD_X1
 # x2 = x0 % VAR_MOD_X2
-indices = np.arange(GpuGlobals.PROBLEM_X_START, GpuGlobals.PROBLEM_X_END + 1, dtype=np.float64)
+indices = np.array(GpuGlobals.PROBLEM_X_FILTERED, dtype=np.float64)
 x1_vals = indices % GpuGlobals.VAR_MOD_X1
 x2_vals = indices % GpuGlobals.VAR_MOD_X2
 X_VALUES = np.column_stack((indices, x1_vals, x2_vals))
@@ -120,8 +120,10 @@ if __name__ == "__main__":
     from core.gpu.config import GpuGlobals
     
     # User can override Globals here
-    # GpuGlobals.POP_SIZE override removed to use config default (1M)
-    GpuGlobals.NUM_ISLANDS = 20
+    # GpuGlobals.POP_SIZE and GpuGlobals.NUM_ISLANDS are now strictly taken from config.py 
+    # to ensure consistency with the optimized stress test results.
+    # GpuGlobals.NUM_ISLANDS = 40 <--- REMOVED (Uses config.py value)
+    
     GpuGlobals.PROGRESS_REPORT_INTERVAL = 100
     GpuGlobals.USE_PARETO_SELECTION = False  # Disable NSGA-II for speed test
     
@@ -132,7 +134,7 @@ if __name__ == "__main__":
     
     try:
         # Run Infinite Loop (until Ctrl+C or solved)
-        # Timeout set to very high (1 hour)
+        # Timeout disabled (None)
         print("Evaluating initial population...")
         
         # SLICE INPUTS TO MATCH TARGETS (17)
@@ -151,7 +153,7 @@ if __name__ == "__main__":
             x_input, 
             TARGETS, 
             seeds=seeds, 
-            timeout_sec=3600, 
+            timeout_sec=None,  # Infinite time
             callback=console_mimic_callback
         )
 
