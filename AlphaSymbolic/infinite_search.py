@@ -228,8 +228,8 @@ def main():
                 x_features, y_sample_flat,  # PASS x_features (2 vars: x0, x1)
                 MODEL, DEVICE, 
                 beam_width=10, 
-                gp_timeout=30, # User Request: 30s (Faster cycles)
-                max_workers=8, # User Request: 8 workers
+                gp_timeout=120, # Increased for 1M Pop (Allows ~40 gens)
+                max_workers=1, # GPU Only (Save CPU heat)
                 num_variables=2, # Used x0, x1
                 extra_seeds=extra_seeds,
                 max_neural_seeds=1, # Restrict NN to just 1 seed for Worker 7

@@ -17,9 +17,9 @@ class GpuGlobals:
     
     # Tamaño de población - MÁXIMO para RTX 3050 (4GB VRAM)
     # With torch.compile we can push this higher
-    POP_SIZE = 20000       # Massive parallelism
-    GENERATIONS = 500  # Reduced generations for benchmark speed, but high pop
-    NUM_ISLANDS = 20       # More islands
+    POP_SIZE = 1_000_000 # Increased to 1 Million (CUDA Optimized)
+    GENERATIONS = 500  # Restored generations
+    NUM_ISLANDS = 20 # Increased for 1M population (50k per island)
     MIN_POP_PER_ISLAND = 50
 
     # --- Fórmula Inicial ---
@@ -53,8 +53,8 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    USE_OP_SIN      = True  # ENABLED for Trig Benchmark
-    USE_OP_COS      = True  # ENABLED for Trig Benchmark
+    USE_OP_SIN      = False  # ENABLED for Trig Benchmark
+    USE_OP_COS      = False  # ENABLED for Trig Benchmark
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = False
@@ -102,6 +102,7 @@ class GpuGlobals:
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
     COMPLEXITY_PENALTY = 0.0001 # Reduced to allow growth
+    LOSS_FUNCTION = 'RMSLE' # Options: 'RMSE', 'RMSLE' (Root Mean Squared Logarithmic Error)
     USE_RMSE_FITNESS = True
     FITNESS_ORIGINAL_POWER = 1.3
     FITNESS_PRECISION_THRESHOLD = 0.001

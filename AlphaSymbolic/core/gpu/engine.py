@@ -278,100 +278,89 @@ class TensorGeneticEngine:
         
         return new_pop, new_fitness
 
-    def epsilon_lexicase_selection(self, population, abs_error_matrix, n_parents):
+    def epsilon_lexicase_selection(self, population, n_parents, x, y_target, constants):
         """
-        Vectorized Epsilon-Lexicase Selection.
-        Instead of full-population Lexicase (hard to vectorize), we use a large tournament
-        where the winner is decided by Lexicase logic.
+        Low-VRAM Epsilon-Lexicase Selection.
+        Instead of pre-calculating [Pop x Cases] Error Matrix (OOM on 4GB),
+        we pick Tournament Candidates first, then evaluate ONLY those candidates.
         """
         B, L = population.shape
-        N_cases = abs_error_matrix.shape[1]
-        
-        # Tour Size for Lexicase (Effective pool)
-        # Larger = closer to true Lexicase. 64 is a good balance.
-        tour_size = 64 
+        N_cases = y_target.flatten().shape[0]
+        tour_size = 32 # Reduced tour size for memory safety
         
         # 1. Select Candidates: [n_parents, tour_size]
         rand_idx = torch.randint(0, B, (n_parents, tour_size), device=self.device)
         
-        # 2. Get Errors: [n_parents, tour_size, N_cases]
-        # Gather is tricky for 3D.
-        # Flatten -> Gather -> Reshape
+        # 2. Extract Candidates Population & Constants
         flat_idx = rand_idx.view(-1)
-        flat_errs = abs_error_matrix[flat_idx] # [n_parents*tour_size, N_cases]
+        candidates_pop = population[flat_idx] # [n_parents*tour, L]
+        candidates_c = constants[flat_idx]
+        
+        # 3. Evaluate ONLY Candidates (Chunked by design since n_parents*tour is small)
+        # We need errors per case: [TotalCandidates, N_cases]
+        # evaluate_batch returns RMSE (mean). We need evaluate_batch_full.
+        # But wait, evaluate_batch_full itself was the OOM cause if run on full pop.
+        # Here we run it on (n_parents * tour_size).
+        # If n_parents=2000, tour=32 -> 64,000 candidates. Might still be too big.
+        # We should run this loop in chunks too!
+        
+        total_candidates = n_parents * tour_size
+        all_errors = []
+        chunk_size = 1000 # Evaluate 1000 candidates at a time
+        
+        for i in range(0, total_candidates, chunk_size):
+            end = min(total_candidates, i + chunk_size)
+            sub_pop = candidates_pop[i:end]
+            sub_c = candidates_c[i:end]
+            
+            # Use evaluate_batch_full which returns [Chunk, Cases] abs errors
+            sub_errs = self.evaluator.evaluate_batch_full(sub_pop, x, y_target, sub_c).float() # Use float32 to save memory
+            all_errors.append(sub_errs)
+        
+        flat_errs = torch.cat(all_errors, dim=0) # [n_parents*tour, N_cases]
+        
+        # Reshape to [n_parents, tour_size, N_cases]
         candidates_err = flat_errs.view(n_parents, tour_size, N_cases)
         
-        # 3. Calculate Epsilon per case (MAD on population or sample?)
-        # True epsilon is based on whole population median absolute deviation.
-        # We can computer per case globally.
-        # Global stats: [N_cases]
+        # 4. Standard Lexicase Logic (Batched)
         
-        # Define Epsilon
-        # Simplified: Median Absolute Deviation
-        # eps_j = median(|e_ij - median(e_ij)|)
+        # Epsilon (approximate using batch median to avoid full pop calc)
+        epsilon = torch.zeros(N_cases, device=self.device, dtype=torch.float32)
+        # Optional: Calculate real epsilon from a sample of population if needed, 
+        # but 0 is fine for standard Lexicase.
         
-        # Global epsilon calculation
-        # Simplified: Standard Lexicase (Epsilon = 0)
-        # Robust against 1e300 outliers which break MAD
-        epsilon = torch.zeros(N_cases, device=self.device, dtype=torch.float64)
-        
-        # median_err, _ = torch.median(abs_error_matrix, dim=0)
-        # abs_dev = torch.abs(abs_error_matrix - median_err.unsqueeze(0))
-        # mad, _ = torch.median(abs_dev, dim=0)
-        # epsilon = mad # * 1.0
-        
-        # 4. Shuffle Cases (Column Permutation)
-        # Different permutation for each parent? Or same per generation?
-        # True Lexicase: different per selection event.
-        # We can vectorizing by using same permutation for the batch of parents? 
-        # Or Just one global permutation per generation?
-        # "Different permutation per selection event" is ideal but expensive.
-        # Compromise: Generate K permutations and cycle them?
-        # Or simply: One random permutation per generation is often "Random Search" enough?
-        # No, strict ordering matters.
-        # Let's do: Global random permutation for this batch.
+        # Shuffle Cases
         perm = torch.randperm(N_cases, device=self.device)
-        
         candidates_err_shuffled = candidates_err[:, :, perm]
-        epsilon_shuffled = epsilon[perm]
         
-        # 5. Elimination Loop
-        # Masks: [n_parents, tour_size] (Boolean, True = Active)
+        # Elimination Loop
         active_mask = torch.ones((n_parents, tour_size), dtype=torch.bool, device=self.device)
         
         for i in range(N_cases):
-            # Check if we have winners
+            # Check active
             active_counts = active_mask.sum(dim=1)
+            # Optimization: If all rows have 1 candidate left, stop early
             if (active_counts == 1).all():
                 break
                 
-            # Current Case Errors: [n_parents, tour_size]
             curr_case_err = candidates_err_shuffled[:, :, i]
-            curr_eps = epsilon_shuffled[i]
             
             # Find best among active
-            # Mask inactive with infinity
             masked_err = torch.where(active_mask, curr_case_err, torch.tensor(float('inf'), device=self.device))
             min_err, _ = torch.min(masked_err, dim=1) # [n_parents]
             
             # Threshold
-            threshold = min_err + curr_eps
+            threshold = min_err # + epsilon (0)
             
             # Update Mask
-            # Must be active AND within threshold
-            keep = (curr_case_err <= threshold.unsqueeze(1))
+            keep = (curr_case_err <= threshold.unsqueeze(1) + 1e-9)
             active_mask = active_mask & keep
             
-            # If all eliminated in a row? (Shouldn't happen with min logic, at least 1 stays)
-            # Unless all were inactive? No, we break if 1 remains.
-            
-        # 6. Pick Winner
-        # If multiple remain, pick random first one (or true random)
-        # We pick the first active index.
-        # converting mask to indices is annoying.
-        # Let's just pick using ArgMax of mask (returns first True)
+        # 5. Pick Winner
         winners_local = torch.argmax(active_mask.int(), dim=1) 
+        winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
         
+        return winners_global        
         # Map back to global ID
         winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
         
@@ -405,7 +394,7 @@ class TensorGeneticEngine:
         # 2. Init
         if self._cached_initial_pop is None:
             # First time: Generate and cache
-            print("[GPU Engine] Generating 20,000 random formulas (First time, please wait)...")
+            print(f"[GPU Engine] Generating {self.pop_size:,} random formulas (First time, please wait)...")
             population = self.initialize_population()
             pop_constants = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=torch.float64)
             self._cached_initial_pop = population.clone()
@@ -490,6 +479,7 @@ class TensorGeneticEngine:
                 if callback: callback(generations, best_rmse, best_rpn, best_consts_vec, True, 0)
             else:
                 stagnation += 1
+                # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")
                 
             if callback and generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0:
                 callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
@@ -531,12 +521,12 @@ class TensorGeneticEngine:
             n_cross = int(remaining * GpuGlobals.DEFAULT_CROSSOVER_RATE)
             n_mut = remaining - n_cross
             
-            if GpuGlobals.USE_LEXICASE_SELECTION and abs_errors is not None:
-                # Epsilon Lexicase Selection
+            if GpuGlobals.USE_LEXICASE_SELECTION:
+                # Epsilon Lexicase Selection (Low VRAM Version)
                 
                 # Crossover Parents
                 if n_cross > 0:
-                     parents_idx = self.epsilon_lexicase_selection(population, abs_errors, n_cross)
+                     parents_idx = self.epsilon_lexicase_selection(population, n_cross, x_t, y_t, pop_constants)
                      parents = population[parents_idx]
                      offspring = self.operators.crossover_population(parents, 1.0)
                      next_pop_list.append(offspring)
@@ -544,8 +534,8 @@ class TensorGeneticEngine:
 
                 # Mutation Parents
                 if n_mut > 0:
-                     parents_idx = self.epsilon_lexicase_selection(population, abs_errors, n_mut)
-                     parents = population[parents_idx] # Clone?
+                     parents_idx = self.epsilon_lexicase_selection(population, n_mut, x_t, y_t, pop_constants)
+                     parents = population[parents_idx]
                      # ... rest of mutation logic
                      
                      n_point = n_mut // 2

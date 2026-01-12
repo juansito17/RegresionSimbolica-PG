@@ -135,12 +135,14 @@ def hybrid_solve(
     if TensorGeneticEngine and use_gpu_gp:
         try:
             # Use cached engine if available
-            cache_key = (str(device), 20000, num_variables) 
+            from core.gpu.config import GpuGlobals
+            cache_key = (str(device), GpuGlobals.POP_SIZE, num_variables) 
             if cache_key in _GPU_ENGINE_CACHE:
                 gpu_engine = _GPU_ENGINE_CACHE[cache_key]
             else:
+                from core.gpu.config import GpuGlobals
                 # Initialize Engine once
-                gpu_engine = TensorGeneticEngine(pop_size=20000, n_islands=20, device=device, num_variables=num_variables)
+                gpu_engine = TensorGeneticEngine(pop_size=GpuGlobals.POP_SIZE, n_islands=GpuGlobals.NUM_ISLANDS, device=device, num_variables=num_variables)
                 _GPU_ENGINE_CACHE[cache_key] = gpu_engine
                 
             print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds...")
