@@ -103,6 +103,10 @@ seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.1153588 * x0) ** (((sin(5) + (x
 # 8. User Found SOTA (Gen 7) - Extremely Low Fitness 0.058 (High Variance)
 seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.11580232 * x0) ^ (((sin(-0.16773652) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
 
+# 9. Smoothed Gen 8/7 - Optimized for Reduced Spikes (N=16 600%->170%. N=26 29%->4%)
+# Trade-off: N=9 Error increased. Better Asymptotic Stability.
+seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.10944318 * x0) ^ (((sin(-0.17501817) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
+
 GpuGlobals.USE_INITIAL_FORMULA = True
 
 # ============================================================
