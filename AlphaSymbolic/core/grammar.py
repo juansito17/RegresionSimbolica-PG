@@ -393,17 +393,23 @@ class ExpressionTree:
             if val == 'ceil':
                 return np.ceil(args[0])
             
-            if val == 'gamma' or val == '!':
-                # Match C++ Protected Gamma/Factorial: tgamma(|x| + 1)
-                # This ensures consistent evaluation for formulas from C++ engine (which uses !)
+            if val == '!':
+                # Factorial: x! = gamma(|x| + 1)
                 arg = np.abs(args[0]) + 1.0
-                clipped = np.clip(arg, 0.1, 50) # Clip upper bound to avoid overflow
+                clipped = np.clip(arg, 0.1, 50)
                 return scipy_gamma(clipped)
+                
+            if val == 'gamma':
+                # True Gamma: gamma(|x|)
+                # Note: Gamma(0) is undef, Gamma(negative int) is undef.
+                # Use |x| to avoid complex, and small offset to avoid 0.
+                arg = np.abs(args[0]) + 1e-10 
+                clipped = np.clip(arg, 0.1, 50)
+                return scipy_gamma(clipped)
+
             if val == 'lgamma' or val == 'g':
-                # Protected lgamma: lgamma(|x| + 1)
-                arg = np.abs(args[0]) + 1.0
-                # gammaln is safe for large positive numbers, so less aggressive clipping needed for overflow,
-                # but we clip for consistency and to avoid extremely large outputs if followed by exp
+                # Log Gamma: lgamma(|x|)
+                arg = np.abs(args[0]) + 1e-10
                 clipped = np.clip(arg, 0.1, 1000) 
                 return gammaln(clipped)
             if val == 'neg':

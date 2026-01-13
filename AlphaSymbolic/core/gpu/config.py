@@ -65,7 +65,7 @@ class GpuGlobals:
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = False
-    INITIAL_FORMULA_STRING = "((lgamma((1 + x0)) - cos((x1 / ((-0.15604612 * (x0 - (sqrt((x0 - sin(sin(3)))) ^ x2))) ^ x0)))) - x0)"
+    INITIAL_FORMULA_STRING = "((lgamma((x0 + 2)) - cos((x1 / ((-0.15604612 * (x0 - (sqrt((x0 - sin(sin(3)))) ^ x2))) ^ x0)))) - x0)"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -98,7 +98,7 @@ class GpuGlobals:
     USE_OP_COS      = False  # ENABLED for Trig Benchmark
     USE_OP_LOG      = True
     USE_OP_EXP      = True
-    USE_OP_FACT     = False
+    USE_OP_FACT     = True
     USE_OP_FLOOR    = False
     USE_OP_GAMMA    = True
     USE_OP_ASIN     = False

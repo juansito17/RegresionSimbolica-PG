@@ -85,11 +85,23 @@ seeds.append("log(lgamma(x0 + 1) / (2.54 ** x0))")
 seeds.append("log((x2 * ((0.143 * x0) ** x0)) + ((1 - x2) * ((0.143 * x0) ** x0)))")
 
 # 4. Bell's Approximation (n! / c^n) -> log(...)
-seeds.append("log(lgamma(x0) / (2.54 ** x0))")
+seeds.append("log(lgamma(x0 + 1) / (2.54 ** x0))")
 
 # 5. User Found SOTA (Gen 15)
-# Already in Log Space (lgamma), so no extra log() needed.
-seeds.append("((lgamma((1 + x0)) - cos((x1 / ((0.13184391 * x0) ** x0)))) - x0)")
+# Adjusted for Standardized Operators: lgamma(x+2) corresponds to old lgamma(x+1)
+seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.13184391 * x0) ** x0)))) - x0)")
+
+# 6. User Found SOTA (Gen 25) - Standardized Run
+# 0.059 Fitness (Legacy). Optimized Translation: 0.097 RMSE.
+# Explicit shifts: lgamma(x+1) [inner], lgamma(arg+1) [outer]. Constant tuned.
+seeds.append("((lgamma((cos((cos(lgamma(x0 + 1)) / sqrt(x0))) + x0 + 1)) - cos(((x0 + x0) / ((0.30467647 * (lgamma(x0 + 1) - x0)) ** x0)))) - x0)")
+
+# 7. User Found SOTA (Gen 8) - Evolved in Standardized Engine
+# Fitness: 0.069. Proves engine can optimize standardized structure.
+seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.1153588 * x0) ** (((sin(5) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
+
+# 8. User Found SOTA (Gen 7) - Extremely Low Fitness 0.058 (High Variance)
+seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.11580232 * x0) ^ (((sin(-0.16773652) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
 
 GpuGlobals.USE_INITIAL_FORMULA = True
 

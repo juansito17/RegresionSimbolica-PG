@@ -78,10 +78,25 @@ __device__ __forceinline__ T safe_acos(T a) {
     return acos(a);
 }
 
+
 template <typename T>
-__device__ __forceinline__ T safe_gamma(T a) {
-    if (a <= -1.0) return (T)1e30;
-    return lgamma(a + 1.0); 
+__device__ __forceinline__ T safe_tgamma(T a) {
+    if (abs(a) > 30.0) return (T)1e30; // Overflow protection for tgamma
+    return tgamma(a);
+}
+
+template <typename T>
+__device__ __forceinline__ T safe_lgamma(T a) {
+    // Standard lgamma(x)
+    return lgamma(a); 
+}
+
+template <typename T>
+__device__ __forceinline__ T safe_fact(T a) {
+    // Standard Factorial: x! = gamma(x + 1)
+    if (a < 0) return (T)1e30; // Factorial defined for >= 0 usually, or complex.
+    if (a > 30.0) return (T)1e30; 
+    return tgamma(a + 1.0); 
 }
 
 // TEMPLATED KERNEL
@@ -194,17 +209,18 @@ __global__ void rpn_eval_kernel(
         else if (token == op_abs) res = abs(op1);
         else if (token == op_neg) res = -op1;
         else if (token == op_sqrt) res = safe_sqrt(op1);
-        else if (token == op_log) res = safe_log(op1);
+        else if (token == op_log) res = safe_log(op1); // log(x)
         else if (token == op_exp) res = safe_exp(op1);
         else if (token == op_floor) res = floor(op1);
         else if (token == op_asin) res = safe_asin(op1);
         else if (token == op_acos) res = safe_acos(op1);
         else if (token == op_atan) res = atan(op1);
-        else if (token == op_fact) res = safe_gamma(op1); 
-        else if (token == op_gamma) res = safe_gamma(op1); 
+        else if (token == op_fact) res = safe_fact(op1); // Factorial: tgamma(x+1)
+        else if (token == op_gamma) res = safe_lgamma(op1); // OpGamma (token 'g') -> lgamma(x)
         
         stack[sp++] = res;
     }
+
     
     out_sp[idx] = sp;
     out_error[idx] = error ? 1 : 0;

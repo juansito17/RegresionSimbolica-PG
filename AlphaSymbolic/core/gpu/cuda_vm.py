@@ -1,16 +1,19 @@
 
+import os
+import torch
+from torch.utils.cpp_extension import load
+
 import torch
 import torch.utils.cpp_extension
 
-# Try to import the compiled extension
 try:
-    from . import rpn_cuda
+    from . import rpn_cuda_final as rpn_cuda
 except ImportError:
     try:
-        import rpn_cuda
+        import rpn_cuda_final as rpn_cuda
     except ImportError:
         rpn_cuda = None
-        print("[CUDA VM] Warning: 'rpn_cuda' extension not found. Please compile it.")
+        print("[CUDA VM] Warning: 'rpn_cuda_final' extension not found. Please compile it.")
 
 class CudaRPNVM:
     def __init__(self, grammar, device):

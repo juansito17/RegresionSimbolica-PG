@@ -8,9 +8,9 @@ import torch
 base_path = os.path.dirname(os.path.abspath(__file__))
 
 setup(
-    name='rpn_cuda',
+    name='rpn_cuda_final',
     ext_modules=[
-        CUDAExtension('rpn_cuda', [
+        CUDAExtension('rpn_cuda_final', [
             os.path.join(base_path, 'rpn_kernels.cu'),
             os.path.join(base_path, 'bindings.cpp'),
         ])
