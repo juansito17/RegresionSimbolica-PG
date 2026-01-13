@@ -18,8 +18,9 @@ from .optimization import GPUOptimizer
 from .simplification import GPUSimplifier
 
 class TensorGeneticEngine:
-    def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None):
+    def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None, model=None):
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = model # Neural Model (AlphaSymbolicModel)
         
         # Defaults from Globals
         if pop_size is None: pop_size = GpuGlobals.POP_SIZE
@@ -85,6 +86,81 @@ class TensorGeneticEngine:
         
     def rpn_to_infix(self, rpn_tensor: torch.Tensor, constants: torch.Tensor = None) -> str:
         return self.simplifier._rpn_to_infix_str(rpn_tensor, constants)
+
+    def predict_individual(self, rpn: torch.Tensor, consts: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """
+        Predicts y for a single individual.
+        rpn: [L]
+        consts: [MaxConstants]
+        x: [D]
+        Returns: [D] prediction
+        """
+        # Wrap as batch of 1
+        pop = rpn.unsqueeze(0)
+        c = consts.unsqueeze(0)
+        # Use evaluate_differentiable to get preds (ignoring gradients/MSE)
+        # It handles the full stack logic properly.
+        # But evaluate_differentiable returns (rmse, preds).
+        _, preds = self.evaluate_differentiable(pop, c, x, x) # passing x as dummy y
+        return preds.squeeze(0)
+
+    def attempt_residual_boost(self, best_rpn, best_consts, x_t, y_t):
+        """
+        Tries to fit the residual error using The Sniper.
+        Returns: (NewFormulaStr, NewRMSE) or (None, None)
+        """
+        try:
+             # 1. Get current predictions
+             y_pred = self.predict_individual(best_rpn, best_consts, x_t)
+             
+             # Convert to CPU for Sniper
+             x_cpu = x_t.cpu().numpy()
+             y_cpu = y_t.cpu().numpy()
+             pred_cpu = y_pred.detach().cpu().numpy()
+             
+             best_boost_str = None
+             
+             # --- Additive Boost: y = f(x) + g(x) ---
+             # g(x) = y - f(x)
+             res_add = y_cpu - pred_cpu
+             
+             # Check SNR: if residual is just noise (very small), skip
+             if np.std(res_add) > 1e-6:
+                 boost_add = self.sniper.run(x_cpu, res_add)
+                 if boost_add:
+                     # Construct new formula
+                     base_str = self.rpn_to_infix(best_rpn, best_consts)
+                     new_str = f"({base_str} + {boost_add})"
+                     best_boost_str = new_str
+                     
+             # --- Multiplicative Boost: y = f(x) * g(x) ---
+             # g(x) = y / f(x)
+             # Avoid div by zero
+             if best_boost_str is None: # Only try if additive failed (priority to additive)
+                 mask = np.abs(pred_cpu) > 1e-6
+                 if np.sum(mask) > len(mask) * 0.9: # 90% valid
+                     res_mult = np.zeros_like(y_cpu)
+                     res_mult[mask] = y_cpu[mask] / pred_cpu[mask]
+                     
+                     if np.std(res_mult) > 1e-6:
+                         boost_mult = self.sniper.run(x_cpu, res_mult)
+                         if boost_mult:
+                              base_str = self.rpn_to_infix(best_rpn, best_consts)
+                              new_str = f"({base_str} * {boost_mult})"
+                              best_boost_str = new_str
+                              
+             if best_boost_str:
+                 # Evaluate
+                 # We need to compile it to RPN and eval
+                 pop_boost, const_boost = self.load_population_from_strings([best_boost_str])
+                 if pop_boost is not None:
+                      rmse = self.evaluator.evaluate_batch(pop_boost, x_t, y_t, const_boost)
+                      return best_boost_str, rmse.item(), pop_boost[0], const_boost[0]
+                      
+        except Exception as e:
+             # print(f"Boost failed: {e}")
+             pass
+        return None, None, None, None
 
     def get_tree_size(self, rpn_tensor: torch.Tensor) -> int:
         return (rpn_tensor != PAD_ID).sum().item()
@@ -158,6 +234,80 @@ class TensorGeneticEngine:
         if np.allclose(targets, targets[0], atol=1e-5):
              seeds.append("C")
         return seeds
+
+    def neural_flash_injection(self, x_t, y_t):
+        """
+        Uses the Neural Model to hallucinate new candidates based on current knowledge.
+        "Neural Flash" - Insight injection.
+        """
+        if self.model is None: return None, None
+        
+        try:
+             # Lazy import
+             from search.beam_search import beam_solve
+             
+             # Convert data for Beam Search (needs CPU or specific shape)
+             # beam_solve expects raw x, y
+             # Our x_t, y_t might be log-transformed if USE_LOG = True
+             # The model was likely trained on Raw or Log?
+             # Assuming Model handles its own preprocessing or expects scaled data.
+             # Let's pass what we have (y_t is target).
+             
+             # Sample for speed (don't run beam on 10k points)
+             n_samples = min(len(x_t), 100)
+             idx = torch.randperm(len(x_t))[:n_samples]
+             x_sub = x_t[idx]
+             y_sub = y_t[idx]
+             
+             results = beam_solve(
+                 x_sub, y_sub, self.model, self.device, 
+                 beam_width=10, 
+                 num_variables=self.num_variables,
+                 verbose=False
+             )
+             
+             candidates = [r['formula'] for r in results if 'formula' in r and not r['formula'].startswith("Partial")]
+             if candidates:
+                 return self.load_population_from_strings(candidates)
+                 
+        except Exception as e:
+            # print(f"[Engine] Neural Flash Failed: {e}")
+            pass
+            
+        return None, None
+        
+    def alpha_mcts_refinement(self, x_t, y_t):
+        """
+        Runs Monte Carlo Tree Search to find 'Out of This World' structural solutions.
+        This is the 'Deep Thought' mode.
+        """
+        if self.model is None: return None
+        
+        try:
+             # Lazy import
+             from search.mcts import MCTS
+             
+             # Sample for speed (MCTS is slow)
+             n_samples = min(len(x_t), 50)
+             idx = torch.randperm(len(x_t))[:n_samples]
+             x_sub = x_t[idx].cpu().numpy()
+             y_sub = y_t[idx].cpu().numpy()
+             
+             mcts = MCTS(
+                 self.model, self.device, 
+                 n_simulations=50, # Quick burst
+                 max_depth=30,
+                 num_variables=self.num_variables
+             )
+             
+             result = mcts.search(x_sub, y_sub)
+             if result['formula'] and result['formula'] != "None":
+                 return result['formula']
+                 
+        except Exception as e:
+             # print(f"[Engine] Alpha MCTS Failed: {e}")
+             pass
+        return None
 
     def migrate_islands(self, population, constants, fitness):
         if self.n_islands <= 1: return population, constants
@@ -372,6 +522,16 @@ class TensorGeneticEngine:
         # Line 1314: `target_matrix = y_target.unsqueeze(0).expand(B, -1)`
         # This implies y_target should be [D].
         if y_t.ndim == 2 and y_t.shape[0] == 1: y_t = y_t.squeeze(0)
+        
+        # --- 1.5 The Sniper (Intelligence Check) ---
+        # Before doing heavy lifting, check for simple patterns (Linear, Geometric)
+        if GpuGlobals.USE_SNIPER:
+            # Use CPU numpy for sniper
+            sniper_formula = self.sniper.run(x_t.cpu().numpy(), y_t.cpu().numpy())
+            if sniper_formula:
+                print(f"[Engine] The Sniper found a candidate solution: {sniper_formula}")
+                if seeds is None: seeds = []
+                seeds.append(sniper_formula)
             
         # 2. Init with Disk Cache and Double Buffering
         import os
@@ -476,6 +636,50 @@ class TensorGeneticEngine:
             if self.n_islands > 1 and generations % 10 == 0: # Default interval 10
                  population, pop_constants = self.migrate_islands(population, pop_constants, fitness_rmse)
 
+            # --- Neural Flash (Intelligence Injection) ---
+            if GpuGlobals.USE_NEURAL_FLASH and self.model is not None and generations % 50 == 0:
+                 pop_neural, const_neural = self.neural_flash_injection(x_t, y_t)
+                 if pop_neural is not None:
+                     # Inject into random island (or spread)
+
+                     n_inj = pop_neural.shape[0]
+                     if n_inj > 0:
+                         # Replace random losers
+                         limit = min(n_inj, self.pop_size // 10)
+                         indices = torch.randint(0, self.pop_size, (limit,), device=self.device)
+                         population[indices] = pop_neural[:limit]
+                         pop_constants[indices] = const_neural[:limit]
+                         # print(f"[Generation {generations}] Neural Flash injected {limit} insights.")
+
+            # --- Alpha MCTS (Deep Thought) ---
+            if GpuGlobals.USE_ALPHA_MCTS and self.model is not None and generations % 100 == 0:
+                 mcts_formula = self.alpha_mcts_refinement(x_t, y_t)
+                 if mcts_formula:
+                      print(f"[Generation {generations}] Alpha MCTS found structure: {mcts_formula}")
+
+                      pop_mcts, const_mcts = self.load_population_from_strings([mcts_formula])
+                      if pop_mcts is not None:
+                           # Inject as elite (pos 0)
+                           if population is self.pop_buffer_A:
+                               self.pop_buffer_A[0] = pop_mcts[0]
+                               self.const_buffer_A[0] = const_mcts[0]
+                           else:
+                               self.pop_buffer_B[0] = pop_mcts[0]
+                               self.const_buffer_B[0] = const_mcts[0]
+
+            # --- Pattern Memory Injection ---
+            # Inject successful building blocks to accelerate convergence
+            if GpuGlobals.USE_PATTERN_MEMORY and generations > 10 and generations % GpuGlobals.PATTERN_INJECT_INTERVAL == 0:
+                 # Inject into current population before evaluation
+                 pop_inj, const_inj, n_injected = self.pattern_memory.inject_into_population(
+                     population, pop_constants, self.grammar, 
+                     percent=GpuGlobals.PATTERN_INJECT_PERCENT
+                 )
+                 if n_injected > 0:
+                     population[:] = pop_inj
+                     pop_constants[:] = const_inj
+                     # print(f"[Generation {generations}] Injected {n_injected} patterns.")
+
             # Eval
             # If Lexicase, we need FULL errors
             if GpuGlobals.USE_LEXICASE_SELECTION:
@@ -484,6 +688,14 @@ class TensorGeneticEngine:
             else:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
                 abs_errors = None
+                
+            # --- Pattern Memory Recording ---
+            # Record successful subtrees
+            if GpuGlobals.USE_PATTERN_MEMORY and generations % 5 == 0:  # Hardcoded 5 for frequent recording
+                 self.pattern_memory.record_subtrees(
+                     population, fitness_rmse, self.grammar, 
+                     min_size=3, max_size=12
+                 )
             
             # Optimize Top K
             k_opt = min(self.pop_size, 200)
@@ -571,6 +783,31 @@ class TensorGeneticEngine:
             # Dynamic Mutation
             if stagnation > 10:
                 current_mutation_rate = min(0.4, GpuGlobals.BASE_MUTATION_RATE + (stagnation - 10) * 0.01)
+                
+                # --- Residual Boosting (Every 20 stagnation steps) ---
+                if GpuGlobals.USE_RESIDUAL_BOOSTING and stagnation % 20 == 0 and best_rpn is not None:
+                     boost_str, boost_rmse, boost_rpn, boost_c = self.attempt_residual_boost(best_rpn, best_consts_vec, x_t, y_t)
+                     if boost_str and boost_rmse < best_rmse:
+                         print(f"[Engine] Residual Boosting SUCCESS! New RMSE: {boost_rmse:.6f}")
+                         print(f"         Formula: {boost_str}")
+                         # Update Best
+                         best_rmse = boost_rmse
+                         best_rpn = boost_rpn
+                         best_consts_vec = boost_c
+                         self.best_global_rmse = best_rmse
+                         self.best_global_rpn = best_rpn
+                         self.best_global_consts = best_consts_vec
+                         stagnation = 0 # Reset!
+                         
+                         # Inject into population (Elitism slot 0)
+                         # We need to write to CURRENT buffers
+                         if population is self.pop_buffer_A:
+                             self.pop_buffer_A[0] = best_rpn
+                             self.const_buffer_A[0] = best_consts_vec
+                         else:
+                             self.pop_buffer_B[0] = best_rpn
+                             self.const_buffer_B[0] = best_consts_vec
+                         
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
                 

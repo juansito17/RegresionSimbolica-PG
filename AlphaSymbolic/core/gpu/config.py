@@ -178,9 +178,15 @@ class GpuGlobals:
     USE_SIMPLIFICATION = True
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
-    USE_PARETO_SELECTION = False  # Disabled for stronger fitness pressure on simple problems
+    USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems
     USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
     USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
+    
+    USE_SNIPER = True             # Enable Linear/Geometric/Log-Linear detection
+    USE_RESIDUAL_BOOSTING = True  # Enable finding f(x)+g(x) using Sniper on residuals
+    USE_NEURAL_FLASH = False      # Enable Neural Inspiration (Beam Search injection)
+    USE_ALPHA_MCTS = False        # Enable Alpha Mode (MCTS Refinement)
+    USE_PATTERN_MEMORY = True     # Enable Lamarckian Subtree Learning
 
     # ----------------------------------------
     # Otros Parámetros
