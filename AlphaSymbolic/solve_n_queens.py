@@ -111,31 +111,9 @@ def console_callback(gen, best_rmse, best_rpn, best_consts, is_new_best, island_
         # Validation
         try:
             tree = ExpressionTree.from_infix(formula_str)
-            
-            print("--- Verification (Recent Generations) ---")
-            # Verify specifically on the last few points which are hardest
-            check_indices = [0, 1, 2, -3, -2, -1] # Check start and end of TRAINING set
-            
-            for idx in check_indices:
-                real_idx = idx if idx >= 0 else len(X_TRAIN) + idx
-                x_val = X_TRAIN[real_idx]
-                target = Y_TRAIN[real_idx]
-                
-                pred = tree.evaluate(x_val)
-                if isinstance(pred, np.ndarray): pred = pred.item()
-                
-                # Undo log if prediction is in log space? 
-                # The engine handles internal fitness in log space if configured, 
-                # but tree.evaluate usually returns raw value unless formula includes log.
-                # However, our target Y_TRAIN is raw. 
-                # If USE_LOG_TRANSFORMATION is True, the engine expects the formula to predict Raw Y, 
-                # but calculates loss on Log(Pred) vs Log(Target).
-                # So tree.evaluate returns Raw Y estimate.
-                
-                diff = abs(pred - target)
-                percent_err = (diff / target) * 100 if target != 0 else 0
-                print(f" n={int(x_val[0])}: Target={target:.2e}, Pred={pred:.2e}, Diff={diff:.2e} ({percent_err:.4f}%)")
-        except:
+            # Verification output suppressed as requested
+            pass
+        except Exception as e:
             pass
         sys.stdout.flush()
         

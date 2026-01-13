@@ -17,44 +17,52 @@
 // We will cast inside functions
 
 // Device functions for unary/binary ops (Templated)
+
+// Device functions for unary/binary ops (Templated)
 template <typename T>
 __device__ __forceinline__ T safe_div(T a, T b) {
-    if (abs(b) < 1e-9) return (T)1e30; // Large value for float? Or use infinity.
-    // 1e300 is too big for float32. 
+    if (abs(b) < 1e-9) return nan(""); // Enforce NaN on division by zero
     return a / b;
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_mod(T a, T b) {
-    if (abs(b) < 1e-9) return (T)1e30;
+    if (abs(b) < 1e-9) return nan("");
     return remainder(a, b);
 }
 
+
+
 template <typename T>
 __device__ __forceinline__ T safe_log(T a) {
-    if (a <= 1e-9) return (T)-1e30;
+    if (a <= 0.0) return nan(""); 
     return log(a);
 }
 
+
+
 template <typename T>
 __device__ __forceinline__ T safe_exp(T a) {
-    if (a > 80.0) return (T)1e30; 
+    if (a > 80.0) return (T)1e30; // Overflow clamp is arguably okay, but let's allow Inf? 
+    // Let's keep overflow clamp for now to avoid accidental Inf fitness, but NaN is preferred for invalid.
     if (a < -80.0) return (T)0.0;
     return exp(a);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_sqrt(T a) {
-    if (a < 0) return sqrt(-a); 
+    if (a < 0) return nan(""); // Enforce NaN
     return sqrt(a);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_pow(T a, T b) {
+    // pow(neg, float) -> NaN usually.
     T res = pow(a, b);
-    if (isnan(res) || isinf(res)) return (T)1e30;
+    // If we want to be strict, built-in pow is usually strictly NaN for negative base with fractional exp.
     return res;
 }
+
 
 template <typename T>
 __device__ __forceinline__ T safe_asin(T a) {

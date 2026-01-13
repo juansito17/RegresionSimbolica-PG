@@ -395,7 +395,8 @@ class TensorGeneticEngine:
         elif os.path.exists(cache_file):
              try:
                  print(f"[GPU Engine] Loading from cache: {cache_file}")
-                 data = torch.load(cache_file, map_location=self.device)
+
+                 data = torch.load(cache_file, map_location=self.device, weights_only=False)
                  if data['pop'].shape == self.pop_buffer_A.shape:
                       self.pop_buffer_A[:] = data['pop']
                       self.const_buffer_A[:] = data['const'].to(self.dtype)
