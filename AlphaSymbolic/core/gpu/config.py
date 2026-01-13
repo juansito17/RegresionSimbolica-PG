@@ -9,6 +9,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
+    USE_FLOAT32 = True # Optimización: Float32 (10x velocidad)
     USE_LOG_TRANSFORMATION = True
 
     # DATASET CENTRALIZADO (N-Reinas)
@@ -63,8 +64,8 @@ class GpuGlobals:
     MIN_POP_PER_ISLAND = 50
 
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = True
-    INITIAL_FORMULA_STRING = "(log((((log(lgamma(lgamma(x0))) / (x0 - lgamma(x0))) + x2) + x0)) - (floor((x0 + log(sqrt(((log(x0) - x0) + x2))))) - lgamma(x0)))"
+    USE_INITIAL_FORMULA = False
+    INITIAL_FORMULA_STRING = "((lgamma((1 + x0)) - cos((x1 / ((-0.15604612 * (x0 - (sqrt((x0 - sin(sin(3)))) ^ x2))) ^ x0)))) - x0)"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas

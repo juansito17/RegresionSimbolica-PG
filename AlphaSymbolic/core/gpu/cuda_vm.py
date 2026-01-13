@@ -83,17 +83,21 @@ class CudaRPNVM:
         if not population.is_contiguous(): population = population.contiguous()
         if not x.is_contiguous(): x = x.contiguous()
         
+        # Infer dtype from input
+        dtype = x.dtype
+        
         if constants is None:
             # Pass empty
             K = 0
-            constants = torch.empty((B, 0), device=self.device, dtype=torch.float64)
+            constants = torch.empty((B, 0), device=self.device, dtype=dtype)
         else:
             if not constants.is_contiguous(): constants = constants.contiguous()
+            if constants.dtype != dtype: constants = constants.to(dtype)
             K = constants.shape[1]
             
         # Prepare Outputs
         # [B, D] - Implicitly expanded
-        out_preds = torch.empty((B, D), dtype=torch.float64, device=self.device)
+        out_preds = torch.empty((B, D), dtype=dtype, device=self.device)
         out_sp = torch.empty((B, D), dtype=torch.int32, device=self.device)
         out_error = torch.empty((B, D), dtype=torch.uint8, device=self.device) # unsigned char in C++ map to bool/byte
         

@@ -35,11 +35,23 @@ class TensorGeneticEngine:
         self.num_variables = num_variables
         self.max_constants = max_constants
 
+        # --- Precision Setup ---
+        self.dtype = torch.float32 if GpuGlobals.USE_FLOAT32 else torch.float64
+        print(f"[Engine] Precision Mode: {self.dtype}")
+
+        # --- Double Buffering Setup ---
+        # Pre-allocate 2 sets of buffers to avoid churn
+        self.pop_buffer_A = torch.full((self.pop_size, self.max_len), PAD_ID, dtype=torch.long, device=self.device)
+        self.pop_buffer_B = torch.full((self.pop_size, self.max_len), PAD_ID, dtype=torch.long, device=self.device)
+        self.const_buffer_A = torch.zeros((self.pop_size, self.max_constants), dtype=self.dtype, device=self.device)
+        self.const_buffer_B = torch.zeros((self.pop_size, self.max_constants), dtype=self.dtype, device=self.device)
+
         # --- Sub-components ---
         self.grammar = GPUGrammar(num_variables)
         
-        self.evaluator = GPUEvaluator(self.grammar, self.device)
-        self.operators = GPUOperators(self.grammar, self.device, self.pop_size, self.max_len, self.num_variables)
+        # Pass dtype to sub-components
+        self.evaluator = GPUEvaluator(self.grammar, self.device, dtype=self.dtype)
+        self.operators = GPUOperators(self.grammar, self.device, self.pop_size, self.max_len, self.num_variables, dtype=self.dtype)
         self.optimizer = GPUOptimizer(self.evaluator, self.operators, self.device)
         self.simplifier = GPUSimplifier(self.grammar, self.device, self.max_constants)
         
@@ -439,7 +451,11 @@ class TensorGeneticEngine:
             if generations >= GpuGlobals.GENERATIONS: break
             
             generations += 1
-            
+
+            # Migration
+            if self.n_islands > 1 and generations % 10 == 0: # Default interval 10
+                 population, pop_constants = self.migrate_islands(population, pop_constants, fitness_rmse)
+
             # Eval
             # If Lexicase, we need FULL errors
             if GpuGlobals.USE_LEXICASE_SELECTION:
@@ -474,9 +490,12 @@ class TensorGeneticEngine:
                 self.best_global_rpn = best_rpn
                 self.best_global_consts = best_consts_vec
                 
+                # Identify Island
+                island_idx = (min_idx.item() // self.island_size) if self.n_islands > 1 else 0
+
                 stagnation = 0
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
-                if callback: callback(generations, best_rmse, best_rpn, best_consts_vec, True, 0)
+                if callback: callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             else:
                 stagnation += 1
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")
@@ -506,95 +525,144 @@ class TensorGeneticEngine:
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
                 
-            # Evolution Step
-            # Evolution Step (Optimized Memory)
-            # Pre-allocate next generation tensors to avoid torch.cat spikes
-            next_pop = torch.empty_like(population)
-            next_c = torch.empty_like(pop_constants)
+            # Evolution Step (Vectorized Island Model + Double Buffering)
             
-            p_ptr = 0 # Write pointer
+            # Determine Buffers based on generation parity
+            # If gen % 2 == 0: Read A, Write B
+            # If gen % 2 == 1: Read B, Write A
+            # Actually, 'population' is already correct from previous loop swap.
+            # We just need to set 'next_pop' to the OTHER buffer.
             
-            # Elitism
-            k_elite = max(1, int(self.pop_size * GpuGlobals.BASE_ELITE_PERCENTAGE))
-            _, elite_idx = torch.topk(fitness_rmse, k_elite, largest=False)
+            if generations % 2 == 0:
+                 # Current is A (implied), Next is B
+                 # But 'population' variable holds the current tensor reference.
+                 # Check identity to be safe?
+                 # No, just trust the swap logic at end.
+                 # Wait, we need to know WHICH one is 'population' to pick valid 'next_pop'.
+                 # Simpler: Maintain a 'current_buffer_idx' 0 or 1.
+                 pass
+            
+            # Use explicit pointers?
+            # 'population' and 'pop_constants' point to A or B.
+            # We need 'next_pop' to point to the other.
+            
+            if population is self.pop_buffer_A:
+                next_pop = self.pop_buffer_B
+                next_c = self.const_buffer_B
+            else:
+                next_pop = self.pop_buffer_A
+                next_c = self.const_buffer_A
+                
+            # pointers
+            p_ptr = 0
+            
+            # 1. Vectorized Elitism
+            # View fitness as [Islands, IslandSize] to select best per island
+            fit_view = fitness_rmse.view(self.n_islands, self.island_size)
+            k_elite_per_island = max(1, int(self.island_size * GpuGlobals.BASE_ELITE_PERCENTAGE))
+            total_elites = k_elite_per_island * self.n_islands
+            
+            # topk per row (island)
+            _, elite_local_idx = torch.topk(fit_view, k_elite_per_island, dim=1, largest=False) # [n_islands, k_elite]
+            
+            # Convert to global indices
+            island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
+            elite_global_idx = (elite_local_idx + island_offsets).view(-1) # Flatten [All Elites]
             
             # Copy Elites
-            next_pop[p_ptr : p_ptr + k_elite] = population[elite_idx]
-            next_c[p_ptr : p_ptr + k_elite] = pop_constants[elite_idx]
-            p_ptr += k_elite
+            next_pop[0 : total_elites] = population[elite_global_idx]
+            next_c[0 : total_elites] = pop_constants[elite_global_idx]
+            p_ptr += total_elites
             
-            remaining = self.pop_size - k_elite
-            n_cross = int(remaining * GpuGlobals.DEFAULT_CROSSOVER_RATE)
-            n_mut = remaining - n_cross
+            # 2. Vectorized Selection Setup
+            remaining_per_island = self.island_size - k_elite_per_island
+            n_cross_per_island = int(remaining_per_island * GpuGlobals.DEFAULT_CROSSOVER_RATE)
+            n_mut_per_island = remaining_per_island - n_cross_per_island
             
-            # Helper for selection metrics (Tournament only)
+            total_cross = n_cross_per_island * self.n_islands
+            total_mut = n_mut_per_island * self.n_islands
+            
+            # Selection Metric (Vectorized)
             selection_metric = None
-            if not GpuGlobals.USE_LEXICASE_SELECTION:
-                lengths = (population != PAD_ID).sum(dim=1).float()
-                # Recalculate penalized fitness once
-                selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
-
-            # --- CHUNKED CROSSOVER ---
-            chunk_size = 50000 
+            # Calculate metric if Tournament is used OR if Lexicase is used (as fallback for now)
+            lengths = (population != PAD_ID).sum(dim=1).float()
+            selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
             
-            for i in range(0, n_cross, chunk_size):
-                curr_size = min(chunk_size, n_cross - i)
+            # --- Vectorized Tournament Selection Helper ---
+            def get_island_parents(n_needed_per_island):
+                # Returns flattened global indices of parents selected locally within each island
+                # 1. Random local indices [Islands, Needed, Tour]
+                rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
                 
-                # Select Parents
-                if GpuGlobals.USE_LEXICASE_SELECTION:
-                     parents_idx = self.epsilon_lexicase_selection(population, curr_size, x_t, y_t, pop_constants)
-                else:
-                     # Tournament
-                     idx = torch.randint(0, self.pop_size, (curr_size, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                     candidates_metric = selection_metric[idx]
-                     best_local_idx = torch.argmin(candidates_metric, dim=1)
-                     parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                # 2. Convert to global for gathering metric
+                # Offset shape: [Islands, 1, 1]
+                offsets = island_offsets.view(self.n_islands, 1, 1)
+                rand_global = rand_local + offsets
                 
-                parents = population[parents_idx]
+                # 3. Gather Metric [Islands, Needed, Tour]
+                # We can gather from flattened metric using flattened indices, then reshape
+                flat_rand = rand_global.view(-1)
+                flat_metric = selection_metric[flat_rand]
+                view_metric = flat_metric.view(self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE)
                 
-                # Generate Offspring
-                offspring = self.operators.crossover_population(parents, 1.0)
+                # 4. Intra-Island Tournament
+                best_tour_idx = torch.argmin(view_metric, dim=2) # [Islands, Needed] (Values 0..Tour-1)
                 
-                # Write to Buffer
-                next_pop[p_ptr : p_ptr + curr_size] = offspring
-                next_c[p_ptr : p_ptr + curr_size] = pop_constants[parents_idx]
-                p_ptr += curr_size
+                # 5. Select Winners
+                # We need to gather the winner Global Index from 'rand_global'
+                # Gather requires index to be same dim.
+                winner_global_idx = rand_global.gather(2, best_tour_idx.unsqueeze(2)).squeeze(2) # [Islands, Needed]
                 
-                # Cleanup
-                del parents, offspring, parents_idx
-                # torch.cuda.empty_cache() # Too frequent? Maybe every few chunks.
-                
-            # --- CHUNKED MUTATION ---
-            for i in range(0, n_mut, chunk_size):
-                curr_size = min(chunk_size, n_mut - i)
-                
-                # Select Parents
-                if GpuGlobals.USE_LEXICASE_SELECTION:
-                     parents_idx = self.epsilon_lexicase_selection(population, curr_size, x_t, y_t, pop_constants)
-                else:
-                     idx = torch.randint(0, self.pop_size, (curr_size, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                     candidates_metric = selection_metric[idx]
-                     best_local_idx = torch.argmin(candidates_metric, dim=1)
-                     parents_idx = idx.gather(1, best_local_idx.unsqueeze(1)).squeeze(1)
+                return winner_global_idx.view(-1) # Flatten to [Total Needed]
+
+            # --- CROSSOVER (Global Batch) ---
+            chunk_size = 50000
+            
+            if total_cross > 0:
+                parents_idx = get_island_parents(n_cross_per_island)
+
+                # Process in chunks to save memory
+                c_ptr = 0
+                while c_ptr < total_cross:
+                    curr = min(chunk_size, total_cross - c_ptr)
+                    sub_idx = parents_idx[c_ptr : c_ptr + curr]
+                    parents = population[sub_idx]
+                    
+                    offspring = self.operators.crossover_population(parents, 1.0)
+                    
+                    next_pop[p_ptr : p_ptr + curr] = offspring
+                    next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                    
+                    p_ptr += curr
+                    c_ptr += curr
+                    del parents, offspring
+
+            # --- MUTATION (Global Batch) ---
+            if total_mut > 0:
+                parents_idx = get_island_parents(n_mut_per_island)
                      
-                parents = population[parents_idx]
-                offspring = parents.clone()
-                
-                # Mutate (Sub-batches logic within operators? No, we apply to this chunk)
-                n_point = curr_size // 2
-                n_subtree = curr_size - n_point
-                
-                if n_point > 0:
-                     offspring[:n_point] = self.operators.mutate_population(offspring[:n_point], current_mutation_rate)
-                if n_subtree > 0:
-                     offspring[n_point:] = self.operators.subtree_mutation(offspring[n_point:], 1.0)
-                     
-                # Write
-                next_pop[p_ptr : p_ptr + curr_size] = offspring
-                next_c[p_ptr : p_ptr + curr_size] = pop_constants[parents_idx]
-                p_ptr += curr_size
-                
-                del parents, offspring, parents_idx
+                m_ptr = 0
+                while m_ptr < total_mut:
+                    curr = min(chunk_size, total_mut - m_ptr)
+                    sub_idx = parents_idx[m_ptr : m_ptr + curr]
+                    parents = population[sub_idx]
+                    offspring = parents.clone()
+                    
+                    # Split types
+                    n_p = curr // 2
+                    n_s = curr - n_p
+                    
+                    if n_p > 0:
+                        offspring[:n_p] = self.operators.mutate_population(offspring[:n_p], current_mutation_rate)
+                    if n_s > 0:
+                        offspring[n_p:] = self.operators.subtree_mutation(offspring[n_p:], 1.0)
+                        
+                    next_pop[p_ptr : p_ptr + curr] = offspring
+                    next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                    
+                    p_ptr += curr
+                    m_ptr += curr
+                    del parents, offspring
             
             # Swap Buffers
             population = next_pop

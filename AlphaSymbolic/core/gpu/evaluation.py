@@ -7,10 +7,14 @@ from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 
 class GPUEvaluator:
-    def __init__(self, grammar: GPUGrammar, device, max_stack=10):
+    def __init__(self, grammar: GPUGrammar, device, max_stack=10, dtype=torch.float64):
         self.grammar = grammar
         self.device = device
         self.MAX_STACK = max_stack
+        self.dtype = dtype
+        
+        # Max Float safe value
+        self.INF_VAL = 1e30 if dtype == torch.float32 else 1e300
         
         # New Native VM
         from .cuda_vm import CudaRPNVM
@@ -100,7 +104,7 @@ class GPUEvaluator:
             is_valid = (sp == 1) & (~err)
             f_preds = torch.where(is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds), 
                                   f_preds, 
-                                  torch.tensor(1e300, device=self.device, dtype=torch.float64))
+                                  torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
             
             # Reshape to [current_B, N]
             preds_mat = f_preds.view(current_B, N_samples)
@@ -119,7 +123,7 @@ class GPUEvaluator:
                 
                 # RMSE of Log Errors = RMSLE
                 metric_score = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
-                                              torch.tensor(1e150, device=self.device, dtype=torch.float64), 
+                                              torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
                                               mse))
             else:
                 # Standard RMSE
@@ -128,7 +132,7 @@ class GPUEvaluator:
                 mse = torch.mean(sq_diff, dim=1) # [current_B]
                 
                 metric_score = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
-                                              torch.tensor(1e150, device=self.device, dtype=torch.float64), 
+                                              torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
                                               mse))
                                           
             all_rmse.append(metric_score)
@@ -186,7 +190,7 @@ class GPUEvaluator:
             sq_err = diff**2
             
             # Masking
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=torch.float64))
+            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
             return loss
             
@@ -195,7 +199,7 @@ class GPUEvaluator:
             sq_err = (preds - target)**2
             sq_err = torch.clamp(sq_err, max=1e10)
             
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=torch.float64))
+            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
             return loss
     
@@ -243,7 +247,7 @@ class GPUEvaluator:
             
             final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
                                       final_preds, 
-                                      torch.tensor(1e300, device=self.device, dtype=torch.float64))
+                                      torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
             
             # Reshape to [current_B, D]
             preds_matrix = final_preds.view(current_B, D)
@@ -253,7 +257,7 @@ class GPUEvaluator:
             abs_err = torch.abs(preds_matrix - target_matrix_chunk)
             
             abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
-                                  torch.tensor(1e300, device=self.device, dtype=torch.float64), 
+                                  torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
                                   abs_err)
             
             all_abs_errors.append(abs_err)

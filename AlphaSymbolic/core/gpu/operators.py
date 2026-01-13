@@ -7,9 +7,10 @@ from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 
 class GPUOperators:
-    def __init__(self, grammar: GPUGrammar, device, pop_size, max_len=30, num_variables=1):
+    def __init__(self, grammar: GPUGrammar, device, pop_size, max_len=30, num_variables=1, dtype=torch.float64):
         self.grammar = grammar
         self.device = device
+        self.dtype = dtype
         self.max_len = max_len
         self.num_variables = num_variables
         self.pop_size = pop_size
@@ -116,7 +117,7 @@ class GPUOperators:
         """
         Performs arity-safe mutation on the population.
         """
-        mask = torch.rand_like(population, dtype=torch.float32) < mutation_rate
+        mask = torch.rand_like(population, dtype=self.dtype) < mutation_rate
         mask = mask & (population != PAD_ID)
         
         current_arities = self.token_arity[population]
@@ -339,7 +340,7 @@ class GPUOperators:
         # If constants are [B, K]. 
         # fresh_pop needs fresh constants.
         K = constants.shape[1]
-        fresh_consts = torch.randn(n_dups, K, device=self.device, dtype=torch.float64)
+        fresh_consts = torch.randn(n_dups, K, device=self.device, dtype=self.dtype)
         
         pop_out[dup_indices] = fresh_pop
         const_out[dup_indices] = fresh_consts
