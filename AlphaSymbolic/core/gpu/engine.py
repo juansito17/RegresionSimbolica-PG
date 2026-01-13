@@ -90,37 +90,16 @@ class TensorGeneticEngine:
         return (rpn_tensor != PAD_ID).sum().item()
 
     def load_population_from_strings(self, formulas: List[str]) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Logic to load specifically valid RPN + constants (extract constants from string)
-        # The simplifier's logic extracts constants. 
-        # But we need a loader.
-        # Engine's original `infix_to_rpn_tensor` did this.
-        # Operators `_infix_list_to_rpn` does NOT extract constants (it sets 1.0 or C).
-        # We need `infix_to_rpn_tensor` equivalent.
-        # Reuse simplifier logic or implement here using ExpressionTree + Extraction?
-        # Let's put a helper here or in Operators.
-        
         rpn_list = []
         const_list = []
         
-        # We can reuse GPUSimplifier.simplify_expression logic basically just to parse?
-        # Or reimplement extraction.
-        # Since this is "load from strings", let's replicate the extraction logic briefly.
         for f in formulas:
-            # We use simplifier's internal parser logic? 
-            # Or better: `infix_to_rpn_tensor` from original engine.
-            # I'll implement it here or adding it to Operators as `parse_infix_with_constants`.
-            
-            # For now, minimal implementation inside loop:
-            r, c, success = self.simplifier.simplify_expression(torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)) 
-            # verify call signature? simplify needs RPN input to simplify.
-            # We want string -> RPN.
-            # Let's use `ExpressionTree` directly here.
-            
             try:
                 tree = ExpressionTree.from_infix(f)
                 if not tree.is_valid:
                      rpn_list.append(torch.zeros(self.max_len, dtype=torch.long, device=self.device))
-                     const_list.append(torch.zeros(self.max_constants, dtype=torch.float64, device=self.device))
+                     # FIX: Use self.dtype
+                     const_list.append(torch.zeros(self.max_constants, dtype=self.dtype, device=self.device))
                      continue
 
                 rpn_tokens = []
@@ -153,7 +132,8 @@ class TensorGeneticEngine:
                 else: const_values += [0.0] * (self.max_constants - len(const_values))
                 
                 rpn_list.append(torch.tensor(ids, dtype=torch.long, device=self.device))
-                const_list.append(torch.tensor(const_values, dtype=torch.float64, device=self.device))
+                # FIX: Use self.dtype
+                const_list.append(torch.tensor(const_values, dtype=self.dtype, device=self.device))
             except:
                 pass
                 
@@ -180,13 +160,6 @@ class TensorGeneticEngine:
         return seeds
 
     def migrate_islands(self, population, constants, fitness):
-        # Implementation of migration
-        # We can move this to Operators or keep here. 
-        # Since it uses simple index manipulation, Operators is a good place.
-        # But I didn't verify if I moved it to Operators in previous step. 
-        # Let's check `operators.py` (I wrote it, but didn't include `migrate_islands`).
-        # Oops. I should implement it here or add to operators.
-        # I'll implement it here for now to save a file edit, or better, add it to Operators later.
         if self.n_islands <= 1: return population, constants
         
         pop_out = population.clone()
@@ -373,28 +346,25 @@ class TensorGeneticEngine:
         winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
         
         return winners_global        
-        # Map back to global ID
-        winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
-        
-        return winners_global
 
 
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None):
         # 1. Data Setup
+        # FIX: Use self.dtype
         if not isinstance(x_values, torch.Tensor):
-            x_t = torch.tensor(x_values, dtype=torch.float64, device=self.device)
+            x_t = torch.tensor(x_values, dtype=self.dtype, device=self.device)
         else:
-            x_t = x_values.to(self.device).to(torch.float64)
+            x_t = x_values.to(self.device).to(self.dtype)
             
         if not isinstance(y_values, torch.Tensor):
-            y_t = torch.tensor(y_values, dtype=torch.float64, device=self.device)
+            y_t = torch.tensor(y_values, dtype=self.dtype, device=self.device)
             # Log transform if needed
             if GpuGlobals.USE_LOG_TRANSFORMATION:
                  mask = y_t > 1e-9
                  y_t = torch.log(y_t[mask])
                  x_t = x_t[mask] 
         else:
-            y_t = y_values.to(self.device).to(torch.float64)
+            y_t = y_values.to(self.device).to(self.dtype)
             
         if x_t.ndim == 1: x_t = x_t.unsqueeze(1)
         if y_t.ndim == 1: y_t = y_t.unsqueeze(0) 
@@ -403,27 +373,76 @@ class TensorGeneticEngine:
         # This implies y_target should be [D].
         if y_t.ndim == 2 and y_t.shape[0] == 1: y_t = y_t.squeeze(0)
             
-        # 2. Init
-        if self._cached_initial_pop is None:
-            # First time: Generate and cache
-            print(f"[GPU Engine] Generating {self.pop_size:,} random formulas (First time, please wait)...")
-            population = self.initialize_population()
-            pop_constants = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=torch.float64)
-            self._cached_initial_pop = population.clone()
-            self._cached_initial_consts = pop_constants.clone()
-        else:
-            # Subsequent times: Instant clone
-            print("[GPU Engine] Reusing cached initial population (Instant).")
-            population = self._cached_initial_pop.clone()
-            pop_constants = self._cached_initial_consts.clone()
+        # 2. Init with Disk Cache and Double Buffering
+        import os
+        cache_dir = "cache"
+        os.makedirs(cache_dir, exist_ok=True)
+        # Use dtype in filename to separate caches
+        prec_str = "fp32" if self.dtype == torch.float32 else "fp64"
+        cache_file = os.path.join(cache_dir, f"initial_pop_v2_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}.pt")
+        
+        loaded_from_cache = False
+        
+        # Priority 1: Memory Cache
+        if self._cached_initial_pop is not None:
+             self.pop_buffer_A[:] = self._cached_initial_pop.to(self.device)
+             self.const_buffer_A[:] = self._cached_initial_consts.to(self.device).to(self.dtype)
+             population = self.pop_buffer_A
+             pop_constants = self.const_buffer_A
+             loaded_from_cache = True
+             
+        # Priority 2: Disk Cache
+        elif os.path.exists(cache_file):
+             try:
+                 print(f"[GPU Engine] Loading from cache: {cache_file}")
+                 data = torch.load(cache_file, map_location=self.device)
+                 if data['pop'].shape == self.pop_buffer_A.shape:
+                      self.pop_buffer_A[:] = data['pop']
+                      self.const_buffer_A[:] = data['const'].to(self.dtype)
+                      population = self.pop_buffer_A
+                      pop_constants = self.const_buffer_A
+                      loaded_from_cache = True
+                      print("[GPU Engine] Cache Loaded Successfully.")
+                      
+                      # Cache in memory
+                      self._cached_initial_pop = self.pop_buffer_A.clone()
+                      self._cached_initial_consts = self.const_buffer_A.clone()
+                 else:
+                      print("[GPU Engine] Cache Mismatch (Shapes). Regenerating...")
+             except Exception as e:
+                 print(f"[GPU Engine] Cache Load Failed ({e}). Regenerating...")
+        
+        if not loaded_from_cache:
+             print(f"[GPU Engine] Generating {self.pop_size:,} random formulas (First time, please wait)...")
+             temp_pop = self.operators.generate_random_population(self.pop_size)
+             temp_c = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=self.dtype)
+             
+             self.pop_buffer_A[:] = temp_pop
+             self.const_buffer_A[:] = temp_c
+             
+             population = self.pop_buffer_A
+             pop_constants = self.const_buffer_A
+             
+             # Save
+             try:
+                 print(f"[GPU Engine] Saving to cache: {cache_file}...")
+                 torch.save({'pop': temp_pop.cpu(), 'const': temp_c.cpu()}, cache_file)
+                 print("[GPU Engine] Saved.")
+             except Exception as e:
+                 print(f"[GPU Engine] Warning: Could not save cache ({e})")
+                 
+             # Cache in memory
+             self._cached_initial_pop = self.pop_buffer_A.clone()
+             self._cached_initial_consts = self.const_buffer_A.clone()
         
         # Seeds
         if seeds:
             seed_pop, seed_consts = self.load_population_from_strings(seeds)
             if seed_pop is not None:
                 n = min(seed_pop.shape[0], self.pop_size)
+                # Update Buffer directly
                 population[:n] = seed_pop[:n]
-                pop_constants[:n] = seed_consts[:n]
+                pop_constants[:n] = seed_consts[:n].to(self.dtype)
                 
         # Patterns
         pats = self.detect_patterns(y_t.cpu().numpy().flatten())
@@ -434,7 +453,7 @@ class TensorGeneticEngine:
                 n = min(pat_pop.shape[0], self.pop_size - offset)
                 if n > 0:
                     population[offset:offset+n] = pat_pop[:n]
-                    pop_constants[offset:offset+n] = pat_consts[:n]
+                    pop_constants[offset:offset+n] = pat_consts[:n].to(self.dtype)
 
         best_rmse = float('inf')
         best_rpn = None
@@ -512,10 +531,39 @@ class TensorGeneticEngine:
                  elite_c = pop_constants[sorted_idx[:n_elites]]
                  
                  new_pop = self.operators.generate_random_population(n_random)
-                 new_c = torch.randn(n_random, self.max_constants, device=self.device, dtype=torch.float64)
+                 # FIX: use self.dtype
+                 new_c = torch.randn(n_random, self.max_constants, device=self.device, dtype=self.dtype)
                  
-                 population = torch.cat([elites, new_pop])
-                 pop_constants = torch.cat([elite_c, new_c])
+                 # Note: Cataclysm creates new tensor, breaking buffer link temporarily.
+                 # But we assign it to 'population' variable.
+                 # At end of loop, 'population' is used?
+                 # No, loop uses 'population' as input.
+                 # If we replace 'population', next iteration uses new tensor.
+                 # But we want to stay in buffers.
+                 # We should Copy TO the current buffer.
+                 
+                 # Current buffer is whatever 'population' points to?
+                 # If 'population' is a Slice or Buffer.
+                 # Safest: Write back to current buffer.
+                 if population is self.pop_buffer_A:
+                      self.pop_buffer_A[:n_elites] = elites
+                      self.pop_buffer_A[n_elites:] = new_pop
+                      self.const_buffer_A[:n_elites] = elite_c
+                      self.const_buffer_A[n_elites:] = new_c
+                      population = self.pop_buffer_A
+                      pop_constants = self.const_buffer_A
+                 elif population is self.pop_buffer_B:
+                      self.pop_buffer_B[:n_elites] = elites
+                      self.pop_buffer_B[n_elites:] = new_pop
+                      self.const_buffer_B[:n_elites] = elite_c
+                      self.const_buffer_B[n_elites:] = new_c
+                      population = self.pop_buffer_B
+                      pop_constants = self.const_buffer_B
+                 else:
+                      # If logic drifted, just cat. but this breaks buffering.
+                      population = torch.cat([elites, new_pop])
+                      pop_constants = torch.cat([elite_c, new_c])
+                 
                  stagnation = 0
                  continue
 
@@ -528,23 +576,11 @@ class TensorGeneticEngine:
             # Evolution Step (Vectorized Island Model + Double Buffering)
             
             # Determine Buffers based on generation parity
-            # If gen % 2 == 0: Read A, Write B
-            # If gen % 2 == 1: Read B, Write A
-            # Actually, 'population' is already correct from previous loop swap.
-            # We just need to set 'next_pop' to the OTHER buffer.
-            
-            if generations % 2 == 0:
-                 # Current is A (implied), Next is B
-                 # But 'population' variable holds the current tensor reference.
-                 # Check identity to be safe?
-                 # No, just trust the swap logic at end.
-                 # Wait, we need to know WHICH one is 'population' to pick valid 'next_pop'.
-                 # Simpler: Maintain a 'current_buffer_idx' 0 or 1.
-                 pass
-            
-            # Use explicit pointers?
-            # 'population' and 'pop_constants' point to A or B.
-            # We need 'next_pop' to point to the other.
+            # If gen % 2 == 0: Read A, Write B (Logic: Gen started with A, so Next is B)
+            # Logic Check:
+            # Gen 1 (Odd): Start in A. Write to B.
+            # End of loop: population = B.
+            # Gen 2 (Even): Start in B. Write to A.
             
             if population is self.pop_buffer_A:
                 next_pop = self.pop_buffer_B

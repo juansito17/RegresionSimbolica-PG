@@ -11,68 +11,80 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 // Stack size for RPN
-#define STACK_SIZE 10
-#define ERROR_VAL 1e300
-#define EPSILON 1e-9
-#define EPSILON 1e-9
+#define STACK_SIZE 64
 
-// Device functions for unary/binary ops
-__device__ __forceinline__ double safe_div(double a, double b) {
-    if (abs(b) < EPSILON) return ERROR_VAL;
+// Templated Constants?
+// We will cast inside functions
+
+// Device functions for unary/binary ops (Templated)
+template <typename T>
+__device__ __forceinline__ T safe_div(T a, T b) {
+    if (abs(b) < 1e-9) return (T)1e30; // Large value for float? Or use infinity.
+    // 1e300 is too big for float32. 
     return a / b;
 }
 
-__device__ __forceinline__ double safe_mod(double a, double b) {
-    if (abs(b) < EPSILON) return ERROR_VAL;
+template <typename T>
+__device__ __forceinline__ T safe_mod(T a, T b) {
+    if (abs(b) < 1e-9) return (T)1e30;
     return remainder(a, b);
 }
 
-__device__ __forceinline__ double safe_log(double a) {
-    if (a <= EPSILON) return -ERROR_VAL; // Log(0) or neg
+template <typename T>
+__device__ __forceinline__ T safe_log(T a) {
+    if (a <= 1e-9) return (T)-1e30;
     return log(a);
 }
 
-__device__ __forceinline__ double safe_exp(double a) {
-    if (a > 80.0) return ERROR_VAL;
-    if (a < -80.0) return 0.0;
+template <typename T>
+__device__ __forceinline__ T safe_exp(T a) {
+    if (a > 80.0) return (T)1e30; 
+    if (a < -80.0) return (T)0.0;
     return exp(a);
 }
 
-__device__ __forceinline__ double safe_sqrt(double a) {
-    if (a < 0) return sqrt(-a); // sqrt(abs(a)) for safety
+template <typename T>
+__device__ __forceinline__ T safe_sqrt(T a) {
+    if (a < 0) return sqrt(-a); 
     return sqrt(a);
 }
 
-__device__ __forceinline__ double safe_pow(double a, double b) {
-    double res = pow(a, b);
-    if (isnan(res) || isinf(res)) return ERROR_VAL;
+template <typename T>
+__device__ __forceinline__ T safe_pow(T a, T b) {
+    T res = pow(a, b);
+    if (isnan(res) || isinf(res)) return (T)1e30;
     return res;
 }
 
-__device__ __forceinline__ double safe_asin(double a) {
+template <typename T>
+__device__ __forceinline__ T safe_asin(T a) {
     if (a > 1.0) a = 1.0;
     if (a < -1.0) a = -1.0;
     return asin(a);
 }
 
-__device__ __forceinline__ double safe_acos(double a) {
+template <typename T>
+__device__ __forceinline__ T safe_acos(T a) {
     if (a > 1.0) a = 1.0;
     if (a < -1.0) a = -1.0;
     return acos(a);
 }
 
-__device__ __forceinline__ double safe_gamma(double a) {
-    if (a <= -1.0) return ERROR_VAL; 
+template <typename T>
+__device__ __forceinline__ T safe_gamma(T a) {
+    if (a <= -1.0) return (T)1e30;
     return lgamma(a + 1.0); 
 }
 
-extern "C" __global__ void rpn_eval_kernel(
+// TEMPLATED KERNEL
+template <typename scalar_t>
+__global__ void rpn_eval_kernel(
     const int64_t* __restrict__ population,  // [B, L]
-    const double* __restrict__ x,         // [Vars, D] (Column Major for Coalescing)
-    const double* __restrict__ constants, // [B, K]
-    double* __restrict__ out_preds,       // [B, D]
-    int* __restrict__ out_sp,             // [B, D]
-    unsigned char* __restrict__ out_error, // [B, D]
+    const scalar_t* __restrict__ x,          // [Vars, D]
+    const scalar_t* __restrict__ constants,  // [B, K]
+    scalar_t* __restrict__ out_preds,        // [B, D]
+    int* __restrict__ out_sp,
+    unsigned char* __restrict__ out_error,
     int B, int D, int L, int K, int num_vars,
     // ID Mappings passed as scalars
     int PAD_ID, 
@@ -89,52 +101,48 @@ extern "C" __global__ void rpn_eval_kernel(
     // Values
     double pi_val, double e_val
 ) {
-    // Global Index: [0 ... B*D - 1]
-    // Uses Implicit Expansion: No need to expand tensors
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * D) return;
 
-    // implicit b, d
-    int b = idx / D; // Population Index
-    int d = idx % D; // Sample Index
+    int b_idx = idx / D; // Population Index
+    int d_idx = idx % D; // Sample Index
 
     // Registers
-    double stack[STACK_SIZE];
+    scalar_t stack[STACK_SIZE];
     int sp = 0;
     bool error = false;
     int c_idx = 0; // Constants pointer
 
-    const int64_t* my_prog = &population[b * L];
-    
+    const int64_t* my_prog = &population[b_idx * L];
+    const scalar_t ERROR_VAL = (scalar_t)1e30; // Safe-ish large value for float/double
+
     for (int pc = 0; pc < L; ++pc) {
         int64_t token = my_prog[pc];
         
         if (token == PAD_ID) continue;
 
-        double val = 0.0;
+        scalar_t val = (scalar_t)0.0;
         bool is_push = true;
 
         // --- Operands ---
         if (token >= id_x_start && token < id_x_start + num_vars) {
             int v_idx = token - id_x_start;
-            // X is [Vars, D]. x[v, d] = x[v * D + d]
-            // Access is coalesced because adjacent threads (d, d+1) read adjacent addresses
-            val = x[v_idx * D + d]; 
+            val = x[v_idx * D + d_idx]; 
         }
-        else if (token == id_1) val = 1.0;
-        else if (token == id_2) val = 2.0;
-        else if (token == id_3) val = 3.0;
-        else if (token == id_5) val = 5.0;
-        else if (token == id_pi) val = pi_val;
-        else if (token == id_e) val = e_val;
+        else if (token == id_1) val = (scalar_t)1.0;
+        else if (token == id_2) val = (scalar_t)2.0;
+        else if (token == id_3) val = (scalar_t)3.0;
+        else if (token == id_5) val = (scalar_t)5.0;
+        else if (token == id_pi) val = (scalar_t)pi_val;
+        else if (token == id_e) val = (scalar_t)e_val;
         else if (token == id_C) {
              if (K > 0) {
                  int r_idx = c_idx;
                  if (r_idx >= K) r_idx = K - 1;
-                 val = constants[b * K + r_idx];
+                 val = constants[b_idx * K + r_idx];
                  c_idx++;
              } else {
-                 val = 1.0;
+                 val = (scalar_t)1.0;
              }
         }
         else {
@@ -149,13 +157,12 @@ extern "C" __global__ void rpn_eval_kernel(
         }
 
         // --- Operators ---
-        
         // Binary
         if (token == op_add || token == op_sub || token == op_mul || token == op_div || token == op_pow || token == op_mod) {
             if (sp < 2) { error = true; break; }
-            double op2 = stack[--sp];
-            double op1 = stack[--sp];
-            double res = 0.0;
+            scalar_t op2 = stack[--sp];
+            scalar_t op1 = stack[--sp];
+            scalar_t res = (scalar_t)0.0;
             
             if (token == op_add) res = op1 + op2;
             else if (token == op_sub) res = op1 - op2;
@@ -170,8 +177,8 @@ extern "C" __global__ void rpn_eval_kernel(
         
         // Unary
         if (sp < 1) { error = true; break; }
-        double op1 = stack[--sp];
-        double res = 0.0;
+        scalar_t op1 = stack[--sp];
+        scalar_t res = (scalar_t)0.0;
         
         if (token == op_sin) res = sin(op1);
         else if (token == op_cos) res = cos(op1);
@@ -186,7 +193,7 @@ extern "C" __global__ void rpn_eval_kernel(
         else if (token == op_acos) res = safe_acos(op1);
         else if (token == op_atan) res = atan(op1);
         else if (token == op_fact) res = safe_gamma(op1); 
-        else if (token == op_gamma) res = safe_gamma(op1); // Same for now
+        else if (token == op_gamma) res = safe_gamma(op1); 
         
         stack[sp++] = res;
     }
@@ -220,7 +227,6 @@ void launch_rpn_kernel(
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(x);
-    // constants can be empty
     if (constants.size(1) > 0) CHECK_INPUT(constants);
     
     int B = population.size(0);
@@ -236,26 +242,29 @@ void launch_rpn_kernel(
     const int block_size = 256;
     const int grid_size = (total_threads + block_size - 1) / block_size;
     
-    rpn_eval_kernel<<<grid_size, block_size>>>(
-        population.data_ptr<int64_t>(),
-        x.data_ptr<double>(),
-        constants.data_ptr<double>(),
-        out_preds.data_ptr<double>(),
-        out_sp.data_ptr<int>(),
-        out_error.data_ptr<unsigned char>(),
-        B, D, L, K, num_vars,
-        PAD_ID, 
-        id_x_start, 
-        id_C, id_pi, id_e,
-        id_1, id_2, id_3, id_5,
-        op_add, op_sub, op_mul, op_div, op_pow, op_mod,
-        op_sin, op_cos, op_tan,
-        op_log, op_exp,
-        op_sqrt, op_abs, op_neg,
-        op_fact, op_floor, op_gamma,
-        op_asin, op_acos, op_atan,
-        pi_val, e_val
-    );
+    // Dispatch based on X type (float or double)
+    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_kernel", ([&] {
+        rpn_eval_kernel<scalar_t><<<grid_size, block_size>>>(
+            population.data_ptr<int64_t>(),
+            x.data_ptr<scalar_t>(),
+            constants.data_ptr<scalar_t>(),
+            out_preds.data_ptr<scalar_t>(),
+            out_sp.data_ptr<int>(),
+            out_error.data_ptr<unsigned char>(),
+            B, D, L, K, num_vars,
+            PAD_ID, 
+            id_x_start, 
+            id_C, id_pi, id_e,
+            id_1, id_2, id_3, id_5,
+            op_add, op_sub, op_mul, op_div, op_pow, op_mod,
+            op_sin, op_cos, op_tan,
+            op_log, op_exp,
+            op_sqrt, op_abs, op_neg,
+            op_fact, op_floor, op_gamma,
+            op_asin, op_acos, op_atan,
+            pi_val, e_val
+        );
+    }));
     
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
