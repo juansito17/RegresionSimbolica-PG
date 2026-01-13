@@ -87,25 +87,17 @@ seeds.append("log((x2 * ((0.143 * x0) ** x0)) + ((1 - x2) * ((0.143 * x0) ** x0)
 # 4. Bell's Approximation (n! / c^n) -> log(...)
 seeds.append("log(lgamma(x0 + 1) / (2.54 ** x0))")
 
-# 5. User Found SOTA (Gen 15)
-# Adjusted for Standardized Operators: lgamma(x+2) corresponds to old lgamma(x+1)
-seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.13184391 * x0) ** x0)))) - x0)")
-
-# 6. User Found SOTA (Gen 25) - Standardized Run
-# 0.059 Fitness (Legacy). Optimized Translation: 0.097 RMSE.
-# Explicit shifts: lgamma(x+1) [inner], lgamma(arg+1) [outer]. Constant tuned.
-seeds.append("((lgamma((cos((cos(lgamma(x0 + 1)) / sqrt(x0))) + x0 + 1)) - cos(((x0 + x0) / ((0.30467647 * (lgamma(x0 + 1) - x0)) ** x0)))) - x0)")
-
-# 7. User Found SOTA (Gen 8) - Evolved in Standardized Engine
-# Fitness: 0.069. Proves engine can optimize standardized structure.
-seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.1153588 * x0) ** (((sin(5) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
-
-# 8. User Found SOTA (Gen 7) - Extremely Low Fitness 0.058 (High Variance)
-seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.11580232 * x0) ^ (((sin(-0.16773652) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
-
-# 9. Smoothed Gen 8/7 - Optimized for Reduced Spikes (N=16 600%->170%. N=26 29%->4%)
+# 5. Smoothed Gen 8/7 - Optimized for Reduced Spikes (N=16 600%->170%. N=26 29%->4%)
 # Trade-off: N=9 Error increased. Better Asymptotic Stability.
-seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.10944318 * x0) ^ (((sin(-0.17501817) + (x0 / sin(gamma(x2)))) + x0) + x2))))) - x0)")
+#seeds.append("((lgamma((x0 + 2)) - cos((x1 / ((0.11575544 * x0) ^ (((sin(-0.18788845) + (x0 / sin(1))) + x0) + x2))))) - (x0 ^ cos(0.0271873)))")
+
+# 6. Peña-Usuga Asymptotic Formula (The "Golden Seed")
+# Accuracy: <0.01% Error for N >= 24. 
+# Implements Parity Switch: 
+#   Even (x2=0): A=0.945525, B=0.966099
+#   Odd  (x2=1): A=0.943389, B=0.911941
+# Formula: lgamma(N+1) - A*N + B
+seeds.append("lgamma(x0 + 1) - (((0.945525 * (1 - x2)) + (0.943389 * x2)) * x0) + ((0.966099 * (1 - x2)) + (0.911941 * x2))")
 
 GpuGlobals.USE_INITIAL_FORMULA = True
 
