@@ -9,10 +9,11 @@ models/*.pt
 alpha_symbolic_model_*.pth
 
 # Logs
-logs/test_log.txt
-logs/test_output.txt
-test_log.txt
-test_output.txt
+logs/
+*.log
+*.txt
+!requirements.txt
+!README.md
 
 # Jupyter
 .ipynb_checkpoints/
@@ -23,34 +24,29 @@ notebooks/.ipynb_checkpoints/
 Thumbs.db
 
 # Data & Results
-results/learned_formulas.csv
-results/feynman_*_results.csv
-results/feynman_results.csv
-learned_formulas.csv
-feynman_*_results.csv
-feynman_results.csv
-pattern_memory.json
+results/
 *.csv
-
-# Exceptions for required data
+*.json
+!data/
 !data/*.csv
-!example_data/*.csv
+!data/*.json
 
-# Large Data Files
-example_data/*.txt
-*.txt
-!requirements.txt
+# Scripts & Code
+__pycache__/
+*.py[cod]
+*$py.class
+models/*.pth
+models/*.pt
 
-# Tests & Tools (Root temporary scripts only)
-/test_*.py
-/test_result.txt
-/test_output.txt
-/test_log.txt
-/reproduce_hos.py
-/debug_hall_of_shame.py
-
-# Keep the official tests and tools directories
+# Tracked directories (allow scripts)
 !tests/
 !tools/
-/tests/__pycache__/
-/tools/__pycache__/
+!benchmarks/
+!experiments/
+!debug/
+!scripts/
+
+# Ignore internal caches/temp
+**/__pycache__/
+.gradio/
+cache/
