@@ -75,11 +75,20 @@ pattern_memory.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+# Logs
+logs/
+*.log
+*.txt
+!README.md
+!LICENSE
+!requirements.txt
+
 # Output files
 outputs/
 
 # Temporary/test files
 hh.py
+.gradio/
 
 # Pickle files
 *.pkl
