@@ -8,6 +8,9 @@
 #include "GeneticOperators.h"
 #include "AdvancedFeatures.h"
 #include "Globals.h" // Incluir Globals.h para INF, NUM_ISLANDS, etc.
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#include "FitnessGPU.cuh" // For GlobalGpuBuffers definition
+#endif
 #include <vector>
 #include <string>
 #include <memory> // Para std::unique_ptr
@@ -21,7 +24,9 @@ class GeneticAlgorithm {
         ParetoOptimizer pareto_optimizer;   // Optimizador Pareto de la isla
         int stagnation_counter = 0;         // Contador de estancamiento local de la isla
         double best_fitness = INF;          // Mejor fitness histórico de la isla
+        int duplicates_count = 0;           // Count of duplicate candidates in the last generation
         std::vector<double> fitness_history;// Historial de fitness (opcional)
+        std::vector<double> error_matrices; // Error matrix per individual [PopSize * NumPoints]. (New for Lexicase)
         int id;                             // Identificador de la isla
 
         // Constructor de la isla
@@ -30,7 +35,7 @@ class GeneticAlgorithm {
              params = EvolutionParameters::create_default();   // Usar parámetros por defecto
         }
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
         // Persistent GPU buffers
         void* d_nodes = nullptr;
         void* d_offsets = nullptr;
@@ -54,10 +59,12 @@ class GeneticAlgorithm {
     // Miembros principales de la clase GeneticAlgorithm
     std::vector<std::unique_ptr<Island>> islands; // Vector de punteros únicos a las islas
     const std::vector<double>& targets;           // Referencia a los datos objetivo
-    const std::vector<double>& x_values;          // Referencia a los valores de x
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    const std::vector<std::vector<double>>& x_values;          // Referencia a los valores de x [samples][features]
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     double* d_targets = nullptr;                  // Puntero a los datos objetivo en la GPU
     double* d_x_values = nullptr;                 // Puntero a los valores de x en la GPU
+    GlobalGpuBuffers global_gpu_buffers;          // Global buffers for batch evaluation of ALL islands
+    DoubleBufferedGpu double_buffer_gpu;          // Double-buffered GPU for async overlap
 #endif
     int total_population_size;                    // Tamaño total de la población
     int generations;                              // Número máximo de generaciones
@@ -77,9 +84,10 @@ class GeneticAlgorithm {
 public:
     // Constructor
     GeneticAlgorithm(const std::vector<double>& targets_ref,
-                       const std::vector<double>& x_values_ref,
+                       const std::vector<std::vector<double>>& x_values_ref,
                        int total_pop,
                        int gens,
+                       const std::vector<std::string>& seeds = {}, // Optional: Initial population seeds
                        int n_islands = NUM_ISLANDS); // Usar valor de Globals.h por defecto
     ~GeneticAlgorithm(); // Destructor para liberar memoria de la GPU
 
@@ -88,7 +96,8 @@ public:
 
 private:
     // Funciones auxiliares internas
-    void evaluate_population(Island& island); // Evalúa fitness de una isla
+    void evaluate_population(Island& island); // Evalúa fitness de una isla (legacy)
+    void evaluate_all_islands(); // Evalúa ALL islands in ONE GPU batch call (optimized)
     void evolve_island(Island& island, int current_generation); // Evoluciona una isla por una generación
     void migrate(); // Realiza la migración entre islas
     void update_overall_best(const Island& island); // Actualiza el mejor global

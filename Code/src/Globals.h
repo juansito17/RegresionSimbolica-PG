@@ -14,24 +14,54 @@
 // ----------------------------------------
 // Datos del Problema (Regresión Simbólica)
 // ----------------------------------------
-// Asegúrate de que estos sean los datos correctos para la fórmula que quieres probar
+// MODIFICADO: Usamos log(TARGETS) para aplanar el crecimiento exponencial.
+// X representa N. TARGETS_LOG es ln(Q(N)).
+// Se han filtrado valores N<4 donde Q(N) es 0 o pequeño irrelevante.
 
-const std::vector<double> TARGETS = {92, 352, 724}; // O los que correspondan
-const std::vector<double> X_VALUES = {8, 9, 10};    // O los que correspondan
+// MODIFICADO: RAW_TARGETS contiene los datos crudos. TARGETS se generará en runtime.
+const std::vector<double> RAW_TARGETS = {
+    1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 
+    2680, 14200, 73712, 365596, 2279184, 14772512, 
+    95815104, 666090624, 4968057848, 39029188884, 
+    314666222712, 2691008701644, 24233937684440, 227514171973736, 2207893435808352
+};
+// MODIFICADO: X_VALUES ahora es vector<vector<double>> para soporte multivariable.
+// Inicializador por defecto para problema univariable.
+const std::vector<std::vector<double>> X_VALUES = {
+    {8, 2, 0},   // 8
+    {9, 3, 1},   // 9
+    {10, 4, 0},  // 10
+    {11, 5, 1},  // 11
+    {12, 0, 0},  // 12
+    {13, 1, 1},  // 13
+    {14, 2, 0},  // 14
+    {15, 3, 1},  // 15
+    {16, 4, 0},  // 16
+    {17, 5, 1},  // 17
+    {18, 0, 0},  // 18
+    {19, 1, 1},  // 19
+    {20, 2, 0},  // 20
+    {21, 3, 1},  // 21
+    {22, 4, 0},  // 22
+    {23, 5, 1},  // 23
+    {24, 0, 0},  // 24
+    {25, 1, 1}   // 25
+};extern int NUM_VARIABLES; // Definido en Globals.cpp o main.cpp
 
-//const std::vector<double> TARGETS = {380, 336, 324, 308, 301, 313, 271, 268, 251, 231};
-//const std::vector<double> X_VALUES = {76.5, 67.9, 67.7, 62, 60.9, 60.5, 55.8, 51.7, 50.6, 46.4};
-
-//const std::vector<double> TARGETS = {1, 1, 0, 0, 2, 10, 4, 40, 92, 352, 724, 2680, 14200, 73712, 365596, 2279184, 14772512, 95815104, 666090624, 4968057848, 39029188884, 314666222712, 2691008701644, 24233937684440, 227514171973736, 2207893435808352, 22317699616364044, 234907967154122528};
-//const std::vector<double> X_VALUES = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27};
+// Flag para activar la transformación logarítmica automática
+const bool USE_LOG_TRANSFORMATION = false;
 
 // ----------------------------------------
 // Configuración General del Algoritmo Genético
 // ----------------------------------------
 // Controla si se utiliza la aceleración por GPU.
-// Se recomienda que esta constante sea controlada por la definición de compilación de CMake.
-#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE // Usamos un nuevo nombre para evitar conflictos
-const bool USE_GPU_ACCELERATION = true;
+// FORCE_CPU_MODE: Si es true, usa CPU aunque CUDA esté disponible (útil para comparar rendimiento)
+const bool FORCE_CPU_MODE = false;  // Cambiar a 'true' para forzar modo CPU
+
+// USE_GPU_ACCELERATION se define automáticamente por CMake si CUDA está disponible
+// Pero si FORCE_CPU_MODE es true, se ignora y usa CPU
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+const bool USE_GPU_ACCELERATION = !FORCE_CPU_MODE;
 #else
 const bool USE_GPU_ACCELERATION = false;
 #endif
@@ -40,17 +70,15 @@ const bool USE_GPU_ACCELERATION = false;
 // Ajustamos el tamaño de la población para una GPU con 4GB de VRAM (RTX 3050),
 // buscando un equilibrio entre el aprovechamiento de la GPU y el uso de memoria.
 // Para hacer un uso aún más intensivo de la GPU y acelerar el algoritmo,
-// aumentamos el número de islas para fomentar más paralelismo, manteniendo la población total.
-// Esto distribuye la carga de trabajo de evaluación de fitness en más unidades de procesamiento concurrentes.
-const int TOTAL_POPULATION_SIZE = 50000; // Mantenemos este tamaño, ajustado para 4GB VRAM
-const int GENERATIONS = 500000;           // Mantenemos las generaciones altas
-const int NUM_ISLANDS = 10;               // Aumentado para mayor paralelismo
-const int MIN_POP_PER_ISLAND = 10;        // Ajustado para permitir más islas con población mínima
+// OPTIMIZADO para Hybrid Search: Población más pequeña = convergencia más rápida en timeouts cortos
+const int TOTAL_POPULATION_SIZE = 5000; // Reducido de 50000 para convergencia rápida
+const int GENERATIONS = 50000;           // Reducido (timeout domina de todas formas)
+const int NUM_ISLANDS = 5;               // Menos islas = más foco por isla
+const int MIN_POP_PER_ISLAND = 10;        
 
 // --- Fórmula Inicial ---
-const bool USE_INITIAL_FORMULA = false; // Poner en 'true' para inyectar la fórmula
-const std::string INITIAL_FORMULA_STRING = "(((0.62358531/(((x+(0.62358531/(((-(3599.19050242/(((52.38107258-x)-0.87618851)-6.34160259)))+1.86961523)-((x-1.74732397)*((x-0.49109558)+(67.17975136/(60.76860957-x)))))))-0.49109558)-(((x+0.00294194)-0.31272581)+((5.00877511/(-60.04757248+((x+0.00398195)+0.00398195)))/(67.17975136-(x-0.49109558))))))/(67.17975136-(x+(0.33459658/(67.17975136-(x+(0.33459658/(67.17975136-((((x+0.00263118)+0.00263118)-0.47205995)+0.62358531)))))))))+((0.33459658/(67.17975136-(x-0.49109558)))+((2.68328288/(49.94971888-((x-0.00114565)+(0.33459658/(67.17975136-((x-0.00134655)-0.47205995))))))+((0.74346506/(60.76860957-x))+(((5.43909022/(-60.04757248+x))-3.3156463)+((10.02892889/(52.38107258-x))+(5.00877511*((x+(0.62358531/((385.84981692/(60.76860957-x))-(((x+0.62358531)+(0.33459658/(67.17975136-(x+(0.33459658/(67.17975136-(((x+(0.62358531/((((5.36601249*x)+5.36601249)/(60.76860957-x))-60.76860957)))-0.47205995)+0.62358531)))))))*x))))+(0.62358531/((72.88834001/(52.38107258-(x+0.00294194)))-((((5.74354339*(x+1.21141146))+x)/(67.17975136-((((x+0.00398195)+0.00398195)+0.00263118)-0.31272581)))+(x+((52.38107258/(60.76860957-(x+(0.62358531/((((5.36601249*x)+5.36601249)/(60.76860957-x))-60.76860957)))))+((-9.16958904+(((10.02892889*(52.38107258-((x+0.00263118)+0.00263118)))+(5.00877511*x))+3.25767525))-x))))))))))))))";
-// ---------------------------------------------------------
+const bool USE_INITIAL_FORMULA = true; // Poner en 'true' para inyectar la fórmula
+const std::string INITIAL_FORMULA_STRING = "log((((3.69373448^(x0-4.80302398))+((x0^1.42745576)^x2))+(8.02882709^((x0-4.27302433)-3.94622166))))";
 
 // ----------------------------------------
 // Parámetros del Modelo de Islas
@@ -63,21 +91,55 @@ const int MIGRATION_SIZE = 50;      // Incrementado para una migración más sus
 // ----------------------------------------
 // Parámetros de Generación Inicial de Árboles
 // ----------------------------------------
-// Aumentamos la profundidad inicial del árbol para generar fórmulas más complejas desde el principio,
-// lo que puede aprovechar mejor la capacidad de cálculo de la GPU.
-// Aumentamos la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas,
-// lo que se traduce en más operaciones a evaluar por la GPU, maximizando su uso.
-// Aumentamos aún más la profundidad inicial y de mutación de los árboles para generar fórmulas más complejas.
-// Esto garantiza que la GPU tenga más cálculos por individuo durante la evaluación de fitness.
-// Reducimos la profundidad inicial y de mutación para generar fórmulas más simples al principio.
-// Esto acelera la evaluación inicial y permite que el algoritmo construya la complejidad de forma más eficiente.
 const int MAX_TREE_DEPTH_INITIAL = 8; // Reducido para fórmulas iniciales más simples y rápidas
 const double TERMINAL_VS_VARIABLE_PROB = 0.75;
 const double CONSTANT_MIN_VALUE = -10.0;
 const double CONSTANT_MAX_VALUE = 10.0;
 const int CONSTANT_INT_MIN_VALUE = -10;
 const int CONSTANT_INT_MAX_VALUE = 10;
-const std::vector<double> OPERATOR_WEIGHTS = {0.25, 0.3, 0.25, 0.1, 0.10};
+const bool USE_HARD_DEPTH_LIMIT = true; // Toggle for hard depth limit
+const int MAX_TREE_DEPTH_HARD_LIMIT = 12; // Hard limit to prevent bloat
+// Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
+// ----------------------------------------
+// Parámetros de Operadores Genéticos (Configuración de Operadores)
+// ----------------------------------------
+const bool USE_OP_PLUS     = true; // +
+const bool USE_OP_MINUS    = true; // -
+const bool USE_OP_MULT     = true; // *
+const bool USE_OP_DIV      = true; // /
+const bool USE_OP_POW      = true; // ^
+const bool USE_OP_MOD      = false; // % (DISABLED)
+const bool USE_OP_SIN      = false; // s (DISABLED)
+const bool USE_OP_COS      = false; // c (DISABLED)
+const bool USE_OP_LOG      = true; // l
+const bool USE_OP_EXP      = true; // e
+const bool USE_OP_FACT     = false; // ! (DISABLED - using lgamma instead)
+const bool USE_OP_FLOOR    = false; // _ (DISABLED)
+const bool USE_OP_GAMMA    = true; // g
+const bool USE_OP_ASIN     = false; // S (DISABLED)
+const bool USE_OP_ACOS     = false; // C (DISABLED)
+const bool USE_OP_ATAN     = false; // T (DISABLED)
+
+// Order: +, -, *, /, ^, %, s, c, l, e, !, _, g
+// Los pesos se multiplican por el flag (0 o 1) para habilitar/deshabilitar.
+const std::vector<double> OPERATOR_WEIGHTS = {
+    0.20 * (USE_OP_PLUS  ? 1.0 : 0.0), // +
+    0.20 * (USE_OP_MINUS ? 1.0 : 0.0), // -
+    0.20 * (USE_OP_MULT  ? 1.0 : 0.0), // *
+    0.15 * (USE_OP_DIV   ? 1.0 : 0.0), // /
+    0.10 * (USE_OP_POW   ? 1.0 : 0.0), // ^
+    0.02 * (USE_OP_MOD   ? 1.0 : 0.0), // %
+    0.10 * (USE_OP_SIN   ? 1.0 : 0.0), // s
+    0.10 * (USE_OP_COS   ? 1.0 : 0.0), // c
+    0.05 * (USE_OP_LOG   ? 1.0 : 0.0), // l
+    0.05 * (USE_OP_EXP   ? 1.0 : 0.0), // e
+    0.01 * (USE_OP_FACT  ? 1.0 : 0.0), // !
+    0.01 * (USE_OP_FLOOR ? 1.0 : 0.0), // _
+    0.01 * (USE_OP_GAMMA ? 1.0 : 0.0), // g
+    0.01 * (USE_OP_ASIN  ? 1.0 : 0.0), // S
+    0.01 * (USE_OP_ACOS  ? 1.0 : 0.0), // C
+    0.01 * (USE_OP_ATAN  ? 1.0 : 0.0)  // T
+};
 
 // ----------------------------------------
 // Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
@@ -86,7 +148,7 @@ const double BASE_MUTATION_RATE = 0.30;
 const double BASE_ELITE_PERCENTAGE = 0.15;
 const double DEFAULT_CROSSOVER_RATE = 0.85;
 const int DEFAULT_TOURNAMENT_SIZE = 30;
-const int MAX_TREE_DEPTH_MUTATION = 6; // Reducido para mutaciones que no generen árboles excesivamente grandes
+const int MAX_TREE_DEPTH_MUTATION = 8; // Slight increase to allow complexity
 const double MUTATE_INSERT_CONST_PROB = 0.6;
 const int MUTATE_INSERT_CONST_INT_MIN = 1;
 const int MUTATE_INSERT_CONST_INT_MAX = 5;
@@ -98,7 +160,8 @@ const double MUTATE_INSERT_CONST_FLOAT_MAX = 5.0;
 // ----------------------------------------
 // Reducimos ligeramente la penalización por complejidad para permitir que fórmulas más complejas
 // (y computacionalmente más intensivas para la GPU) sean favorecidas por el algoritmo.
-const double COMPLEXITY_PENALTY_FACTOR = 0.005; // Reducido para favorecer fórmulas más complejas
+// MODIFICADO: Ajustado para ser menos agresivo y permitir multivariable.
+const double COMPLEXITY_PENALTY_FACTOR = 0.01; // Was 0.05. Reduced to 0.01.
 const bool USE_RMSE_FITNESS = true;
 const double FITNESS_ORIGINAL_POWER = 1.3;
 const double FITNESS_PRECISION_THRESHOLD = 0.001;
@@ -107,10 +170,22 @@ const double FITNESS_EQUALITY_TOLERANCE = 1e-9;
 const double EXACT_SOLUTION_THRESHOLD = 1e-8;
 
 // ----------------------------------------
+// Fitness Ponderado (Weighted Fitness)
+// ----------------------------------------
+// Activa el fitness ponderado para penalizar fuertemente errores en valores altos de N.
+// Esto destruye a las parábolas que fallan en N=20 pero dan buen promedio general.
+const bool USE_WEIGHTED_FITNESS = false;
+// Tipo de peso: "quadratic" usa i*i, "exponential" usa exp(i*WEIGHTED_FITNESS_EXPONENT)
+// Exponente para peso exponencial (más agresivo). Usar 0.2-0.3 para datasets pequeños.
+const double WEIGHTED_FITNESS_EXPONENT = 0.25;
+
+// ----------------------------------------
 // Parámetros de Características Avanzadas
 // ----------------------------------------
 const int STAGNATION_LIMIT_ISLAND = 50;
-const int GLOBAL_STAGNATION_LIMIT = 5000;
+// Lowered from 5000 to allow faster early termination in Hybrid Search mode.
+// If best fitness doesn't improve for N generations, terminate early.
+const int GLOBAL_STAGNATION_LIMIT = 100; // Reducido para terminar más rápido si no mejora
 const double STAGNATION_RANDOM_INJECT_PERCENT = 0.1;
 const int PARAM_MUTATE_INTERVAL = 50;
 const double PATTERN_RECORD_FITNESS_THRESHOLD = 10.0;
@@ -121,6 +196,12 @@ const size_t PARETO_MAX_FRONT_SIZE = 50;
 const double SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9;
 const double SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9;
 const int LOCAL_SEARCH_ATTEMPTS = 30;
+// Simplification Toggle
+const bool USE_SIMPLIFICATION = true;
+// Anti-Stagnation: Island Cataclysm (Hard Reset)
+const bool USE_ISLAND_CATACLYSM = true;
+// Selection Strategy: Epsilon-Lexicase Selection (Replaces Tournament)
+const bool USE_LEXICASE_SELECTION = true;
 
 // ----------------------------------------
 // Otros Parámetros
@@ -132,10 +213,19 @@ const int PROGRESS_REPORT_INTERVAL = 100;
 // y mantener la GPU ocupada con un rango más amplio de valores.
 const bool FORCE_INTEGER_CONSTANTS = false; // Mantenemos false para mayor flexibilidad
 
+// ----------------------------------------
+// Control de Duplicados
+// ----------------------------------------
+const bool PREVENT_DUPLICATES = true; // Activa la verificación de unicidad
+const int DUPLICATE_RETRIES = 10;     // Intentos para generar un individuo único antes de rendirse
+
+
 // ============================================================
 //                  UTILIDADES GLOBALES
 // ============================================================
 std::mt19937& get_rng();
 const double INF = std::numeric_limits<double>::infinity();
+const double GPU_MAX_DOUBLE = 1.7976931348623157e+308; // Max double value
+
 
 #endif // GLOBALS_H

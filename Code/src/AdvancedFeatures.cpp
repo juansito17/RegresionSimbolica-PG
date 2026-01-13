@@ -1,4 +1,5 @@
 #include "AdvancedFeatures.h"
+#include "GradientOptimizer.h"
 #include "Globals.h"
 #include "GeneticOperators.h"
 #include "Fitness.h"
@@ -141,7 +142,7 @@ bool ParetoSolution::dominates(const ParetoSolution& other) const {
     return better_in_one && not_worse_in_any;
 }
 
-void ParetoOptimizer::update(const std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<double>& x_values) {
+void ParetoOptimizer::update(const std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values) {
     std::vector<ParetoSolution> candidates = pareto_front;
     for (const auto& ind : population) {
         if (ind.tree && ind.fitness_valid && ind.fitness < INF) {
@@ -204,14 +205,16 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
     node->right = simplify_recursive(node->right);
 
     // Manejo de hijos nulos
-    if (node->left && !node->right) return node->left;
-    if (!node->left && node->right) return node->right;
-    if (!node->left && !node->right) { auto cn = std::make_shared<Node>(NodeType::Constant); cn->value = 1.0; return cn; }
+    bool is_unary = (node->op == 's' || node->op == 'c' || node->op == 'l' || node->op == 'e' || node->op == '!' || node->op == '_' || node->op == 'g');
 
-    // Constant Folding
-    if (node->left->type == NodeType::Constant && node->right->type == NodeType::Constant) {
+    // Constant Folding (First priority)
+    bool left_is_const = (node->left && node->left->type == NodeType::Constant);
+    bool right_is_const = (node->right && node->right->type == NodeType::Constant);
+    
+    // Fold if binary op with 2 constants OR unary op with 1 constant
+    if ((left_is_const && right_is_const) || (is_unary && left_is_const)) {
         try {
-            double result = evaluate_tree(node, 0.0);
+            double result = evaluate_tree(node, std::vector<double>{0.0}); 
             if (!std::isnan(result) && !std::isinf(result)) {
                 auto cn = std::make_shared<Node>(NodeType::Constant);
                 if (FORCE_INTEGER_CONSTANTS) cn->value = std::round(result); else cn->value = result;
@@ -219,16 +222,24 @@ NodePtr DomainConstraints::simplify_recursive(NodePtr node) {
             }
         } catch (const std::exception&) {}
     }
+
+    if (node->left && !node->right) {
+        if (is_unary) return node; // Correct state for unary ops (Constant folding didn't trigger, so var inside)
+        return node->left; // Simplify "A op null" -> A (for binary ops? dangerous but existing logic)
+    }
+    if (!node->left && node->right) return node->right;
+    if (!node->left && !node->right) { auto cn = std::make_shared<Node>(NodeType::Constant); cn->value = 1.0; return cn; }
+
     // Identity Simplifications & Fixes
-     if ((node->op == '+' || node->op == '-') && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->left;
-     if (node->op == '+' && node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->right;
-     if ((node->op == '*' || node->op == '/') && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left;
+     if ((node->op == '+' || node->op == '-') && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->left;
+     if (node->op == '+' && node->left && node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) return node->right;
+     if ((node->op == '*' || node->op == '/') && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left;
      if (node->op == '*' && node->left && node->left->type == NodeType::Constant && std::fabs(node->left->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->right;
-     if (node->op == '*' && ((node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) || (node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE))) { auto z = std::make_shared<Node>(NodeType::Constant); z->value = 0.0; return z; }
-     if (node->op == '^' && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left; // A^1 -> A
-     if (node->op == '^' && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) { auto o = std::make_shared<Node>(NodeType::Constant); o->value = 1.0; return o; } // A^0 -> 1
+     if (node->op == '*' && ((node->left && node->left->type == NodeType::Constant && std::fabs(node->left->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) || (node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE))) { auto z = std::make_shared<Node>(NodeType::Constant); z->value = 0.0; return z; }
+     if (node->op == '^' && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value - 1.0) < SIMPLIFY_NEAR_ONE_TOLERANCE) return node->left; // A^1 -> A
+     if (node->op == '^' && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) { auto o = std::make_shared<Node>(NodeType::Constant); o->value = 1.0; return o; } // A^0 -> 1
     // Fix div by zero (constante)
-    if (node->op == '/' && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) node->right->value = 1.0;
+    if (node->op == '/' && node->right && node->right->type == NodeType::Constant && std::fabs(node->right->value) < SIMPLIFY_NEAR_ZERO_TOLERANCE) node->right->value = 1.0;
 
     // --- NUEVAS REGLAS DE SIMPLIFICACIÓN ---
     // X / X = 1 (si X no es cero)
@@ -269,7 +280,7 @@ NodePtr DomainConstraints::fix_or_simplify(NodePtr tree) {
 //---------------------------------
 // Local Improvement
 //---------------------------------
-void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const std::vector<double>& x_values, double* d_targets, double* d_x_values) {
+void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, double* d_targets, double* d_x_values) {
     if (!tree) return;
     
     // 1. Collect constant nodes
@@ -293,7 +304,7 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
     auto& rng = get_rng();
     
     // Evaluate initial fitness
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
     double current_fitness = evaluate_fitness(tree, targets, x_values, d_targets, d_x_values);
 #else
     double current_fitness = evaluate_fitness(tree, targets, x_values);
@@ -311,7 +322,7 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
         constants[idx]->value += delta;
         if (FORCE_INTEGER_CONSTANTS) constants[idx]->value = std::round(constants[idx]->value);
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
         double new_fitness = evaluate_fitness(tree, targets, x_values, d_targets, d_x_values);
 #else
         double new_fitness = evaluate_fitness(tree, targets, x_values);
@@ -328,12 +339,18 @@ void optimize_constants(NodePtr& tree, const std::vector<double>& targets, const
     }
 }
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts, double* d_targets, double* d_x_values) {
-    // 1. First, try to optimize constants of the CURRENT tree
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, int attempts, double* d_targets, double* d_x_values) {
+    // 1. First, try to optimize constants of the CURRENT tree using GRADIENT DESCENT
     NodePtr optimized_tree = clone_tree(tree);
-    optimize_constants(optimized_tree, targets, x_values, d_targets, d_x_values);
-    double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values, d_targets, d_x_values);
+    // Use Gradient Optimization (Adam) - much more precise than Hill Climbing
+    optimize_constants_gradient(optimized_tree, targets, x_values, 0.05, 30);
+    
+    #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+        double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values, d_targets, d_x_values);
+    #else
+        double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values);
+    #endif
     
     NodePtr best_neighbor = (optimized_fitness < current_fitness) ? optimized_tree : tree;
     double best_neighbor_fitness = (optimized_fitness < current_fitness) ? optimized_fitness : current_fitness;
@@ -359,10 +376,10 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double cur
     return {best_neighbor, best_neighbor_fitness};
 }
 #else
-std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<double>& x_values, int attempts) {
-    // 1. First, try to optimize constants of the CURRENT tree
+std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree, double current_fitness, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values, int attempts) {
+    // 1. First, try to optimize constants of the CURRENT tree using GRADIENT DESCENT
     NodePtr optimized_tree = clone_tree(tree);
-    optimize_constants(optimized_tree, targets, x_values, nullptr, nullptr);
+    optimize_constants_gradient(optimized_tree, targets, x_values, 0.05, 30);
     double optimized_fitness = evaluate_fitness(optimized_tree, targets, x_values);
     
     NodePtr best_neighbor = (optimized_fitness < current_fitness) ? optimized_tree : tree;
@@ -412,11 +429,13 @@ std::pair<std::string, double> detect_target_pattern(const std::vector<double>& 
 // Generate Pattern Based Tree
 //---------------------------------
 NodePtr generate_pattern_based_tree(const std::string& pattern_type, double pattern_value) {
-    if (X_VALUES.empty() || TARGETS.empty()) return nullptr;
-    double a = TARGETS[0]; double x0 = X_VALUES[0];
+    if (X_VALUES.empty() || RAW_TARGETS.empty()) return nullptr;
+    double a = RAW_TARGETS[0]; 
+    double x0 = (!X_VALUES[0].empty()) ? X_VALUES[0][0] : 0.0;
     if (pattern_type == "arithmetic") {
         double d = pattern_value; auto root = std::make_shared<Node>(NodeType::Operator); root->op = '+';
-        auto cp = std::make_shared<Node>(NodeType::Constant); double cv = a - d * x0; if (FORCE_INTEGER_CONSTANTS) cv = std::round(cv); cp->value = (std::fabs(cv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : cv;
+        auto cp = std::make_shared<Node>(NodeType::Constant); double cv = a - d * x0; if (FORCE_INTEGER_CONSTANTS) cv = std::round(cv); cp->value = (std::fabs(cv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : cv; // Use RAW_TARGETS to avoid "TARGETS" not found
+
         auto vp = std::make_shared<Node>(NodeType::Operator); vp->op = '*';
         auto dc = std::make_shared<Node>(NodeType::Constant); double dv = d; if (FORCE_INTEGER_CONSTANTS) dv = std::round(dv); dc->value = (std::fabs(dv) < SIMPLIFY_NEAR_ZERO_TOLERANCE) ? 0.0 : dv;
         auto xv = std::make_shared<Node>(NodeType::Variable); vp->left = dc; vp->right = xv;
@@ -434,4 +453,98 @@ NodePtr generate_pattern_based_tree(const std::string& pattern_type, double patt
          auto node = std::make_shared<Node>(NodeType::Constant); node->value = 0.0; return node;
      }
     return nullptr; // No pattern tree generated
+}
+
+//---------------------------------
+// Epsilon Lexicase Selection
+//---------------------------------
+std::vector<int> epsilon_lexicase_selection(
+    int num_parents_needed, 
+    int current_pop_size,
+    const std::vector<double>& error_matrix, // [PopSize * NumPoints]
+    int num_points,
+    int num_vars
+) {
+    if (current_pop_size == 0 || num_points == 0) return {};
+    if (num_parents_needed == 0) return {};
+
+    // 1. Calculate Epsilons for each case
+    std::vector<double> epsilons(num_points);
+    std::vector<double> column_errors; 
+    column_errors.reserve(current_pop_size);
+    
+    for(int p=0; p<num_points; ++p) {
+        column_errors.clear();
+        for(int i=0; i<current_pop_size; ++i) {
+             column_errors.push_back(error_matrix[i * num_points + p]); // Errors are already absolute/squared
+        }
+        
+        // Calculate Median
+        if (column_errors.empty()) { epsilons[p] = 0.0; continue; }
+        
+        size_t mid = current_pop_size / 2;
+        std::nth_element(column_errors.begin(), column_errors.begin() + mid, column_errors.end());
+        double median = column_errors[mid];
+        
+        // Calculate MAD
+        for(int i=0; i<current_pop_size; ++i) {
+             column_errors[i] = std::fabs(column_errors[i] - median);
+        }
+        std::nth_element(column_errors.begin(), column_errors.begin() + mid, column_errors.end());
+        epsilons[p] = column_errors[mid];
+    }
+    
+    // 2. Select Parents
+    std::vector<int> selected_parents;
+    selected_parents.reserve(num_parents_needed);
+    
+    std::vector<int> candidates;
+    candidates.reserve(current_pop_size);
+    
+    std::vector<int> cases(num_points);
+    std::iota(cases.begin(), cases.end(), 0);
+    
+    auto& rng = get_rng();
+
+    for(int n=0; n<num_parents_needed; ++n) {
+        // Reset candidates
+        candidates.resize(current_pop_size);
+        std::iota(candidates.begin(), candidates.end(), 0);
+        
+        // Shuffle cases for random order
+        std::shuffle(cases.begin(), cases.end(), rng);
+        
+        // Filter candidates
+        for(int case_idx : cases) {
+            if(candidates.size() <= 1) break; // Optimized early exit
+            
+            // Find min error among current candidates
+            double min_err = 1e300;
+            for(int cand : candidates) {
+                double err = error_matrix[cand * num_points + case_idx];
+                if(err < min_err) min_err = err;
+            }
+            
+            double threshold = min_err + epsilons[case_idx];
+            
+            // Filter in-place
+            int write_idx = 0;
+            for(int read_idx=0; read_idx < candidates.size(); ++read_idx) {
+                int cand = candidates[read_idx];
+                if (error_matrix[cand * num_points + case_idx] <= threshold) {
+                    candidates[write_idx++] = cand;
+                }
+            }
+            candidates.resize(write_idx);
+        }
+        
+        // Pick random from remaining candidates
+        if (candidates.empty()) {
+            selected_parents.push_back(std::uniform_int_distribution<int>(0, current_pop_size-1)(rng));
+        } else {
+             int winner_idx = std::uniform_int_distribution<int>(0, candidates.size()-1)(rng);
+             selected_parents.push_back(candidates[winner_idx]);
+        }
+    }
+    return selected_parents;
 }

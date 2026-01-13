@@ -1,40 +1,73 @@
-# Usar una versión más moderna de CMake para un mejor soporte de CUDA
 cmake_minimum_required(VERSION 3.18)
 
-# Habilitar los lenguajes CXX (C++) y CUDA.
-project(SymbolicRegressionGP LANGUAGES CXX CUDA)
+# Initially only enable CXX. We will enable CUDA if found.
+project(SymbolicRegressionGP LANGUAGES CXX)
 
-# Establecer el estándar de C++
+# Fix for "PTX was compiled with an unsupported toolchain" on Colab T4
+# This forces generation of SASS (binary) for the current GPU, avoiding JIT issues.
+set(CMAKE_CUDA_ARCHITECTURES native)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# Encontrar OpenMP para C++ y CUDA explícitamente
+# Find OpenMP (Required for CPU parallelism)
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 
-# Suppress warning about FindCUDA being deprecated (CMP0146)
-cmake_policy(SET CMP0146 OLD)
-find_package(CUDA REQUIRED) # Fuerza a CMake a definir las variables de CUDA
+# --- CUDA Detection ---
+include(CheckLanguage)
+check_language(CUDA)
 
-# Use Static Runtime to match static CUDA runtime and avoid LNK4098
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-
-# AÑADIDO: Incluir directorios de CUDA explícitamente (método de compatibilidad)
-# La variable ${CUDA_LIBRARIES} no añade los directorios de inclusión, así que lo hacemos manualmente.
-include_directories(${CUDA_INCLUDE_DIRS})
-
-# Usar el comando estándar add_executable. CMake sabe cómo manejar los archivos .cu
-# porque CUDA fue habilitado como lenguaje en project().
-add_executable(SymbolicRegressionGP
+set(SOURCES
     src/main.cpp
     src/ExpressionTree.cpp
     src/Fitness.cpp
     src/GeneticOperators.cpp
     src/AdvancedFeatures.cpp
     src/GeneticAlgorithm.cpp
-    src/FitnessGPU.cu
+    src/GradientOptimizer.cpp
 )
 
-# Especificar los directorios de inclusión para nuestro ejecutable.
+if(CMAKE_CUDA_COMPILER)
+    message(STATUS "CUDA compiler found: ${CMAKE_CUDA_COMPILER}")
+    enable_language(CUDA)
+    
+    # Suppress warning about FindCUDA being deprecated (CMP0146)
+    cmake_policy(SET CMP0146 OLD)
+    find_package(CUDA REQUIRED)
+
+    # Add .cu file to sources only if CUDA is present
+    list(APPEND SOURCES src/FitnessGPU.cu src/GradientOptimizerGPU.cu)
+
+    # Create Executable
+    add_executable(SymbolicRegressionGP ${SOURCES})
+
+    # Define the macro to enable GPU code paths in C++
+    target_compile_definitions(SymbolicRegressionGP PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
+
+    # Include CUDA dirs
+    target_include_directories(SymbolicRegressionGP PUBLIC ${CUDA_INCLUDE_DIRS})
+
+    # Link CUDA libraries
+    # Try modern target first, fallback to variables
+    if(TARGET CUDA::cudart)
+        target_link_libraries(SymbolicRegressionGP PUBLIC CUDA::cudart)
+    else()
+        target_link_libraries(SymbolicRegressionGP PUBLIC ${CUDA_LIBRARIES})
+    endif()
+
+    set(CMAKE_CUDA_PROPAGATE_HOST_FLAGS ON)
+    
+    message(STATUS "Build type: GPU Accelerated")
+else()
+    message(STATUS "CUDA compiler NOT found. Building for CPU only.")
+    
+    # Create Executable (without .cu file)
+    add_executable(SymbolicRegressionGP ${SOURCES})
+    
+    message(STATUS "Build type: CPU Only")
+endif()
+
+# Common settings
 target_include_directories(SymbolicRegressionGP PUBLIC src)
 
 # Enlazar las librerías necesarias.
@@ -51,8 +84,49 @@ target_link_libraries(SymbolicRegressionGP PUBLIC
 # Asegura que los flags del compilador de C++ (como /std:c++17) se pasen a nvcc.
 set(CMAKE_CUDA_PROPAGATE_HOST_FLAGS ON)
 
-# Definir macros de preprocesador
-target_compile_definitions(SymbolicRegressionGP PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
 
-# SECCIÓN ELIMINADA: La sección target_compile_options fue removida.
-# CMake y Visual Studio manejarán los flags de Debug/Release automáticamente.
+# === OPTIMIZACIÓN: Flags de compilación agresivos para GCC/Clang (Colab) ===
+# NOTA: Para MSVC+CUDA, dejamos que CMake maneje la optimización automáticamente
+#       ya que los flags manuales causan conflictos con nvcc
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(SymbolicRegressionGP PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-O3>              # Máxima optimización
+        $<$<COMPILE_LANGUAGE:CXX>:-march=native>    # Optimizar para CPU actual
+        $<$<COMPILE_LANGUAGE:CXX>:-ffast-math>      # Matemáticas rápidas
+        $<$<COMPILE_LANGUAGE:CXX>:-funroll-loops>   # Desenrollar loops
+        $<$<COMPILE_LANGUAGE:CXX>:-ftree-vectorize> # Forzar vectorización
+    )
+    # Link-time optimization (LTO) para Release
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set_property(TARGET SymbolicRegressionGP PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+endif()
+# --- Test Suite Executable (Only build if TestOperators.cpp exists) ---
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/TestOperators.cpp")
+    add_executable(TestOperators 
+        src/TestOperators.cpp
+        src/ExpressionTree.cpp
+        src/Fitness.cpp
+        src/GeneticOperators.cpp
+        src/AdvancedFeatures.cpp
+        src/GeneticAlgorithm.cpp
+        src/GradientOptimizer.cpp
+    )
+
+    if(CMAKE_CUDA_COMPILER)
+        target_compile_definitions(TestOperators PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
+        target_sources(TestOperators PRIVATE src/FitnessGPU.cu src/GradientOptimizerGPU.cu)
+        target_include_directories(TestOperators PUBLIC ${CUDA_INCLUDE_DIRS})
+        if(TARGET CUDA::cudart)
+            target_link_libraries(TestOperators PUBLIC CUDA::cudart)
+        else()
+            target_link_libraries(TestOperators PUBLIC ${CUDA_LIBRARIES})
+        endif()
+    endif()
+
+    target_include_directories(TestOperators PUBLIC src)
+    target_link_libraries(TestOperators PUBLIC OpenMP::OpenMP_CXX)
+    message(STATUS "TestOperators target: ENABLED")
+else()
+    message(STATUS "TestOperators target: SKIPPED (src/TestOperators.cpp not found)")
+endif()

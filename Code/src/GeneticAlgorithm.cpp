@@ -2,7 +2,10 @@
 #include "Globals.h"
 #include "Fitness.h"
 #include "AdvancedFeatures.h" // Incluir este para DomainConstraints::
-#include "FitnessGPU.cuh"     // Para funciones de GPU (cudaMalloc, cudaMemcpy, cudaFree)
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#include "FitnessGPU.cuh"     // Para funciones de GPU
+#include <cuda_runtime.h>     // Para CUDA runtime
+#endif
 #include <iostream>
 #include <algorithm>
 #include <vector>
@@ -11,15 +14,14 @@
 #include <iomanip>
 #include <iterator>
 #include <chrono>
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-#include <cuda_runtime.h> // Para cudaMalloc, cudaFree, cudaMemcpy, cudaError_t, cudaSuccess, cudaGetErrorString
-#endif
+#include <unordered_set>
 
 // --- Constructor (Modificado para que evaluate_population procese todo) ---
 GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
-                                     const std::vector<double>& x_values_ref,
+                                     const std::vector<std::vector<double>>& x_values_ref,
                                      int total_pop,
                                      int gens,
+                                     const std::vector<std::string>& seeds,
                                      int n_islands)
     : targets(targets_ref),
       x_values(x_values_ref),
@@ -54,35 +56,82 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
         catch (...) { std::cerr << "[ERROR] Unknown exception creating island " << i << std::endl; throw; }
     }
 
-    // --- ELIMINADO: Bloque de evaluación especial para fórmula inyectada ---
-    // if (USE_INITIAL_FORMULA) { ... }
+    // --- INJECT SEEDS ---
+    if (!seeds.empty()) {
+        std::cout << "Info: Injecting " << seeds.size() << " seed formulas into population..." << std::endl;
+        int seed_idx = 0;
+        
+        // Distribute seeds cyclically across islands to promote diversity
+        for (int i = 0; i < this->num_islands && seed_idx < seeds.size(); ++i) {
+            for(size_t j = 0; j < islands[i]->population.size(); ++j) {
+                if (seed_idx >= seeds.size()) break;
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    // Asignar memoria en la GPU y copiar datos
-    size_t targets_size = targets.size() * sizeof(double);
-    size_t x_values_size = x_values.size() * sizeof(double);
-
-    cudaError_t err_t = cudaMalloc(&d_targets, targets_size);
-    cudaError_t err_x = cudaMalloc(&d_x_values, x_values_size);
-
-    if (err_t != cudaSuccess || err_x != cudaSuccess) {
-        std::cerr << "[ERROR] CUDA memory allocation failed: "
-                  << cudaGetErrorString(err_t) << " | " << cudaGetErrorString(err_x) << std::endl;
-        // Considerar lanzar una excepción o manejar el error adecuadamente
-        throw std::runtime_error("CUDA memory allocation failed");
+                try {
+                    NodePtr parsed_tree = parse_formula_string(seeds[seed_idx]);
+                    if (parsed_tree) {
+                        islands[i]->population[j].tree = std::move(parsed_tree);
+                    }
+                    seed_idx++; 
+                } catch (const std::exception& e) {
+                    std::cerr << "[Warning] Failed to parse seed formula: " << seeds[seed_idx] << " | Error: " << e.what() << std::endl;
+                    seed_idx++; // Skip this seed
+                }
+            }
+        }
     }
 
-    cudaMemcpy(d_targets, targets.data(), targets_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_x_values, x_values.data(), x_values_size, cudaMemcpyHostToDevice);
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    bool gpu_init_failed = false;
+    if (!FORCE_CPU_MODE) {
+        // Asignar memoria en la GPU y copiar datos
+        size_t targets_size = targets.size() * sizeof(double);
+        // Multivariable: flatten X values [NUM_SAMPLES * NUM_FEATURES]
+        size_t n_samples = x_values.size();
+        size_t n_features = (n_samples > 0) ? x_values[0].size() : 0;
+        size_t x_values_size = n_samples * n_features * sizeof(double);
+        
+        // Linearize
+        std::vector<double> flattened_x;
+        flattened_x.reserve(n_samples * n_features);
+        for(const auto& row : x_values) {
+            flattened_x.insert(flattened_x.end(), row.begin(), row.end());
+        }
+
+        cudaError_t err_t = cudaMalloc(&d_targets, targets_size);
+        cudaError_t err_x = cudaMalloc(&d_x_values, x_values_size);
+
+        if (err_t != cudaSuccess || err_x != cudaSuccess) {
+            std::cerr << "[WARNING] CUDA memory allocation failed: "
+                      << cudaGetErrorString(err_t) << " | " << cudaGetErrorString(err_x) << std::endl;
+            std::cerr << "[INFO] Falling back to CPU mode." << std::endl;
+            gpu_init_failed = true;
+            // Clean up any partial allocation
+            if (d_targets) { cudaFree(d_targets); d_targets = nullptr; }
+            if (d_x_values) { cudaFree(d_x_values); d_x_values = nullptr; }
+        } else {
+            cudaMemcpy(d_targets, targets.data(), targets_size, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_x_values, flattened_x.data(), x_values_size, cudaMemcpyHostToDevice);
+            
+            // Initialize global GPU buffers for batch evaluation of ALL islands
+            init_global_gpu_buffers(global_gpu_buffers);
+            
+            // Initialize double-buffered GPU for async pipelining
+            init_double_buffered_gpu(double_buffer_gpu);
+            
+            std::cout << "GPU buffers initialized for global batch evaluation (max " 
+                      << total_population_size << " trees in single kernel call)" << std::endl;
+            std::cout << "Double-buffered GPU enabled for async CPU/GPU overlap" << std::endl;
+        }
+    }
+    
+    if (FORCE_CPU_MODE || gpu_init_failed) {
+        std::cout << "Using CPU for all evaluations" << std::endl;
+    }
 #endif
 
      // Evaluación inicial de TODA la población (incluyendo la inyectada)
-     // La función evaluate_population ahora simplificará y evaluará a todos.
      std::cout << "Evaluating initial population (simplifying all)..." << std::endl;
-     #pragma omp parallel for
-     for (int i = 0; i < islands.size(); ++i) {
-        evaluate_population(*islands[i]);
-     }
+     evaluate_all_islands(); // Use new global batch evaluation
 
      // Actualizar el mejor global inicial (en serie)
      overall_best_fitness = INF;
@@ -121,125 +170,276 @@ GeneticAlgorithm::GeneticAlgorithm(const std::vector<double>& targets_ref,
 }
 
 GeneticAlgorithm::~GeneticAlgorithm() {
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    if (d_targets) {
-        cudaFree(d_targets);
-        d_targets = nullptr;
-    }
-    if (d_x_values) {
-        cudaFree(d_x_values);
-        d_x_values = nullptr;
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    if (!FORCE_CPU_MODE) {
+        // Cleanup double-buffered GPU
+        cleanup_double_buffered_gpu(double_buffer_gpu);
+        
+        // Cleanup global GPU buffers
+        cleanup_global_gpu_buffers(global_gpu_buffers);
+        
+        if (d_targets) {
+            cudaFree(d_targets);
+            d_targets = nullptr;
+        }
+        if (d_x_values) {
+            cudaFree(d_x_values);
+            d_x_values = nullptr;
+        }
     }
 #endif
-    // El destructor de std::unique_ptr en 'islands' se encarga de liberar la memoria de las islas.
-    // 'overall_best_tree' es un NodePtr. Si es un smart pointer (como std::unique_ptr<Node>),
-    // su memoria se liberará automáticamente. Si es un puntero crudo, necesitaría una función delete_tree.
-    // Asumiendo que NodePtr es un smart pointer o que la liberación se maneja en otro lugar,
-    // o que un árbol nulo al final no causa fugas si no fue asignado con 'new'.
-    // Si NodePtr es un puntero crudo y se asigna con 'new' en clone_tree, entonces
-    // delete_tree(overall_best_tree) sería necesario aquí.
-    // Por ahora, se deja vacío, asumiendo manejo automático o externo.
 }
 
 void GeneticAlgorithm::evaluate_population(Island& island) {
-    int pop_size = island.population.size();
-    if (pop_size == 0) return;
+    // Legacy function, effectively unused when evaluate_all_islands is active,
+    // but kept for compatibility or fallback.
+    // If needed, implemented same as before.
+}
 
-    // 1. Simplify trees (CPU Parallel)
-    // We do this first so we only send simplified trees to GPU
+
+// ============================================================
+// GLOBAL BATCH EVALUATION - Evaluates ALL islands in ONE GPU kernel call
+// ============================================================
+void GeneticAlgorithm::evaluate_all_islands() {
+    int total_trees = 0;
+    for (const auto& island : islands) {
+        total_trees += island->population.size();
+    }
+    if (total_trees == 0) return;
+
+    // Step 1: Simplify ALL trees in parallel (CPU)
     #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < pop_size; ++i) {
-        Individual& ind = island.population[i];
-        if (ind.tree) {
-            ind.tree = DomainConstraints::fix_or_simplify(ind.tree);
+    for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+        // Resize error matrices if using Lexicase
+        if (USE_LEXICASE_SELECTION) {
+             size_t pts = x_values.size();
+             if (pts > 0 && islands[i]->error_matrices.size() != islands[i]->population.size() * pts) {
+                 islands[i]->error_matrices.assign(islands[i]->population.size() * pts, INF);
+             }
+        }
+        for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+            Individual& ind = islands[i]->population[j];
+            if (ind.tree) {
+                ind.tree = DomainConstraints::fix_or_simplify(ind.tree);
+            }
         }
     }
 
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
-    // 2. Prepare for Batch GPU Evaluation
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    // Runtime check: if FORCE_CPU_MODE is true or GPU init failed (d_targets == nullptr), use CPU
+    if (!FORCE_CPU_MODE && d_targets != nullptr) {
+    
+    // Step 2: Linearize
+    std::vector<int> tree_sizes_temp(total_trees, 0);
+    std::vector<std::pair<int, int>> index_mapping(total_trees); // (island, individual)
+    
+    int tree_idx = 0;
+    for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+        for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+            index_mapping[tree_idx] = {i, j};
+            tree_idx++;
+        }
+    }
+    
+    int num_threads = omp_get_max_threads();
+    std::vector<std::vector<LinearGpuNode>> thread_nodes(num_threads);
+    std::vector<std::vector<int>> thread_offsets(num_threads);
+    std::vector<std::vector<int>> thread_sizes(num_threads);
+    std::vector<std::vector<std::pair<int, int>>> thread_mappings(num_threads);
+    
+    int trees_per_thread = (total_trees + num_threads - 1) / num_threads;
+    for (int t = 0; t < num_threads; ++t) {
+        thread_nodes[t].reserve(trees_per_thread * 30);
+        thread_offsets[t].reserve(trees_per_thread);
+        thread_sizes[t].reserve(trees_per_thread);
+        thread_mappings[t].reserve(trees_per_thread);
+    }
+    
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        auto& local_nodes = thread_nodes[tid];
+        auto& local_offsets = thread_offsets[tid];
+        auto& local_sizes = thread_sizes[tid];
+        auto& local_mappings = thread_mappings[tid];
+        
+        #pragma omp for schedule(static)
+        for (int t = 0; t < total_trees; ++t) {
+            int i = index_mapping[t].first;
+            int j = index_mapping[t].second;
+            Individual& ind = islands[i]->population[j];
+            
+            if (ind.tree) {
+                int start_offset = local_nodes.size();
+                linearize_tree(ind.tree, local_nodes);
+                int size = local_nodes.size() - start_offset;
+                
+                if (size > 0) {
+                    local_offsets.push_back(start_offset);
+                    local_sizes.push_back(size);
+                    local_mappings.push_back({i, j});
+                } else {
+                    ind.fitness = INF;
+                    ind.fitness_valid = true;
+                }
+            } else {
+                ind.fitness = INF;
+                ind.fitness_valid = true;
+            }
+        }
+    }
+    
     std::vector<LinearGpuNode> all_nodes;
     std::vector<int> tree_offsets;
     std::vector<int> tree_sizes;
+    std::vector<std::pair<int, int>> result_mapping;
     
-    // Reserve memory to avoid reallocations (Optimization)
-    // Assuming average tree size is around 20-30 nodes. 
-    // This dramatically reduces CPU overhead during linearization.
-    all_nodes.reserve(pop_size * 30); 
-    tree_offsets.reserve(pop_size);
-    tree_sizes.reserve(pop_size);
+    size_t total_node_count = 0;
+    size_t total_valid_trees = 0;
+    for (int t = 0; t < num_threads; ++t) {
+        total_node_count += thread_nodes[t].size();
+        total_valid_trees += thread_mappings[t].size();
+    }
     
-    // We need map back to original index because some trees might be null
-    std::vector<int> valid_indices; 
-    valid_indices.reserve(pop_size);
-
-    for (int i = 0; i < pop_size; ++i) {
-        if (island.population[i].tree) {
-            int start_offset = all_nodes.size();
-            linearize_tree(island.population[i].tree, all_nodes);
-            int size = all_nodes.size() - start_offset;
-            
-            if (size > 0) {
-                tree_offsets.push_back(start_offset);
-                tree_sizes.push_back(size);
-                valid_indices.push_back(i);
-            } else {
-                 island.population[i].fitness = INF;
-                 island.population[i].fitness_valid = true;
-            }
-        } else {
-             island.population[i].fitness = INF;
-             island.population[i].fitness_valid = true;
+    all_nodes.reserve(total_node_count);
+    tree_offsets.reserve(total_valid_trees);
+    tree_sizes.reserve(total_valid_trees);
+    result_mapping.reserve(total_valid_trees);
+    
+    for (int t = 0; t < num_threads; ++t) {
+        int offset_adjustment = all_nodes.size();
+        all_nodes.insert(all_nodes.end(), thread_nodes[t].begin(), thread_nodes[t].end());
+        for (size_t k = 0; k < thread_offsets[t].size(); ++k) {
+            tree_offsets.push_back(thread_offsets[t][k] + offset_adjustment);
+            tree_sizes.push_back(thread_sizes[t][k]);
+            result_mapping.push_back(thread_mappings[t][k]);
         }
     }
+    
+    std::vector<int> tree_complexities = tree_sizes;
 
-    if (valid_indices.empty()) return;
+    if (result_mapping.empty()) return;
 
-    // 3. call GPU Batch (d_targets and d_x_values already exist)
-    std::vector<double> raw_results(valid_indices.size());
-    evaluate_population_gpu(all_nodes, tree_offsets, tree_sizes, targets, x_values, raw_results, d_targets, d_x_values,
-                            island.d_nodes, island.d_nodes_capacity,
-                            island.d_offsets, island.d_sizes, island.d_results, island.d_pop_capacity);
-
-    // 4. Process results
-    for (size_t k = 0; k < valid_indices.size(); ++k) {
-        int idx = valid_indices[k];
-        double sum_sq_error = raw_results[k];
-        double raw_fitness = INF;
-
-        // Check for validity
-        if (!std::isnan(sum_sq_error) && !std::isinf(sum_sq_error) && sum_sq_error < 1e300) { // 1e300 as safety threshold
-             if (USE_RMSE_FITNESS) {
-                 if (x_values.size() > 0) {
-                     double mse = sum_sq_error / x_values.size();
-                     raw_fitness = sqrt(mse);
+    int valid_trees = result_mapping.size();
+    int num_points = x_values.size();
+    int num_vars = (num_points > 0) ? x_values[0].size() : 0;
+    
+    // --- EVALUATION ---
+    
+    // A) Lexicase Selection: Need Full Error Matrix
+    if (USE_LEXICASE_SELECTION) {
+        // Use GlobalGpuBuffers since we need blocking result anyway for logic
+        std::vector<double> global_errors;
+        get_population_errors_gpu(
+            all_nodes, tree_offsets, tree_sizes,
+            targets, x_values, 
+            global_errors, // Output
+            d_targets, d_x_values,
+            global_gpu_buffers // Use shared buffer
+        );
+        
+        // Distribute results and calculate fitness
+        // global_errors size = valid_trees * num_points
+        #pragma omp parallel for
+        for (int k = 0; k < valid_trees; ++k) {
+             int isl_idx = result_mapping[k].first;
+             int ind_idx = result_mapping[k].second;
+             int island_pop_size = islands[isl_idx]->population.size();
+             
+             // Check bounds
+             if (k * num_points + num_points <= global_errors.size()) {
+                 double* error_row = &global_errors[k * num_points];
+                 
+                 // Copy to island's error matrix for Lexicase usage later
+                 // Island matrix is flat: [Ind_0_Points | Ind_1_Points | ...]
+                 double* isl_err_row = &islands[isl_idx]->error_matrices[ind_idx * num_points];
+                 
+                 double sum_sq_error = 0.0;
+                 for (int p=0; p<num_points; ++p) {
+                     double err = error_row[p];
+                     isl_err_row[p] = err; // Store Absolute Error
+                     
+                     if (std::isinf(err) || std::isnan(err) || err >= GPU_MAX_DOUBLE) {
+                         sum_sq_error = INF; // Propagate error
+                     } else if (sum_sq_error < INF) {
+                         sum_sq_error += err * err; // MSE accumulation
+                     }
                  }
-             } else {
-                 raw_fitness = sum_sq_error;
+                 
+                 // Calc Final Fitness from SumSq
+                 double raw_fitness = INF;
+                 if (sum_sq_error < 1e300) {
+                     if (USE_RMSE_FITNESS && num_points > 0) {
+                         raw_fitness = sqrt(sum_sq_error / num_points);
+                     } else {
+                         raw_fitness = sum_sq_error;
+                     }
+                     double complexity = static_cast<double>(tree_sizes[k]);
+                     double penalty = complexity * COMPLEXITY_PENALTY_FACTOR;
+                     islands[isl_idx]->population[ind_idx].fitness = raw_fitness * (1.0 + penalty);
+                 } else {
+                     islands[isl_idx]->population[ind_idx].fitness = INF;
+                 }
+                 islands[isl_idx]->population[ind_idx].fitness_valid = true;
              }
         }
+    } 
+    // B) Standard Evaluation: Optimized Kernel
+    else {
+        launch_evaluation_async(
+            all_nodes, tree_offsets, tree_sizes,
+            valid_trees, d_targets, d_x_values, num_points,
+            num_vars,
+            double_buffer_gpu
+        );
+        
+        std::vector<double> results;
+        retrieve_results_sync(results, valid_trees, double_buffer_gpu);
 
-        if (raw_fitness >= INF/2) {
-             island.population[idx].fitness = INF;
-        } else {
-             // Complexity Penalty
-             double complexity = static_cast<double>(tree_sizes[k]); // We already have the linear size
-             double penalty = complexity * COMPLEXITY_PENALTY_FACTOR;
-             island.population[idx].fitness = raw_fitness * (1.0 + penalty);
+        for (size_t k = 0; k < static_cast<size_t>(valid_trees); ++k) {
+            int island_idx = result_mapping[k].first;
+            int ind_idx = result_mapping[k].second;
+            double fitness = results[k];
+            
+            if (std::isnan(fitness) || std::isinf(fitness) || fitness >= 1e300) {
+                fitness = INF;
+            }
+            
+            islands[island_idx]->population[ind_idx].fitness = fitness;
+            islands[island_idx]->population[ind_idx].fitness_valid = true;
         }
-        island.population[idx].fitness_valid = true;
+    }
+    
+    } else {
+        // CPU Fallback
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+            for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+                Individual& ind = islands[i]->population[j];
+                if (ind.tree) {
+                    ind.fitness = evaluate_fitness(ind.tree, targets, x_values, d_targets, d_x_values);
+                    ind.fitness_valid = true;
+                } else {
+                    ind.fitness = INF;
+                    ind.fitness_valid = true;
+                }
+            }
+        }
     }
 
 #else
-    // CPU Fallback (Parallel)
+    // CPU Fallback (No CUDA)
     #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < pop_size; ++i) {
-        Individual& ind = island.population[i];
-        if (ind.tree) {
-             ind.fitness = evaluate_fitness(ind.tree, targets, x_values);
-             ind.fitness_valid = true;
-        } else {
-             ind.fitness = INF;
-             ind.fitness_valid = true;
+    for (int i = 0; i < static_cast<int>(islands.size()); ++i) {
+        for (int j = 0; j < static_cast<int>(islands[i]->population.size()); ++j) {
+            Individual& ind = islands[i]->population[j];
+            if (ind.tree) {
+                ind.fitness = evaluate_fitness(ind.tree, targets, x_values);
+                ind.fitness_valid = true;
+            } else {
+                ind.fitness = INF;
+                ind.fitness_valid = true;
+            }
         }
     }
 #endif
@@ -247,9 +447,11 @@ void GeneticAlgorithm::evaluate_population(Island& island) {
 
 
 // --- evolve_island ---
-// (Sin cambios)
 void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
     int current_pop_size = island.population.size(); if (current_pop_size == 0) return;
+    island.duplicates_count = 0; 
+    
+    // Find local best
     auto best_it = std::min_element(island.population.begin(), island.population.end(),
         [](const Individual& a, const Individual& b) {
             if (!a.tree || !a.fitness_valid) return false;
@@ -263,8 +465,11 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
         current_best_fitness = best_it->fitness;
     }
     island.fitness_history.push_back(current_best_fitness);
+    
+    // Local Search on Best
     if (best_idx != -1 && current_best_fitness < INF) {
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+         // (Omitted code for brevity, same as original...)
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
          auto local_search_result = try_local_improvement(island.population[best_idx].tree, island.population[best_idx].fitness, targets, x_values, LOCAL_SEARCH_ATTEMPTS, d_targets, d_x_values);
 #else
          auto local_search_result = try_local_improvement(island.population[best_idx].tree, island.population[best_idx].fitness, targets, x_values, LOCAL_SEARCH_ATTEMPTS);
@@ -276,6 +481,7 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
              current_best_fitness = local_search_result.second;
          }
     }
+    
     if (current_best_fitness < island.best_fitness - FITNESS_EQUALITY_TOLERANCE) {
         island.best_fitness = current_best_fitness;
         island.stagnation_counter = 0;
@@ -283,13 +489,18 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
         island.stagnation_counter++;
     }
     island.pareto_optimizer.update(island.population, targets, x_values);
+    
+    // Pattern Memory Record
     for(const auto& ind : island.population) {
         if(ind.tree && ind.fitness_valid && ind.fitness < PATTERN_RECORD_FITNESS_THRESHOLD) {
             island.pattern_memory.record_success(ind.tree, ind.fitness);
         }
     }
+    
     std::vector<Individual> next_generation;
     next_generation.reserve(current_pop_size);
+    
+    // --- Elitism ---
     int elite_count = std::max(1, static_cast<int>(current_pop_size * island.params.elite_percentage));
     if (elite_count > 0 && elite_count <= current_pop_size) {
         std::partial_sort(island.population.begin(), island.population.begin() + elite_count, island.population.end());
@@ -304,7 +515,9 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
         }
         elite_count = added_elites;
     } else { elite_count = 0; }
+
     int random_injection_count = 0;
+    // ... (Omitted Stagnation Logic same as original)
     if (island.stagnation_counter > STAGNATION_LIMIT_ISLAND / 2) {
         random_injection_count = static_cast<int>(current_pop_size * STAGNATION_RANDOM_INJECT_PERCENT);
         for(int i = 0; i < random_injection_count && next_generation.size() < current_pop_size; ++i) {
@@ -313,58 +526,134 @@ void GeneticAlgorithm::evolve_island(Island& island, int current_generation) {
         }
     }
     int pattern_injection_count = 0;
-    if (random_injection_count == 0 && current_generation % PATTERN_INJECT_INTERVAL == 0) {
-        pattern_injection_count = static_cast<int>(current_pop_size * PATTERN_INJECT_PERCENT);
-        for (int i = 0; i < pattern_injection_count && next_generation.size() < current_pop_size; ++i) {
-            NodePtr pt = island.pattern_memory.suggest_pattern_based_tree(MAX_TREE_DEPTH_INITIAL);
-            if (pt) { next_generation.emplace_back(std::move(pt)); }
-            else {
-                 NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
-                 if (random_tree) next_generation.emplace_back(std::move(random_tree));
+    
+    // --- ISLAND CATACLYSM ---
+    if (USE_ISLAND_CATACLYSM && island.stagnation_counter >= STAGNATION_LIMIT_ISLAND) {
+        int survivors = 1; 
+        if (next_generation.size() > survivors) next_generation.resize(survivors);
+        int to_fill = current_pop_size - next_generation.size();
+        for(int i=0; i<to_fill; ++i) {
+             NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
+             if (random_tree) next_generation.emplace_back(std::move(random_tree));
+        }
+        island.stagnation_counter = 0;
+    }
+    else {
+        if (random_injection_count == 0 && current_generation % PATTERN_INJECT_INTERVAL == 0) {
+            pattern_injection_count = static_cast<int>(current_pop_size * PATTERN_INJECT_PERCENT);
+            for (int i = 0; i < pattern_injection_count && next_generation.size() < current_pop_size; ++i) {
+                NodePtr pt = island.pattern_memory.suggest_pattern_based_tree(MAX_TREE_DEPTH_INITIAL);
+                if (pt) { next_generation.emplace_back(std::move(pt)); }
+                else {
+                     NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
+                     if (random_tree) next_generation.emplace_back(std::move(random_tree));
+                }
             }
         }
     }
-    auto& rng = get_rng();
-    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
-    int remaining_slots = current_pop_size - next_generation.size();
-    if (remaining_slots > 0 && !island.population.empty()) {
-         long long valid_parent_count = std::count_if(island.population.begin(), island.population.end(),
-                                             [](const Individual& ind){ return ind.tree && ind.fitness_valid; });
-         if (valid_parent_count > 0) {
-             for (int i = 0; i < remaining_slots; ++i) {
-                 const Individual& p1 = tournament_selection(island.population, island.params.tournament_size);
-                 Individual child;
-                 if (prob_dist(rng) < island.params.crossover_rate && valid_parent_count >= 2) {
-                     const Individual& p2 = tournament_selection(island.population, island.params.tournament_size);
-                     if (p1.tree && p2.tree) {
-                         NodePtr t1 = clone_tree(p1.tree); NodePtr t2 = clone_tree(p2.tree);
-                         crossover_trees(t1, t2); child.tree = t1;
-                     } else if (p1.tree) { child.tree = clone_tree(p1.tree); }
-                 } else { if (p1.tree) child.tree = clone_tree(p1.tree); }
-                 if (child.tree) child.tree = mutate_tree(child.tree, island.params.mutation_rate, MAX_TREE_DEPTH_MUTATION);
-                 child.fitness_valid = false; next_generation.push_back(std::move(child));
-             }
-         } else {
-              for (int i = 0; i < remaining_slots; ++i) {
-                   NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
-                   if (random_tree) next_generation.emplace_back(std::move(random_tree));
-              }
-         }
+    
+    // >>> PRE-SELECT PARENTS USING LEXICASE (If Enabled) <<<
+    std::vector<int> lexicase_parents;
+    if (USE_LEXICASE_SELECTION && !island.error_matrices.empty()) {
+        int needed_candidates = current_pop_size * 2; // Estimate buffer
+        int num_vars = (x_values.empty() || x_values[0].empty()) ? 0 : x_values[0].size();
+        lexicase_parents = epsilon_lexicase_selection(
+            needed_candidates, 
+            island.population.size(), 
+            island.error_matrices,
+            x_values.size(), 
+            num_vars
+        );
     }
-    if (next_generation.size() < current_pop_size) {
-         int gap = current_pop_size - next_generation.size();
-         for (int i = 0; i < gap; ++i) {
-              NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
-              if (random_tree) next_generation.emplace_back(std::move(random_tree));
-         }
+
+    // >>> Parallel Parent Selection Loop <<<
+    std::unordered_set<std::string> unique_signatures;
+    if (PREVENT_DUPLICATES) {
+        for (const auto& ind : next_generation) {
+            if (ind.tree) {
+                unique_signatures.insert(tree_to_string(ind.tree));
+            }
+        }
+    }
+
+    int fail_safe_counter = 0;
+    while (next_generation.size() < current_pop_size) {
+        int needed = current_pop_size - next_generation.size();
+        std::vector<Individual> candidates(needed);
+        
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < needed; ++i) {
+            auto& rng = get_rng(); 
+            Individual offspring;
+            std::uniform_real_distribution<double> local_prob_dist(0.0, 1.0);
+
+            if (local_prob_dist(rng) < island.params.crossover_rate) {
+                Individual p1, p2;
+                if (USE_LEXICASE_SELECTION && !lexicase_parents.empty()) {
+                    // Pick from Lexicase pool
+                    int idx1 = lexicase_parents[std::uniform_int_distribution<int>(0, lexicase_parents.size()-1)(rng)];
+                    int idx2 = lexicase_parents[std::uniform_int_distribution<int>(0, lexicase_parents.size()-1)(rng)];
+                    p1 = island.population[idx1];
+                    p2 = island.population[idx2];
+                } else {
+                    p1 = tournament_selection(island.population, island.params.tournament_size);
+                    p2 = tournament_selection(island.population, island.params.tournament_size);
+                }
+                offspring = semantic_crossover(p1, p2, x_values);
+            } else {
+                Individual p1;
+                if (USE_LEXICASE_SELECTION && !lexicase_parents.empty()) {
+                    int idx1 = lexicase_parents[std::uniform_int_distribution<int>(0, lexicase_parents.size()-1)(rng)];
+                    p1 = island.population[idx1];
+                } else {
+                    p1 = tournament_selection(island.population, island.params.tournament_size);
+                }
+                if (p1.tree) p1.tree = clone_tree(p1.tree); 
+                mutate(p1, island.params.mutation_rate);
+                offspring = std::move(p1);
+            }
+            candidates[i] = std::move(offspring);
+        }
+        
+        // Filter and add unique candidates
+        int added_this_round = 0;
+        for (auto& cand : candidates) {
+            if (next_generation.size() >= current_pop_size) break;
+            bool is_valid_to_add = true;
+            if (PREVENT_DUPLICATES && cand.tree) {
+                std::string sig = tree_to_string(cand.tree);
+                if (unique_signatures.find(sig) != unique_signatures.end()) {
+                    is_valid_to_add = false; 
+                    island.duplicates_count++; 
+                } else {
+                    unique_signatures.insert(sig);
+                }
+            }
+            if (is_valid_to_add) {
+                next_generation.emplace_back(std::move(cand));
+                added_this_round++;
+            }
+        }
+        
+        if (added_this_round == 0) {
+            fail_safe_counter++;
+            if (fail_safe_counter > DUPLICATE_RETRIES) {
+                int remaining = current_pop_size - next_generation.size();
+                for (int k = 0; k < remaining; ++k) {
+                    NodePtr random_tree = generate_random_tree(MAX_TREE_DEPTH_INITIAL);
+                    if (random_tree) next_generation.emplace_back(std::move(random_tree));
+                }
+                break;
+            }
+        } else {
+            fail_safe_counter = 0;
+        }
     }
      if (next_generation.size() > current_pop_size) next_generation.resize(current_pop_size);
     island.population = std::move(next_generation);
     if (current_generation > 0 && current_generation % PARAM_MUTATE_INTERVAL == 0) island.params.mutate(island.stagnation_counter);
 }
 
-// --- migrate ---
-// (Sin cambios)
 void GeneticAlgorithm::migrate() {
     if (num_islands <= 1) return;
     int current_pop_per_island = islands.empty() ? 0 : islands[0]->population.size();
@@ -409,26 +698,27 @@ void GeneticAlgorithm::migrate() {
     }
 }
 
-
-// --- run ---
-// (Sin cambios)
 NodePtr GeneticAlgorithm::run() {
     std::cout << "Starting Genetic Algorithm..." << std::endl;
     auto start_time = std::chrono::high_resolution_clock::now();
 
     for (int gen = 0; gen < generations; ++gen) {
-        // 1. Evaluate Population (Serial Island Loop)
-        // We use a serial loop here because evaluate_population internally uses OpenMP for simplification,
-        // and then dispatches a GPU kernel. Serializing islands prevents oversubscription and GPU context contention.
-        for (int i = 0; i < islands.size(); ++i) {
-             evaluate_population(*islands[i]);
-        }
+        if (gen == 0) { std::cout << "[DEBUG] Entering main loop, gen=0" << std::endl; std::cout.flush(); }
+        
+        evaluate_all_islands();
 
-        // 2. Evolve Islands (Parallel Island Loop)
-        // Genetic operators (crossover, mutation) are CPU-bound and independent per island.
         #pragma omp parallel for
         for (int i = 0; i < islands.size(); ++i) {
              evolve_island(*islands[i], gen);
+        }
+
+        // [DEBUG] Report Duplicates
+        long long total_duplicates = 0;
+        for (const auto& island : islands) {
+             total_duplicates += island->duplicates_count;
+        }
+        if (total_duplicates > 0) {
+             std::cout << "Gen " << gen + 1 << " Duplicates Rejected: " << total_duplicates << std::endl;
         }
 
         double current_gen_best_fitness = INF;
@@ -453,6 +743,7 @@ NodePtr GeneticAlgorithm::run() {
                   std::cout << "Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
                   std::cout << "Size: " << tree_size(overall_best_tree) << std::endl;
                   std::cout << "Formula: " << tree_to_string(overall_best_tree) << std::endl;
+                  std::cout.flush(); 
                   std::cout << "Predictions vs Targets:" << std::endl;
                   std::cout << std::fixed << std::setprecision(4);
                   if (overall_best_tree && !x_values.empty()) {
@@ -460,8 +751,9 @@ NodePtr GeneticAlgorithm::run() {
                           double val = evaluate_tree(overall_best_tree, x_values[j]);
                           double target_val = (j < targets.size()) ? targets[j] : std::nan("");
                           double diff = (!std::isnan(val) && !std::isnan(target_val)) ? std::fabs(val - target_val) : std::nan("");
-                          std::cout << "  x=" << std::setw(8) << x_values[j]
-                                    << ": Pred=" << std::setw(12) << val
+                          std::cout << "  x=(";
+                          for(size_t v=0; v<x_values[j].size(); ++v) std::cout << (v>0?",":"") << x_values[j][v];
+                          std::cout << "): Pred=" << std::setw(12) << val
                                     << ", Target=" << std::setw(12) << target_val
                                     << ", Diff=" << std::setw(12) << diff << std::endl;
                       }
@@ -482,8 +774,7 @@ NodePtr GeneticAlgorithm::run() {
 
         if ((gen + 1) % MIGRATION_INTERVAL == 0 && num_islands > 1) {
              migrate();
-             // Serial evaluation after migration
-             for (int i = 0; i < islands.size(); ++i) { evaluate_population(*islands[i]); }
+             evaluate_all_islands(); // Re-evaluate after migration (errors and fitness)
         }
 
         if (overall_best_fitness < EXACT_SOLUTION_THRESHOLD) {
@@ -493,8 +784,10 @@ NodePtr GeneticAlgorithm::run() {
             if(overall_best_tree) {
                  std::cout << "Final Formula Size: " << tree_size(overall_best_tree) << std::endl;
                  std::cout << "Final Formula: " << tree_to_string(overall_best_tree) << std::endl;
+                 std::cout.flush();
             }
             std::cout << "========================================" << std::endl;
+            std::cout.flush(); 
             break;
         }
 
@@ -518,9 +811,10 @@ NodePtr GeneticAlgorithm::run() {
     std::cout << "Final Best Fitness: " << std::fixed << std::setprecision(8) << overall_best_fitness << std::endl;
      if (overall_best_tree) {
          std::cout << "Final Best Formula Size: " << tree_size(overall_best_tree) << std::endl;
-         std::cout << "Final Best Formula: " << tree_to_string(overall_best_tree) << std::endl;
+         std::cout << "Final Formula: " << tree_to_string(overall_best_tree) << std::endl;
+         std::cout.flush();
           std::cout << "--- Final Verification ---" << std::endl;
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
           double final_check_fitness = evaluate_fitness(overall_best_tree, targets, x_values, d_targets, d_x_values);
 #else
           double final_check_fitness = evaluate_fitness(overall_best_tree, targets, x_values);
@@ -531,8 +825,9 @@ NodePtr GeneticAlgorithm::run() {
                 double val = evaluate_tree(overall_best_tree, x_values[j]);
                  double target_val = (j < targets.size()) ? targets[j] : std::nan("");
                  double diff = (!std::isnan(val) && !std::isnan(target_val)) ? std::fabs(val - target_val) : std::nan("");
-                 std::cout << "  x=" << std::setw(8) << x_values[j]
-                          << ": Pred=" << std::setw(12) << val
+                 std::cout << "  x=(";
+                 for(size_t v=0; v<x_values[j].size(); ++v) std::cout << (v>0?",":"") << x_values[j][v];
+                 std::cout << "): Pred=" << std::setw(12) << val
                           << ", Target=" << std::setw(12) << target_val
                           << ", Diff=" << std::setw(12) << diff << std::endl;
            }

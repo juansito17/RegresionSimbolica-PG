@@ -1,21 +1,165 @@
 #include "Globals.h" // Necesario para las constantes globales
 #include "GeneticAlgorithm.h"
+#include "Fitness.h" // Para evaluate_fitness
 #include "ExpressionTree.h" // Para tree_to_string si se necesita aquí
 #include <iostream>
 #include <vector>
 #include <memory> // Para shared_ptr
 #include <iomanip> // Para std::setprecision
+#include <omp.h>   // Para configuración de OpenMP
 
-int main() {
+#include <fstream> // Para leer archivo
+#include <string>
+#include <sstream>
+
+// Definición de variable global externa
+int NUM_VARIABLES = 1;
+
+int main(int argc, char* argv[]) {
+    // === OPTIMIZACIÓN: Configuración explícita de hilos OpenMP ===
+    int num_threads = omp_get_max_threads();
+    omp_set_num_threads(num_threads);
+    std::cout << "[OpenMP] Using " << num_threads << " threads" << std::endl;
+    
     // Configurar precisión de salida para números flotantes
-    std::cout << std::fixed << std::setprecision(6);
+    // Force immediate flush for each output (important for subprocess capture)
+    std::cout << std::unitbuf << std::fixed << std::setprecision(6);
+    
+    std::vector<std::string> seed_formulas;
+    std::string seed_file_path = "";
+    std::string data_file_path = "";
+    
+    // Parse arguments
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "--seed" || arg == "-s") && i + 1 < argc) {
+             seed_file_path = argv[i + 1];
+             i++; // Skip next arg
+        } else if ((arg == "--data" || arg == "-d") && i + 1 < argc) {
+             data_file_path = argv[i + 1];
+             i++;
+        }
+    }
+    
+    if (!seed_file_path.empty()) {
+        std::cout << "Loading seeds from: " << seed_file_path << std::endl;
+        std::ifstream file(seed_file_path);
+        if (file.is_open()) {
+            std::string line;
+            while (std::getline(file, line)) {
+                if (!line.empty()) {
+                    seed_formulas.push_back(line);
+                }
+            }
+            file.close();
+            std::cout << "Loaded " << seed_formulas.size() << " formulas." << std::endl;
+        } else {
+            std::cerr << "[Error] Could not open seed file: " << seed_file_path << std::endl;
+        }
+    }
 
-    std::cout << "Symbolic Regression using Genetic Programming (Island Model)" << std::endl;
-    std::cout << "==========================================================" << std::endl;
-    std::cout << "Target Function Points:" << std::endl;
-    // Imprimir los puntos objetivo definidos en Globals.h
-    for (size_t i = 0; i < TARGETS.size(); ++i) {
-        std::cout << "  f(" << X_VALUES[i] << ") = " << TARGETS[i] << std::endl;
+    std::vector<double> targets;
+    // MODIFIED: final_x_values is now vector<vector<double>>
+    std::vector<std::vector<double>> final_x_values;
+
+    if (!data_file_path.empty()) {
+         std::cout << "Loading data from: " << data_file_path << std::endl;
+         std::ifstream dfile(data_file_path);
+         if (dfile.is_open()) {
+             // Format:
+             // Line 1: x1 x2 x3 ... (Assumed univariable if using this legacy format)
+             // Line 2: y1 y2 y3 ...
+             // Values separated by space or comma
+             
+             // Helper lambda to parse line
+             auto parse_line = [](const std::string& line) {
+                 std::vector<double> vals;
+                 std::stringstream ss(line);
+                 double val;
+                 while (ss >> val) {
+                     vals.push_back(val);
+                     if (ss.peek() == ',' || ss.peek() == ' ') ss.ignore();
+                 }
+                 return vals;
+             };
+             
+             std::string line;
+             std::vector<std::vector<double>> all_lines;
+             while (std::getline(dfile, line)) {
+                 if(!line.empty()) {
+                     all_lines.push_back(parse_line(line));
+                 }
+             }
+             dfile.close();
+             
+             if (all_lines.size() < 2) {
+                 std::cerr << "[Error] Insufficient data in file (Need at least 1 feature line and 1 target line)." << std::endl;
+                 return 1;
+             }
+             
+             targets = all_lines.back();
+             all_lines.pop_back(); // Now all_lines contains only features as rows
+             
+             size_t n_samples = targets.size();
+             size_t n_vars = all_lines.size();
+             NUM_VARIABLES = (int)n_vars;
+             
+             // Transpose: from [n_vars][n_samples] to [n_samples][n_vars]
+             final_x_values.clear();
+             final_x_values.reserve(n_samples);
+             
+             for (size_t s = 0; s < n_samples; ++s) {
+                 std::vector<double> sample_vars;
+                 sample_vars.reserve(n_vars);
+                 for (size_t v = 0; v < n_vars; ++v) {
+                     if (s < all_lines[v].size()) {
+                         sample_vars.push_back(all_lines[v][s]);
+                     } else {
+                         sample_vars.push_back(0.0); // Fallback for mismatched lines
+                     }
+                 }
+                 final_x_values.push_back(sample_vars);
+             }
+
+             std::cout << "Loaded " << final_x_values.size() << " data points with " << NUM_VARIABLES << " variables from file." << std::endl;
+         } else {
+             std::cerr << "[Error] Could not open data file: " << data_file_path << std::endl;
+             return 1;
+         }
+    } else {
+        // Fallback to Globals.h
+        if (USE_LOG_TRANSFORMATION) {
+             std::cout << "Info: Log Transformation is ON (Target = ln(Q(N)))." << std::endl;
+             for (size_t i = 0; i < RAW_TARGETS.size(); ++i) {
+                 if (RAW_TARGETS[i] > 0) {
+                     targets.push_back(std::log(RAW_TARGETS[i]));
+                     final_x_values.push_back(X_VALUES[i]);
+                 }
+             }
+        } else {
+             std::cout << "Info: Log Transformation is OFF." << std::endl;
+             targets = RAW_TARGETS;
+             final_x_values = X_VALUES;
+        }
+        
+        // Update NUM_VARIABLES based on data
+        if (!final_x_values.empty()) {
+            NUM_VARIABLES = final_x_values[0].size();
+        } else {
+            NUM_VARIABLES = 1; // Default
+        }
+    }
+
+    std::cout << "Target Function Points (Effective):" << std::endl;
+    std::cout << "NUM_VARIABLES set to: " << NUM_VARIABLES << std::endl;
+    // Imprimir los puntos objetivo
+    for (size_t i = 0; i < targets.size(); ++i) {
+        std::cout << "  f(";
+        for(size_t v=0; v<final_x_values[i].size(); ++v) {
+            std::cout << final_x_values[i][v];
+            if(v < final_x_values[i].size()-1) std::cout << ", ";
+        }
+        std::cout << ") = " << targets[i] << std::endl;
     }
     std::cout << "----------------------------------------" << std::endl;
 #ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
@@ -38,19 +182,27 @@ int main() {
     std::cout << "----------------------------------------" << std::endl;
 
 
-    // Crear la instancia del Algoritmo Genético
-    // Pasa las referencias a los vectores de datos y los parámetros principales
-    GeneticAlgorithm ga(TARGETS, X_VALUES, TOTAL_POPULATION_SIZE, GENERATIONS, NUM_ISLANDS);
+    try {
+        // Crear la instancia del Algoritmo Genético
+        // Pasa las referencias a los vectores de datos y los parámetros principales
+        GeneticAlgorithm ga(targets, final_x_values, TOTAL_POPULATION_SIZE, GENERATIONS, seed_formulas);
 
-    // Ejecutar el algoritmo
-    // La función run() contiene el bucle principal de generaciones y devuelve el mejor árbol encontrado
-    NodePtr best_solution_tree = ga.run();
+        // Ejecutar el algoritmo
+        // La función run() contiene el bucle principal de generaciones y devuelve el mejor árbol encontrado
+        NodePtr best_solution_tree = ga.run();
 
-    // La función run() ya imprime el resumen final y la verificación.
-    // Comprobar si se encontró alguna solución válida al final
-    if (!best_solution_tree) {
-        std::cerr << "\nFailed to find any valid solution." << std::endl;
-        return 1; // Salir con código de error si no se encontró solución
+        // La función run() ya imprime el resumen final y la verificación.
+        // Comprobar si se encontró alguna solución válida al final
+        if (!best_solution_tree) {
+            std::cerr << "\nFailed to find any valid solution." << std::endl;
+            return 1; // Salir con código de error si no se encontró solución
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[CRITICAL ERROR] Exception caught in main: " << e.what() << std::endl;
+        return 2;
+    } catch (...) {
+        std::cerr << "[CRITICAL ERROR] Unknown exception caught in main." << std::endl;
+        return 3;
     }
 
     return 0; // Salir con éxito

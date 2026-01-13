@@ -74,7 +74,7 @@ public:
     // Actualiza el frente de Pareto con individuos de la población actual.
     void update(const std::vector<struct Individual>& population, // Usa Individual struct
                 const std::vector<double>& targets,
-                const std::vector<double>& x_values);
+                const std::vector<std::vector<double>>& x_values);
 
     // Obtiene los árboles (NodePtr) de las soluciones en el frente actual.
     std::vector<NodePtr> get_pareto_solutions();
@@ -101,18 +101,18 @@ private:
 };
 
 // Búsqueda Local: Intenta mejorar una solución dada explorando vecinos cercanos.
-#if USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
                                                   double current_fitness,
                                                   const std::vector<double>& targets,
-                                                  const std::vector<double>& x_values,
+                                                  const std::vector<std::vector<double>>& x_values,
                                                   int attempts,
                                                   double* d_targets, double* d_x_values);
 #else
 std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
                                                   double current_fitness,
                                                   const std::vector<double>& targets,
-                                                  const std::vector<double>& x_values,
+                                                  const std::vector<std::vector<double>>& x_values,
                                                   int attempts = 10);
 #endif
 
@@ -121,5 +121,13 @@ std::pair<NodePtr, double> try_local_improvement(const NodePtr& tree,
 std::pair<std::string, double> detect_target_pattern(const std::vector<double>& targets);
 NodePtr generate_pattern_based_tree(const std::string& pattern_type, double pattern_value);
 
+// Epsilon Lexicase Selection
+std::vector<int> epsilon_lexicase_selection(
+    int num_parents_needed, 
+    int current_pop_size,
+    const std::vector<double>& error_matrix, // [PopSize * NumPoints]
+    int num_points,
+    int num_vars
+);
 
 #endif // ADVANCEDFEATURES_H

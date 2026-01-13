@@ -1,0 +1,8 @@
+// Epsilon Lexicase Selection
+std::vector<int> epsilon_lexicase_selection(
+    int num_parents_needed, 
+    int current_pop_size, // Pasamos el size para evitar dependencia de 'Individual' struct aquí si es compleja (o include)
+    const std::vector<double>& error_matrix, // [PopSize * NumPoints]
+    int num_points,
+    int num_vars
+);

@@ -14,6 +14,7 @@
 struct Individual {
     NodePtr tree; // Puntero inteligente al árbol de expresión
     double fitness = INF; // Fitness cacheado (menor es mejor), inicializado a infinito
+    std::vector<double> errors; // Cache of per-case errors for Lexicase Selection
     bool fitness_valid = false; // Indica si el fitness cacheado es válido
 
     // Constructor por defecto
@@ -44,8 +45,15 @@ std::vector<Individual> create_initial_population(int population_size);
 // Selecciona un individuo usando selección por torneo con presión de parsimonia.
 Individual tournament_selection(const std::vector<Individual>& population, int tournament_size);
 
+// Selecciona un individuo usando Epsilon-Lexicase Selection (más inteligente)
+Individual lexicase_selection(std::vector<Individual>& population, const std::vector<double>& targets, const std::vector<std::vector<double>>& x_values);
+
+// Realiza el cruce (crossover) entre dos individuos y devuelve un nuevo individuo.
 // Realiza el cruce (crossover) entre dos individuos y devuelve un nuevo individuo.
 Individual crossover(const Individual& parent1, const Individual& parent2);
+
+// Realiza cruce semántico: intenta generar un hijo que sea funcionalmente distinto a los padres.
+Individual semantic_crossover(const Individual& p1, const Individual& p2, const std::vector<std::vector<double>>& x_values, int attempts = 5);
 
 // Mutata un individuo in-place.
 void mutate(Individual& individual, double mutation_rate);

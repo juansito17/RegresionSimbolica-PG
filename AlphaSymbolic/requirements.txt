@@ -1,0 +1,6 @@
+gymnasium
+numpy
+torch>=2.0.0
+scipy
+sympy
+gradio
