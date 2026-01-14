@@ -192,7 +192,8 @@ class GPUEvaluator:
             # Masking
             masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
-            return loss
+            loss = masked_sq_err.mean(dim=1)
+            return loss, preds
             
         else:
             # MSE
@@ -201,7 +202,9 @@ class GPUEvaluator:
             
             masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
-            return loss
+            # Return preds for visualization/boosting
+            # preds is [B, N_samples]. We return it.
+            return loss, preds
     
     def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         B, L = population.shape

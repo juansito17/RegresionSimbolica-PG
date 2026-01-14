@@ -99,6 +99,12 @@ seeds.append("log(lgamma(x0 + 1) / (2.54 ** x0))")
 # Formula: lgamma(N+1) - A*N + B
 seeds.append("lgamma(x0 + 1) - (((0.945525 * (1 - x2)) + (0.943389 * x2)) * x0) + ((0.966099 * (1 - x2)) + (0.911941 * x2))")
 
+# 7. Gen 95 (Corrected for New Grammar)
+# Original Fitness: 0.0557 (N=4..27)
+# Translation: 'gamma(x)' in legacy engine was 'x!' -> 'fact(x)' in new grammar.
+# Formula preserves the chaotic corrective terms found by GA.
+seeds.append("(((log(fact(x0)) - x0) + log((lgamma(log(fact(sqrt(x0)))) + x0))) - cos((sqrt(x1) / ((lgamma(x0) - x0) + sin((sin(x0) + sqrt(x0)))))))")
+
 GpuGlobals.USE_INITIAL_FORMULA = True
 
 # ============================================================

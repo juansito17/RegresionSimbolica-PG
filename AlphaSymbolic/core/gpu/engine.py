@@ -101,7 +101,7 @@ class TensorGeneticEngine:
         # Use evaluate_differentiable to get preds (ignoring gradients/MSE)
         # It handles the full stack logic properly.
         # But evaluate_differentiable returns (rmse, preds).
-        _, preds = self.evaluate_differentiable(pop, c, x, x) # passing x as dummy y
+        _, preds = self.evaluator.evaluate_differentiable(pop, c, x, x) # passing x as dummy y
         return preds.squeeze(0)
 
     def attempt_residual_boost(self, best_rpn, best_consts, x_t, y_t):

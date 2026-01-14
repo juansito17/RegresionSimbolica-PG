@@ -98,7 +98,7 @@ class Node:
             return f"({self.children[0].to_infix()} {op} {self.children[1].to_infix()})"
         
         # Mapping for short tokens to readable infix
-        if op == '!': return f"gamma({self.children[0].to_infix()})" # Use gamma for !
+        if op == '!': return f"fact({self.children[0].to_infix()})" # Standardize: ! is fact
         if op == '_': return f"floor({self.children[0].to_infix()})"
         if op == 'g': return f"lgamma({self.children[0].to_infix()})"
         if op == 'S': return f"asin({self.children[0].to_infix()})"
@@ -153,7 +153,7 @@ class ExpressionTree:
         """
         # Replacements to make it valid python for AST
         # 1. Handle postfix factorial '!' which C++ outputs as '(... )!'
-        # We convert '(... )!' to 'gamma(...)'
+        # We convert '(... )!' to 'fact(...)'
         # Iterate until no '!' left
         processed_str = infix_str
         while '!' in processed_str:
@@ -170,16 +170,16 @@ class ExpressionTree:
                     start -= 1
                 # start is now 1 char before the matching '('
                 start += 1 
-                # Reconstruct: ... + gamma( + ... + ) + ...
+                # Reconstruct: ... + fact( + ... + ) + ...
                 # Content includes the parens: ( ... )
                 content = processed_str[start:idx] 
-                processed_str = processed_str[:start] + "gamma" + content + processed_str[idx+1:]
+                processed_str = processed_str[:start] + "fact" + content + processed_str[idx+1:]
             elif idx < len(processed_str) - 1 and processed_str[idx+1] == '(':
-                # Prefix usage !(...) -> gamma(...)
-                processed_str = processed_str[:idx] + "gamma" + processed_str[idx+1:]
+                # Prefix usage !(...) -> fact(...)
+                processed_str = processed_str[:idx] + "fact" + processed_str[idx+1:]
             else:
-                # Fallback: Replace ! with gamma if it's explicitly used as a function-like token
-                processed_str = processed_str.replace('!', 'gamma', 1)
+                # Fallback: Replace ! with fact if it's explicitly used as a function-like token
+                processed_str = processed_str.replace('!', 'fact', 1)
 
         # 1b. Handle 'pow' and 'mod' keywords if they leak in
         processed_str = processed_str.replace(' pow ', ' ^ ') # Be careful not to replace 'power' variable names if any, though we don't have them.
@@ -221,8 +221,8 @@ class ExpressionTree:
             # Functions like sin(x)
             func_id = node.func.id
             # Allow both standard names and GPU short tokens
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg',
-                           'S', 'C', 'T', 'e', 'g', '_']: 
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial',
+                           'S', 'C', 'T', 'e', 'g', '_', '!']: 
                 
                 # Map back to short tokens if used by engine
                 # We assume engine uses short tokens for S, C, T, e, !, _, g
@@ -231,9 +231,14 @@ class ExpressionTree:
                 if func_id == 'acos': token = 'C'
                 if func_id == 'atan': token = 'T'
                 if func_id == 'exp': token = 'e'
-                if func_id == 'gamma': token = '!'
+                if func_id == 'fact' or func_id == 'factorial': token = '!' # Map fact to !
                 if func_id == 'floor': token = '_'
                 if func_id == 'lgamma': token = 'g'
+                # func_id == 'gamma' stays 'gamma' (True Gamma)
+                
+                # Special Handle for 'gamma' -> If it maps to !, it's factorial. 
+                # If we want PRECISE Gamma, we must ensure engine supports 'gamma' token.
+                # Looking at OPERATORS dict, 'gamma' is a valid token.
                 
                 tokens = [token]
                 for arg in node.args:
