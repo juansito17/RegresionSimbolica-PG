@@ -498,7 +498,7 @@ class TensorGeneticEngine:
         return winners_global        
 
 
-    def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None):
+    def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
         # 1. Data Setup
         # FIX: Use self.dtype
         if not isinstance(x_values, torch.Tensor):
@@ -508,8 +508,10 @@ class TensorGeneticEngine:
             
         if not isinstance(y_values, torch.Tensor):
             y_t = torch.tensor(y_values, dtype=self.dtype, device=self.device)
-            # Log transform if needed
-            if GpuGlobals.USE_LOG_TRANSFORMATION:
+            # Log transform if needed (Use arg if provided, else Global)
+            use_log_local = use_log if use_log is not None else GpuGlobals.USE_LOG_TRANSFORMATION
+            
+            if use_log_local:
                  mask = y_t > 1e-9
                  y_t = torch.log(y_t[mask])
                  x_t = x_t[mask] 
@@ -535,7 +537,9 @@ class TensorGeneticEngine:
             
         # 2. Init with Disk Cache and Double Buffering
         import os
-        cache_dir = "cache"
+        # Use abs path relative to this file to avoid CWD issues
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cache_dir = os.path.join(base_dir, "cache")
         os.makedirs(cache_dir, exist_ok=True)
         # Use dtype in filename to separate caches
         prec_str = "fp32" if self.dtype == torch.float32 else "fp64"
@@ -584,13 +588,17 @@ class TensorGeneticEngine:
              population = self.pop_buffer_A
              pop_constants = self.const_buffer_A
              
-             # Save
-             try:
-                 print(f"[GPU Engine] Saving to cache: {cache_file}...")
-                 torch.save({'pop': temp_pop.cpu(), 'const': temp_c.cpu()}, cache_file)
-                 print("[GPU Engine] Saved.")
-             except Exception as e:
-                 print(f"[GPU Engine] Warning: Could not save cache ({e})")
+             # Save atómicamente para evitar colisiones en paralelo
+             if not os.path.exists(cache_file):
+                 try:
+                     print(f"[GPU Engine] Saving to cache: {cache_file}...")
+                     temp_cache = cache_file + ".tmp"
+                     torch.save({'pop': temp_pop.cpu(), 'const': temp_c.cpu()}, temp_cache)
+                     os.replace(temp_cache, cache_file)
+                     print("[GPU Engine] Saved.")
+                 except Exception as e:
+                     if os.path.exists(temp_cache): os.remove(temp_cache)
+                     print(f"[GPU Engine] Warning: Could not save cache ({e})")
                  
              # Cache in memory
              self._cached_initial_pop = self.pop_buffer_A.clone()

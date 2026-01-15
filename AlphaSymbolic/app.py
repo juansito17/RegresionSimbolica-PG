@@ -134,6 +134,11 @@ def create_app():
                         )
                         beam_slider = gr.Slider(5, 500, value=50, step=5, label="Intensidad (Beam Width)")
                         workers_slider = gr.Slider(1, 16, value=6, step=1, label="Workers (Paralelismo)", info="Procesos para el motor GP")
+                        
+                        with gr.Accordion("⚙Configuración Avanzada", open=False):
+                            pop_size_slider = gr.Slider(10_000, 4_000_000, value=100_000, step=10_000, label="Tamaño Población (GPU)", info="Menos es más rápido. 4M para benchmarks difíciles.")
+                            use_log_chk = gr.Checkbox(label="Usar Log-Transform (y = log(y))", value=False, info="Útil para crecimiento exponencial, pero malo para datos lineales simples.")
+                            
                         solve_btn = gr.Button("🚀 BUSCAR FÓRMULA", variant="primary", size="lg", elem_classes="primary-btn")
                         
                         with gr.Accordion("Tabla de Predicciones", open=False):
@@ -147,7 +152,8 @@ def create_app():
                         alt_html = gr.HTML(label="Alternativas")
                 
                 raw_formula = gr.Textbox(visible=False)
-                solve_btn.click(solve_formula, [x_input, y_input, beam_slider, search_method, workers_slider], 
+                raw_formula = gr.Textbox(visible=False)
+                solve_btn.click(solve_formula, [x_input, y_input, beam_slider, search_method, workers_slider, pop_size_slider, use_log_chk], 
                                [result_html, plot_output, pred_html, alt_html, raw_formula])
             
             # TAB 2: Training

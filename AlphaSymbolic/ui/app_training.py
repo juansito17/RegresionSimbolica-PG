@@ -537,7 +537,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                                 beam_width=20,
                                 gp_timeout=15,    # Increased from 5s to 15s
                                 num_variables=int(num_variables),
-                                use_gpu_gp=False  # CPU is faster for small sequential problems in training
+                                use_gpu_gp=True  # Power User: Use GPU for faster massive search in training
                             )
                             
                             if gp_result and gp_result.get('formula'):
@@ -1091,184 +1091,133 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                 continue
 
             # --- PHASE 2: TEACHER SOLVES (GP) ---
-            print(f"Iter {iteration}: Asking Teacher to solve {len(problems_to_solve)} hard problems...")
+            print(f"Iter {iteration}: Asking Teacher to solve {len(problems_to_solve)} hard problems in parallel...")
             
-            for prob in problems_to_solve:
-                gp_attempts += 1
-                try:
-                    # Calculate current stats
-                    current_prob = (gp_attempts % int(problems_per_iter)) + 1
-                    success_rate = (gp_successes / gp_attempts * 100) if gp_attempts > 0 else 0
+            import concurrent.futures
+            last_formulas = [] # Persist across this iteration
+            
+            # Use safe parallelism to avoid OOM
+            safe_par = min(len(problems_to_solve), int(max_workers))
+            if safe_par > 4: safe_par = 4 
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=safe_par) as executor:
+                def solve_one(prob):
+                    try:
+                        return hybrid_solve(
+                            prob['x'], 
+                            prob['y'], 
+                            MODEL, 
+                            DEVICE, 
+                            beam_width=30, # More seeds
+                            gp_timeout=15,    # More time
+                            num_variables=iter_num_vars,
+                            use_gpu_gp=True,
+                            pop_size=100000, 
+                            use_engine_cache=False 
+                        ), prob
+                    except Exception as e:
+                        print(f"Parallel solver error: {e}")
+                        return None, prob
+
+                future_to_prob = {executor.submit(solve_one, p): p for p in problems_to_solve}
+                
+                for future in concurrent.futures.as_completed(future_to_prob):
+                    if should_stop_training(): break
+                    
+                    res, prob = future.result()
+                    if not res: continue
+                    
+                    gp_attempts += 1
+                    current_prob = (gp_attempts % int(problems_per_iter))
+                    if current_prob == 0: current_prob = int(problems_per_iter)
                     loss_display = f"{losses[-1]:.4f}" if losses else "---"
                     
-                    # Construct Live HTML with glassmorphism design
+                    # Success Logic
+                    gp_rmse = res.get('rmse', 1e6)
+                    found_formula = res.get('formula', "---")
+                    
+                    # SUCCESS THRESHOLD: Be more lenient for hard items (0.05 instead of 0.01)
+                    if res and res.get('formula') and gp_rmse <= 0.05:
+                        gp_successes += 1
+                        last_formulas.insert(0, f"✅ {found_formula} (RMSE: {gp_rmse:.4f})")
+                        print(f"  [Teacher] Solved! {found_formula} (RMSE: {gp_rmse:.4f})")
+                    
+                    # Calculate ETA
+                    elapsed = time.time() - start_time_loop
+                    avg_per_prob = elapsed / gp_attempts if gp_attempts > 0 else 0
+                    total_probs = int(iterations) * int(problems_per_iter)
+                    remaining_probs = max(0, total_probs - (iteration * int(problems_per_iter) + gp_attempts))
+                    eta_sec = remaining_probs * avg_per_prob
+                    eta_str = f"{int(eta_sec//60)}m {int(eta_sec%60)}s"
+                    
+                    # Formula log display
+                    formula_log_html = "<div style='margin-top:15px; font-family: monospace; font-size: 12px; color: #aaa;'>"
+                    formula_log_html += "<div style='color:#666; margin-bottom:5px;'>Últimos aciertos del Teacher:</div>"
+                    for f_msg in last_formulas[:3]: # Show top 3
+                        formula_log_html += f"<div style='background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px; margin-bottom:3px;'>{f_msg}</div>"
+                    formula_log_html += "</div>"
+
+                    # Update UI with original counters
                     status_html = f"""
-                    <div style="background: linear-gradient(135deg, rgba(26,26,46,0.95) 0%, rgba(22,33,62,0.95) 100%); 
-                                padding: 20px; border-radius: 16px; 
-                                border: 1px solid rgba(74,222,128,0.3);
-                                box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-                                backdrop-filter: blur(10px);">
-                        
+                    <div style="background: linear-gradient(135deg, rgba(26,26,46,0.95) 0%, rgba(22,33,62,0.95) 100%); padding: 20px; border-radius: 16px; border: 1px solid rgba(74,222,128,0.3); backdrop-filter: blur(10px);">
                         <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
                             <span style="font-size: 28px;">🚀</span>
                             <div>
-                                <h3 style="color: #4ade80; margin: 0; font-size: 18px; font-weight: 600;">Training Hybrid Loop</h3>
-                                <span style="color: #888; font-size: 12px;">Teacher-Student Distillation</span>
-                            </div>
-                            <div style="margin-left: auto; background: rgba(74,222,128,0.2); padding: 4px 12px; border-radius: 20px;">
-                                <span style="color: #4ade80; font-size: 14px; font-weight: 500;">LIVE</span>
+                                <h3 style="color: #4ade80; margin: 0; font-size: 18px; font-weight: 600;">Hybrid Loop (GPU Parallel)</h3>
+                                <span style="color: #888; font-size: 12px;">Teacher: GPU Direct | Batch: {safe_par}</span>
                             </div>
                         </div>
-                        
-                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
-                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 15px;">
+                            <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 10px; text-align: center;">
                                 <div style="color: #888; font-size: 11px; text-transform: uppercase;">Iteración</div>
-                                <div style="color: #fff; font-size: 20px; font-weight: 600;">{iteration+1}<span style="color:#666; font-size:14px;">/{iterations}</span></div>
+                                <div style="color: #fff; font-size: 18px; font-weight: 600;">{iteration+1}/{iterations}</div>
                             </div>
-                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+                            <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 10px; text-align: center;">
                                 <div style="color: #888; font-size: 11px; text-transform: uppercase;">Problema</div>
-                                <div style="color: #fff; font-size: 20px; font-weight: 600;">{current_prob}<span style="color:#666; font-size:14px;">/{int(problems_per_iter)}</span></div>
+                                <div style="color: #fff; font-size: 18px; font-weight: 600;">{current_prob}/{int(problems_per_iter)}</div>
                             </div>
-                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
-                                <div style="color: #888; font-size: 11px; text-transform: uppercase;">GP Éxitos</div>
-                                <div style="color: #4ade80; font-size: 20px; font-weight: 600;">{gp_successes}</div>
+                            <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 10px; text-align: center;">
+                                <div style="color: #888; font-size: 11px; text-transform: uppercase;">Éxitos</div>
+                                <div style="color: #4ade80; font-size: 18px; font-weight: 600;">{gp_successes}</div>
                             </div>
-                            <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; text-align: center;">
+                            <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 10px; text-align: center;">
                                 <div style="color: #888; font-size: 11px; text-transform: uppercase;">Loss</div>
-                                <div style="color: #00d4ff; font-size: 20px; font-weight: 600;">{loss_display}</div>
+                                <div style="color: #00d4ff; font-size: 18px; font-weight: 600;">{loss_display}</div>
                             </div>
                         </div>
-                        
+
                         <div style="display: flex; align-items: center; gap: 8px; padding: 10px; background: rgba(255,217,61,0.1); border-radius: 8px;">
                             <span style="font-size: 16px;">⏳</span>
-                            <span style="color: #ffd93d; font-size: 14px;">ETA: <strong>{locals().get('eta_str', 'Calculando...')}</strong></span>
-                            <div style="flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-left: 12px;">
-                                <div style="width: {((iteration * int(problems_per_iter) + gp_attempts) / (iterations * problems_per_iter) * 100):.0f}%; height: 100%; background: linear-gradient(90deg, #ffd93d, #4ade80); border-radius: 2px;"></div>
-                            </div>
+                            <span style="color: #ffd93d; font-size: 14px;">Restante: <strong>{eta_str}</strong></span>
                         </div>
                         
-                        {locals().get('seeds_html', '')}
+                        {formula_log_html}
                     </div>
                     """
-                    # Always create a graph (placeholder if empty)
                     fig = create_loss_plot(losses, "Training Loss")
                     yield status_html, fig
-                    
-                    # Run Hybrid Search (Quick Mode)
-                    # We pass the model so beam search can seed the GP
-                    res = None # Initialize to avoid UnboundLocalError
-                    res = hybrid_solve(
-                        prob['x'], 
-                        prob['y'], 
-                        MODEL, 
-                        DEVICE, 
-                        beam_width=10,     # Faster beam
-                        gp_timeout=gp_timeout,
-                        gp_binary_path=None,
-                        max_workers=max_workers,      # Parallel Workers (Mission 1)
-                        num_variables=iter_num_vars,
-                        use_gpu_gp=False              # CPU is faster for Training loops
-                    )
-                    
-                    # --- UI UPDATE: LIVE STATS ---
-                    elapsed_total = time.time() - start_time_loop
-                    full_loop_problems = iterations * problems_per_iter
-                    solved_problems_count = (iteration * int(problems_per_iter)) + gp_attempts
-                    if solved_problems_count > 0:
-                        avg_time = elapsed_total / solved_problems_count
-                        remaining = full_loop_problems - solved_problems_count
-                        eta_seconds = remaining * avg_time
-                        eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
-                    else:
-                        eta_str = "Calculando..."
 
-                    seeds_html = ""
-                    if res and 'seeds_tried' in res and res['seeds_tried']:
-                        seeds_html = "<h4 style='color:#ccc; margin-bottom:5px;'>🔎 Top Seeds per Worker:</h4>"
-                        seeds_html += "<div style='display:flex; flex-wrap:wrap; gap:5px; font-size:12px; color:#888;'>"
-                        for i, s in enumerate(res['seeds_tried']):
-                            seeds_html += f"<span style='background:#222; padding:3px 6px; border-radius:4px;'>Worker {i+1}: {s[:30]}...</span>"
-                        seeds_html += "</div>"
-                    
-                    gp_rmse = res.get('rmse', 1e6)
-                    if res and res.get('formula') and gp_rmse <= 0.01:
-                        # SUCCESS!
-                        gp_successes += 1
-                        
-                        # Parse formula to tokens
+                    # Success Logic
+                    if res and res.get('formula') and gp_rmse <= 0.05:
                         try:
-                            # 1. Parse string to tree
                             tree = ExpressionTree.from_infix(res['formula'])
-                            # 2. Get tokens
-                            tokens = tree.tokens
-                            
-                            # SCALED REWARD + Efficiency
-                            # 1. Quality Reward (0.2 to 1.0)
                             quality_reward = max(0.2, 1.0 - (gp_rmse * 1.6))
-                            
-                            # 2. Efficiency Bonus (0.5 to 1.0)
-                            taken_time = res.get('time', 10.0)
-                            efficiency_bonus = 1.0
-                            if taken_time > 5.0:
-                                decay = ((taken_time - 5.0) / 25.0) * 0.5
-                                efficiency_bonus = max(0.5, 1.0 - decay)
-                            
-                            # Final Reward = Quality * Efficiency
-                            final_reward = quality_reward * efficiency_bonus
-
-                            replay_buffer.append({
-                                'x': prob['x'],
-                                'y': prob['y'],
-                                'tokens': tokens,
-                                'source': 'GP_Teacher',
-                                'reward': final_reward
-                            })
-
-                            # --- MISSION 2: PERSISTENCE ---
+                            replay_buffer.append({'x': prob['x'], 'y': prob['y'], 'tokens': tree.tokens, 'source': 'GP_Teacher', 'reward': quality_reward})
                             try:
-                                log_file = os.path.join("results", "learned_formulas.csv")
-                                file_exists = os.path.isfile(log_file)
-                                
-                                with open(log_file, "a", newline="", encoding="utf-8") as csvfile:
-                                    fieldnames = ["timestamp", "formula", "rmse", "complexity", "source", "time_taken"]
-                                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                                    
-                                    if not file_exists:
-                                        writer.writeheader()
-                                        
-                                    writer.writerow({
-                                        "timestamp": datetime.datetime.now().isoformat(),
-                                        "formula": res['formula'],
-                                        "rmse": res.get('rmse', 0.0),
-                                        "complexity": len(tokens),
-                                        "source": "GP_Teacher",
-                                        "time_taken": res.get('time', 0.0)
-                                    })
-                            except Exception as e:
-                                print(f"Failed to log formula to CSV: {e}")
-                            # -------------------------------
-                            
-                        except Exception as e:
-                            print(f"Failed to tokenize GP result: {e}")
-                            
-                except Exception as e:
-                    print(f"GP Hybrid Error: {e}")
-                
-                # --- FALLBACK: If GP failed, use Original Ground Truth ---
-                # This ensures the model always learns something and the graph updates
-                found_gp_solution = (res and res.get('formula') and res.get('rmse', 1e6) <= 0.01)
-                
-                if not found_gp_solution:
-                    # Clean tokens
-                    original_tokens = [t for t in prob['tokens'] if t in TOKEN_TO_ID]
-                    if len(original_tokens) > 0:
-                        replay_buffer.append({
-                            'x': prob['x'],
-                            'y': prob['y'],
-                            'tokens': original_tokens,
-                            'source': 'Original',
-                            'reward': 1.0  # It is the ground truth
-                        })
+                                log_path = os.path.join("results", "learned_formulas.csv")
+                                if not os.path.exists(log_path):
+                                    with open(log_path, "w", newline="", encoding="utf-8") as fl:
+                                        fl.write("timestamp,formula,rmse,complexity,source,time_taken\n")
+                                with open(log_path, "a", newline="", encoding="utf-8") as fl:
+                                    writer = csv.DictWriter(fl, fieldnames=["timestamp", "formula", "rmse", "complexity", "source", "time_taken"])
+                                    writer.writerow({"timestamp": datetime.datetime.now().isoformat(), "formula": res['formula'], "rmse": gp_rmse, "complexity": len(tree.tokens), "source": "GP_Teacher", "time_taken": res.get('time', 0.0)})
+                            except: pass
+                        except: pass
+                    else:
+                        orig_tokens = [t_f for t_f in prob['tokens'] if t_f in TOKEN_TO_ID]
+                        if orig_tokens:
+                            replay_buffer.append({'x': prob['x'], 'y': prob['y'], 'tokens': orig_tokens, 'source': 'Original', 'reward': 1.0})
                     
             # --- PHASE 3: STUDENT TRAINS (NN) ---
             if len(replay_buffer) > 10:

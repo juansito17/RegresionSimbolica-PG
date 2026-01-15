@@ -111,7 +111,7 @@ def create_fit_plot(x, y, y_pred, formula):
     return fig
 
 
-def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, progress=gr.Progress()):
+def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_size=100000, use_log=False, progress=gr.Progress()):
     """Main solving function with search method selection."""
     x, y, error = parse_data(x_str, y_str)
     if error:
@@ -134,7 +134,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, progre
         progress(0.4, desc="Fase 1: Neural Beam Search...")
         # Note: Hybrid search handles its own phases printing, but we want UI updates.
         # We pass beam_width. gp_timeout is increased to 30s to allow convergence on complex problems.
-        hybrid_res = hybrid_solve(x, y, MODEL, DEVICE, beam_width=int(beam_width), gp_timeout=30, num_variables=num_vars, max_workers=max_workers)
+        hybrid_res = hybrid_solve(x, y, MODEL, DEVICE, beam_width=int(beam_width), gp_timeout=30, num_variables=num_vars, max_workers=max_workers, pop_size=pop_size, use_log=use_log)
         
         if hybrid_res and hybrid_res.get('formula'):
             progress(0.9, desc="Procesando resultados GP...")

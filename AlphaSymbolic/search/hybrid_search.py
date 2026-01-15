@@ -58,7 +58,10 @@ def hybrid_solve(
     extra_seeds: Optional[List[str]] = None,
     max_neural_seeds: Optional[int] = None,
     random_seed_selection: bool = False,
-    use_gpu_gp: bool = True
+    use_gpu_gp: bool = True,
+    pop_size: int = None,
+    use_log: bool = None,
+    use_engine_cache: bool = True
 ) -> Dict[str, Any]:
     """
     Solves Symbolic Regression using a Hybrid Neuro-Evolutionary approach with Parallel GP.
@@ -136,19 +139,23 @@ def hybrid_solve(
         try:
             # Use cached engine if available
             from core.gpu.config import GpuGlobals
-            cache_key = (str(device), GpuGlobals.POP_SIZE, num_variables) 
-            if cache_key in _GPU_ENGINE_CACHE:
+            
+            # Default to Globals if not provided
+            tgt_pop = pop_size if pop_size is not None else GpuGlobals.POP_SIZE
+            
+            cache_key = (str(device), tgt_pop, num_variables) 
+            if use_engine_cache and cache_key in _GPU_ENGINE_CACHE:
                 gpu_engine = _GPU_ENGINE_CACHE[cache_key]
             else:
-                from core.gpu.config import GpuGlobals
                 # Initialize Engine once
-                gpu_engine = TensorGeneticEngine(pop_size=GpuGlobals.POP_SIZE, n_islands=GpuGlobals.NUM_ISLANDS, device=device, num_variables=num_variables)
-                _GPU_ENGINE_CACHE[cache_key] = gpu_engine
+                gpu_engine = TensorGeneticEngine(pop_size=tgt_pop, n_islands=GpuGlobals.NUM_ISLANDS, device=device, num_variables=num_variables)
+                if use_engine_cache:
+                    _GPU_ENGINE_CACHE[cache_key] = gpu_engine
                 
-            print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds...")
+            print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds (Pop={tgt_pop})...")
             
             # Run Evolution
-            best_formula_str = gpu_engine.run(x_values, y_values, seeds=seeds, timeout_sec=gp_timeout)
+            best_formula_str = gpu_engine.run(x_values, y_values, seeds=seeds, timeout_sec=gp_timeout, use_log=use_log)
             
             if best_formula_str:
                 # Calculate RMSE for consistency

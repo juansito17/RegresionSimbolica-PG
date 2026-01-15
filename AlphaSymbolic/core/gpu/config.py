@@ -10,7 +10,7 @@ class GpuGlobals:
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
     USE_FLOAT32 = False # Optimización: Float32 (10x velocidad)
-    USE_LOG_TRANSFORMATION = True
+    USE_LOG_TRANSFORMATION = False # Default False for general usage (User can enable it)
 
     # DATASET CENTRALIZADO (N-Reinas)
     # x0 = n
@@ -57,8 +57,8 @@ class GpuGlobals:
     # - With Chunked Reproduction: 4.0M Population is STABLE.
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
-    # Recommended: 4,000,000
-    POP_SIZE = 4_000_000 
+    # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
+    POP_SIZE = 100_000 
     GENERATIONS = 500  
     NUM_ISLANDS = 40 # 4M / 40 = 100k per island
     MIN_POP_PER_ISLAND = 50
