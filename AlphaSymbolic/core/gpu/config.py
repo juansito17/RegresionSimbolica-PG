@@ -70,7 +70,7 @@ class GpuGlobals:
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = True
-    INITIAL_FORMULA_STRING = "(cos(sqrt((log(x0) + abs(((((x0 + (asin(x2) + 3)) / (lgamma(x0) - x0)) - x0) - 2.45382))))) + (lgamma((-0.05603941 + x0)) + (5 - x0)))"
+    INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((x0 + (x0 + x2)) / (lgamma(x0) - x0)) - floor((log(x0) + x0))) - 5.53928843)))) + (lgamma((-0.10223076 + x0)) + (5 - x0)))"
     # INITIAL_FORMULA_STRING = "(lgamma(x0) + 5)"
 
     # ----------------------------------------
