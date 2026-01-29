@@ -25,8 +25,8 @@ class GPUOptimizer:
         for _ in range(steps):
             optimizer.zero_grad()
             
-            # Use differentiable evaluation (returns Loss/MSE)
-            loss_per_ind = self.evaluator.evaluate_differentiable(population, optimized_consts, x, y_target)
+            # Use differentiable evaluation (returns (Loss, Preds))
+            loss_per_ind, _ = self.evaluator.evaluate_differentiable(population, optimized_consts, x, y_target)
             
             # Track best
             current_mse = loss_per_ind.detach()

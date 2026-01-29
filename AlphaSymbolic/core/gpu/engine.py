@@ -61,6 +61,7 @@ class TensorGeneticEngine:
         self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE)
         self.pattern_memory = PatternMemory(
             self.device, 
+            self.operators,
             max_patterns=100,
             fitness_threshold=GpuGlobals.PATTERN_RECORD_FITNESS_THRESHOLD,
             min_uses=GpuGlobals.PATTERN_MEM_MIN_USES

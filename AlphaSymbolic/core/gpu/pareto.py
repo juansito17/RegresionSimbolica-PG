@@ -39,66 +39,122 @@ class ParetoOptimizer:
     
     def non_dominated_sort(self, fitness: torch.Tensor, complexity: torch.Tensor) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """
-        Perform vectorized non-dominated sorting on the population on GPU.
-        Returns:
-            fronts: List[Tensor], where each tensor contains indices of a front.
-            ranks: [N] tensor with rank of each individual (0 = front 1).
+        Memory-efficient GPU Non-Dominated Sort (block-based).
+        Avoids O(N^2) memory by computing domination on the fly.
         """
         n = fitness.shape[0]
+        device = self.device
         
-        # 1. Compute Domination Matrix [N, N]
-        # A dominates B?
-        # A_fit <= B_fit AND A_comp <= B_comp AND (A_fit < B_fit OR A_comp < B_comp)
+        # 1. Compute Domination Counts (how many dominate me)
+        # We do this in blocks to avoid allocating [N, N] matrix
+        domination_counts = torch.zeros(n, dtype=torch.long, device=device)
         
-        fit = fitness.unsqueeze(1) # [N, 1]
-        comp = complexity.unsqueeze(1) # [N, 1]
+        # Block size for N^2 comparisons
+        # RTX 3050 has 4GB. Safe matrix size ~5000x5000 bools (25MB).
+        # We can do [Block, N]. Block=5000.
+        block_size = 2048
         
-        fit_T = fitness.unsqueeze(0) # [1, N]
-        comp_T = complexity.unsqueeze(0) # [1, N]
+        # Pre-broadcast tensors
+        # We need to compare every i with every j
+        # Inner loop compares a Block of 'i' against ALL 'j'
         
-        # Broadcasting
-        not_worse = (fit <= fit_T) & (comp <= comp_T)
-        better = (fit < fit_T) | (comp < comp_T)
-        dominates = not_worse & better # [N, N]. dominates[i, j] is True if i dominates j
+        fit_flat = fitness
+        comp_flat = complexity
         
-        # 2. Compute Domination Counts (how many dominate me)
-        # sum over i (rows) for each j (col)
-        domination_counts = dominates.sum(dim=0).long() # [N]
-        
-        # 3. Iteratively peel fronts
-        ranks = torch.zeros(n, dtype=torch.long, device=self.device)
-        active_mask = torch.ones(n, dtype=torch.bool, device=self.device)
+        for i_start in range(0, n, block_size):
+            i_end = min(i_start + block_size, n)
+            i_idx = torch.arange(i_start, i_end, device=device)
+            bn = i_end - i_start
+            
+            # [Block, 1]
+            b_fit = fit_flat[i_idx].unsqueeze(1)
+            b_comp = comp_flat[i_idx].unsqueeze(1)
+            
+            # Compare against ALL [1, N]
+            # [1, N]
+            all_fit = fit_flat.unsqueeze(0)
+            all_comp = comp_flat.unsqueeze(0)
+            
+            # Domination logic: J dominates I?
+            # J_fit <= I_fit AND J_comp <= I_comp AND (J_fit < I_fit OR J_comp < I_comp)
+            # Here 'I' is the block (rows). 'J' is all (cols).
+            # We want to sum over J (cols) for each I.
+            
+            # j_not_worse_i = (all_fit <= b_fit) & (all_comp <= b_comp)
+            # j_better_i = (all_fit < b_fit) | (all_comp < b_comp)
+            # j_dominates_i = j_not_worse_i & j_better_i [Block, N]
+            
+            # Chunking the 'j' (cols) loop also if N is huge?
+            # 2048 * 100,000 = 200M bools = 200MB. This fits easily.
+            
+            worse_or_equal = (all_fit <= b_fit) & (all_comp <= b_comp)
+            strict_better = (all_fit < b_fit) | (all_comp < b_comp)
+            dominated_by = (worse_or_equal & strict_better) # [Block, N]
+            
+            # Sum rows -> count for each i in block
+            domination_counts[i_idx] += dominated_by.sum(dim=1).long()
+            
+        # 2. Peel Fronts
+        ranks = torch.zeros(n, dtype=torch.long, device=device)
+        active_mask = torch.ones(n, dtype=torch.bool, device=device)
         fronts = []
         current_rank = 0
         
         while active_mask.any():
-            # Current front: domination_count == 0 AND active
+            # Identify current front
+            # Those active with count 0
             current_front_mask = (domination_counts == 0) & active_mask
             
             if not current_front_mask.any():
-                # Should not happen in DAG, but safety break
-                break
+                break # Should ensure progress
                 
             front_indices = torch.nonzero(current_front_mask).squeeze(1)
             fronts.append(front_indices)
             ranks[current_front_mask] = current_rank
             
-            # Remove current front
+            # Remove from active
             active_mask[current_front_mask] = False
             
-            # Update counts
-            # For every i in current_front, if i dominates j, decrement count[j]
-            # dominates[current_front_mask, :] is [F, N]
-            # We want to subtract active rows from counts
-            # But we can just use matrix multiplication or sum?
-            # Reduce active domination matrix
-            # domination_counts -= dominates[current_front_mask].sum(dim=0)
+            # Decrement counts of those dominated by THIS front
+            # We must compute: For remaining J, does Front I dominate J?
+            # Sub-problem: [FrontSize, RemainingSize]
             
-            # Optimization: dominates matrix allows quick update
-            # count_j_new = count_j_old - sum_{i in front} (i dominates j)
-            decrement = dominates[current_front_mask].sum(dim=0)
-            domination_counts = domination_counts - decrement
+            # Remaining indices
+            remaining_mask = active_mask # Boolean [N]
+            if not remaining_mask.any():
+                break
+                
+            # To apply updates efficiently:
+            # We iterate the FRONT in blocks (since front can be large)
+            # And compare against ALL active (or just all, simpler indexing)
+            # And subtract from domination_counts
             
+            f_size = front_indices.shape[0]
+            
+            for f_start in range(0, f_size, block_size):
+                f_end = min(f_start + block_size, f_size)
+                f_batch = front_indices[f_start:f_end] # [Batch]
+                
+                # [Batch, 1]
+                b_fit = fit_flat[f_batch].unsqueeze(1)
+                b_comp = comp_flat[f_batch].unsqueeze(1)
+                
+                # Compare against ALL (masking later is faster than fancy indexing?)
+                # [1, N]
+                all_fit = fit_flat.unsqueeze(0)
+                all_comp = comp_flat.unsqueeze(0)
+                
+                # I (Front) dominates J (All)?
+                # I_fit <= J_fit ...
+                
+                i_dominates_j = (b_fit <= all_fit) & (b_comp <= all_comp) & \
+                                ((b_fit < all_fit) | (b_comp < all_comp)) # [Batch, N]
+                                
+                # Sum columns -> how many in this batch dominate each J
+                decrement_vec = i_dominates_j.sum(dim=0) # [N]
+                
+                domination_counts -= decrement_vec.long()
+                
             current_rank += 1
             
         return fronts, ranks

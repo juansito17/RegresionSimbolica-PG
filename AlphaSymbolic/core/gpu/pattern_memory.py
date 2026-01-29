@@ -18,7 +18,7 @@ class PatternMemory:
     into the population to share successful building blocks.
     """
     
-    def __init__(self, device: torch.device, max_patterns: int = 100, 
+    def __init__(self, device: torch.device, operators, max_patterns: int = 100, 
                  fitness_threshold: float = 10.0, min_uses: int = 3):
         """
         Args:
@@ -28,6 +28,7 @@ class PatternMemory:
             min_uses: Minimum uses before a pattern is considered "useful"
         """
         self.device = device
+        self.operators = operators
         self.max_patterns = max_patterns
         self.fitness_threshold = fitness_threshold
         self.min_uses = min_uses
@@ -42,57 +43,73 @@ class PatternMemory:
     def record_subtrees(self, population: torch.Tensor, fitness: torch.Tensor, 
                         grammar, min_size: int = 3, max_size: int = 10):
         """
-        Extract and record successful subtrees from the population.
-        
-        Args:
-            population: [PopSize, L] RPN tensors
-            fitness: [PopSize] RMSE values
-            grammar: GPUGrammar for subtree extraction
-            min_size: Minimum subtree size to record
-            max_size: Maximum subtree size to record
+        Populate pattern memory on GPU.
+        Uses operators._get_subtree_ranges to identify valid structures.
         """
-        pop_cpu = population.cpu().numpy()
-        fit_cpu = fitness.cpu().numpy()
+        # 1. Filter Good Candidates (GPU)
+        good_mask = fitness < self.fitness_threshold
+        if not good_mask.any(): return
         
-        # Only look at individuals with good fitness
-        good_mask = fit_cpu < self.fitness_threshold
-        good_indices = np.where(good_mask)[0]
+        # Limit processing to a batch to avoid stalling GPU
+        indices = torch.nonzero(good_mask).squeeze(1)
+        if indices.numel() > 50:
+             # Random sub-sample
+             perm = torch.randperm(indices.numel(), device=self.device)
+             indices = indices[perm[:50]]
+             
+        good_pop = population[indices] # [K, L]
+        good_fit = fitness[indices]
         
-        for idx in good_indices[:50]:  # Limit to prevent slowdown
-            rpn = pop_cpu[idx]
-            fit = fit_cpu[idx]
-            
-            # Find all subtrees
-            subtrees = self._extract_subtrees(rpn, grammar, min_size, max_size)
-            
-            for subtree in subtrees:
-                self._record_pattern(subtree, fit)
-    
-    def _extract_subtrees(self, rpn: np.ndarray, grammar, min_size: int, max_size: int) -> List[List[int]]:
-        """
-        Extract all valid subtrees from an RPN expression.
-        """
-        subtrees = []
+        # 2. Get Subtree Ranges (GPU)
+        # starts_mat: [K, L]. Value j at [i, k] means subtree ending at k starts at j.
+        # -1 if invalid.
+        starts_mat = self.operators._get_subtree_ranges(good_pop)
         
-        # Find non-pad length
-        non_pad = rpn[rpn != 0]
-        if len(non_pad) < min_size:
-            return subtrees
+        # 3. Filter by Size (GPU)
+        B, L = good_pop.shape
+        grid = torch.arange(L, device=self.device).unsqueeze(0).expand(B, L)
         
-        # Try each position as potential subtree root
-        for root_idx in range(len(non_pad)):
-            span = grammar.get_subtree_span(non_pad.tolist(), root_idx)
-            if span[0] == -1:
-                continue
-            
-            start, end = span
-            size = end - start + 1
-            
-            if min_size <= size <= max_size:
-                subtree = non_pad[start:end+1].tolist()
-                subtrees.append(subtree)
+        # Size = End - Start + 1
+        # End is 'grid' (column index)
+        sizes = grid - starts_mat + 1
         
-        return subtrees
+        valid_size_mask = (starts_mat != -1) & (sizes >= min_size) & (sizes <= max_size)
+        
+        if not valid_size_mask.any(): return
+        
+        # 4. Extract and Record (CPU loop only for insertion into Dict, but data stays on Tensor until list conversion)
+        #   Ideally we would stay on GPU but Dictionary requires hashing which is easier on CPU for sparse patterns.
+        #   However, we extracted 'indices' of valid subtrees. 
+        #   Let's process the valid ones.
+        
+        # Get coordinates of valid subtrees
+        coords = torch.nonzero(valid_size_mask) # [N_patterns, 2] (row, col_end)
+        
+        # Limit total patterns to extract per step
+        if coords.shape[0] > 100:
+             coords = coords[:100]
+             
+        # Pull to CPU only the necessary loose/small lists for storage
+        # This is strictly cheaper than moving whole Population
+        
+        for k in range(coords.shape[0]):
+             row_idx = coords[k, 0].item()
+             end_idx = coords[k, 1].item()
+             
+             start_idx = starts_mat[row_idx, end_idx].item()
+             
+             # Extract pattern
+             # We need to act on the specific individual 'good_pop[row_idx]'
+             pattern_tensor = good_pop[row_idx, start_idx : end_idx+1]
+             
+             # Convert to list for hashing
+             pattern_list = pattern_tensor.tolist()
+             fit_val = good_fit[row_idx].item()
+             
+             self._record_pattern(pattern_list, fit_val)
+
+    # _extract_subtrees REMOVED as it is replaced by GPU logic above.
+
     
     def _record_pattern(self, pattern: List[int], fitness: float):
         """

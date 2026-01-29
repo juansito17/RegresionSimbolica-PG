@@ -10,7 +10,7 @@ class GpuGlobals:
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
     USE_FLOAT32 = False # Optimización: Float32 (10x velocidad)
-    USE_LOG_TRANSFORMATION = False # Default False for general usage (User can enable it)
+    USE_LOG_TRANSFORMATION = True # Default False for general usage (User can enable it)
 
     # DATASET CENTRALIZADO (N-Reinas)
     # x0 = n
@@ -18,9 +18,13 @@ class GpuGlobals:
     # x2 = n % 2
     # Targets: OEIS A000170
     _PROBLEM_Y_RAW = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,24233937684440,227514171973736,2207893435808352], dtype=np.float64)
+    # _PROBLEM_Y_RAW = np.array([1, 2, 6, 24, 120, 144, 28, 1408, 2025, 86400, 1782, 1092096, 4186, 31360, 241920000, 23953408, 140692, 114108912, 1092690], dtype=np.float64)
     
-    PROBLEM_X_START = 1
-    PROBLEM_X_END = 25 # Inclusive
+    # Coefficients optimized for n=8..27 (User Note).
+    # We must skip N < 8 because the (8/n)^26 term explodes.
+    PROBLEM_X_START = 8
+    # PROBLEM_X_END = 25 # Inclusive
+    PROBLEM_X_END = 24 # Inclusive
     
     DATA_FILTER_TYPE = "ALL" # Options: "ALL", "ODD", "EVEN"
 
@@ -35,7 +39,8 @@ class GpuGlobals:
         _mask = np.ones(len(_indices_raw), dtype=bool)
 
     PROBLEM_X_FILTERED = _indices_raw[_mask]
-    PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[_mask]
+    # Slice Y to match the X range (N=1 at index 0)
+    PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[(PROBLEM_X_START - 1) : PROBLEM_X_END][_mask]
     
     # Legacy/Direct Access Alias (pointing to FILTERED data to ensure usage)
     PROBLEM_Y_FULL = PROBLEM_Y_FILTERED 
@@ -58,14 +63,37 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 100_000 
+    POP_SIZE = 1_000_000
     GENERATIONS = 500  
     NUM_ISLANDS = 40 # 4M / 40 = 100k per island
     MIN_POP_PER_ISLAND = 50
 
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = False
-    INITIAL_FORMULA_STRING = "((lgamma((x0 + 2)) - cos((x1 / ((-0.15604612 * (x0 - (sqrt((x0 - sin(sin(3)))) ^ x2))) ^ x0)))) - x0)"
+    USE_INITIAL_FORMULA = True
+
+    # Helper variables for formatting the complex formula
+    # x0 = n, x2 = n % 2
+    _n = "x0" 
+    _tau = "2.5424989444851286"
+    _p = "(1 - 2 * x2)"          # Equivalent to (-1)^n
+    _q = "((-1) ^ floor(x0 / 2))" # Equivalent to (-1)^(n//2)
+    _pq = f"({_p} * {_q})"
+
+    # Simkin-Kotesovec asymptotic expansion with parity/phase corrections
+    # ADAPTED FOR LOG-SPACE: log(Count) = lgamma(n+1) - n*log(tau) + log(ratio)
+    # This matches USE_LOG_TRANSFORMATION = True
+    
+    _ratio_expr = (
+        f"(1.811024785 + "
+        f"(3.161 - 1.44 * {_p} - 1.131 * {_q} + 1.501 * {_pq} + "
+        f"(8.57 + 21.77 * {_p} + 25.69 * {_q} - 20.97 * {_pq} + "
+        f"(12.7 + 2.1 * {_p}) / {_n}) / {_n}) / {_n} + "
+        f"(20.45 - 19.12 * {_p}) * ((8.0 / {_n}) ^ 26))"
+    )
+
+    INITIAL_FORMULA_STRING = (
+        f"(lgamma({_n} + 1) - ({_n} * log({_tau})) + log({_ratio_expr}))"
+    )
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -93,17 +121,17 @@ class GpuGlobals:
     USE_OP_MULT     = True
     USE_OP_DIV      = True
     USE_OP_POW      = True
-    USE_OP_MOD      = False
-    USE_OP_SIN      = False  # ENABLED for Trig Benchmark
-    USE_OP_COS      = False  # ENABLED for Trig Benchmark
+    USE_OP_MOD      = True
+    USE_OP_SIN      = True
+    USE_OP_COS      = True
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = True
-    USE_OP_FLOOR    = False
+    USE_OP_FLOOR    = True
     USE_OP_GAMMA    = True
-    USE_OP_ASIN     = False
-    USE_OP_ACOS     = False
-    USE_OP_ATAN     = False
+    USE_OP_ASIN     = True
+    USE_OP_ACOS     = True
+    USE_OP_ATAN     = True
 
     # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
     OPERATOR_WEIGHTS = [
@@ -182,11 +210,11 @@ class GpuGlobals:
     USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
     USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
     
-    USE_SNIPER = True             # Enable Linear/Geometric/Log-Linear detection
-    USE_RESIDUAL_BOOSTING = True  # Enable finding f(x)+g(x) using Sniper on residuals
+    USE_SNIPER = False             # Enable Linear/Geometric/Log-Linear detection
+    USE_RESIDUAL_BOOSTING = False  # Enable finding f(x)+g(x) using Sniper on residuals
     USE_NEURAL_FLASH = False      # Enable Neural Inspiration (Beam Search injection)
     USE_ALPHA_MCTS = False        # Enable Alpha Mode (MCTS Refinement)
-    USE_PATTERN_MEMORY = True     # Enable Lamarckian Subtree Learning
+    USE_PATTERN_MEMORY = True     # Optimized: GPU-Based Pattern Extraction
 
     # ----------------------------------------
     # Otros Parámetros
