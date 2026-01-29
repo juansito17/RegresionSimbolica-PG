@@ -127,44 +127,34 @@ class GPUSimplifier:
             return population, constants, 0
         
         if top_k is None:
-            top_k = max(1, int(population.shape[0] * 0.1))
+            top_k = min(5, int(population.shape[0] * 0.01))  # Limit to 5 for CPU relief
             
         # Initialize Cache and Weights if needed
         if not hasattr(self, 'cache'):
-            self.cache = {} # Hash -> (RPN List, Const List)
-            # Use a limited size cache to prevent OOM over long runs?
-            # 100k items is fine.
+            self.cache = {}  # Hash -> (RPN List, Const List)
             
         if not hasattr(self, 'hash_weights'):
-             # Create weights for hashing (max_len)
-             L = population.shape[1]
-             self.hash_weights = torch.randint(-9223372036854775807, 9223372036854775807, (L,), device=self.device, dtype=torch.long)
+            L = population.shape[1]
+            self.hash_weights = torch.randint(-2**30, 2**30, (L,), device=self.device, dtype=torch.long)
 
-        # Compute Hashes for Top K
-        # Slice inputs
-        pop_slice = population[:top_k] # Assume sorted by fitness? 
-        # engine.py sorts by valid/fitness usually.
-        # But here we just take first k rows.
+        # Compute Hashes for Top K (GPU only)
+        pop_slice = population[:top_k]
         
-        # Ensure weights match L
         curr_L = population.shape[1]
         if self.hash_weights.shape[0] < curr_L:
-             self.hash_weights = torch.randint(-9223372036854775807, 9223372036854775807, (curr_L,), device=self.device, dtype=torch.long)
+            self.hash_weights = torch.randint(-2**30, 2**30, (curr_L,), device=self.device, dtype=torch.long)
         weights = self.hash_weights[:curr_L]
         
-        hashes = (pop_slice * weights).sum(dim=1) # [K]
-        hashes_cpu = hashes.cpu().numpy()
+        hashes = (pop_slice * weights).sum(dim=1)  # [K] - stays on GPU
         
         n_simplified = 0
         pop_out = population.clone()
         const_out = constants.clone()
         
-        # Indices to process
-        process_indices = []
-        process_hashes = []
-        
+        # Process only cache hits on GPU, defer SymPy to rare cases
+        # Convert hashes to Python only for cache lookup (minimal CPU touch)
         for i in range(min(top_k, population.shape[0])):
-            h = hashes_cpu[i]
+            h = hashes[i].item()  # Single scalar transfer, not full array
             if h in self.cache:
                 # Cache Hit
                 cached_rpn, cached_consts = self.cache[h]

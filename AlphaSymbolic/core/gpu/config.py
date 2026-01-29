@@ -70,7 +70,7 @@ class GpuGlobals:
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = True
-    INITIAL_FORMULA_STRING = "(cos(sqrt((log(x0) + abs(((((x1 + x0) / (lgamma(x0) - x0)) - x0) - abs(1.89429423)))))) + (lgamma((-0.04108304 + x0)) + (5 - x0)))"
+    INITIAL_FORMULA_STRING = "(cos(sqrt((log(x0) + abs(((((x0 + (asin(x2) + 3)) / (lgamma(x0) - x0)) - x0) - 2.45382))))) + (lgamma((-0.05603941 + x0)) + (5 - x0)))"
     # INITIAL_FORMULA_STRING = "(lgamma(x0) + 5)"
 
     # ----------------------------------------
@@ -201,6 +201,6 @@ class GpuGlobals:
     FORCE_INTEGER_CONSTANTS = False
     
     # Control de Duplicados
-    PREVENT_DUPLICATES = False
+    PREVENT_DUPLICATES = True
     DUPLICATE_RETRIES = 10
     INF = float('inf')

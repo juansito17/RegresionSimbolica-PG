@@ -16,6 +16,7 @@ from .evaluation import GPUEvaluator
 from .operators import GPUOperators
 from .optimization import GPUOptimizer
 from .simplification import GPUSimplifier
+from .gpu_simplifier import GPUSymbolicSimplifier
 
 class TensorGeneticEngine:
     def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None, model=None):
@@ -55,6 +56,7 @@ class TensorGeneticEngine:
         self.operators = GPUOperators(self.grammar, self.device, self.pop_size, self.max_len, self.num_variables, dtype=self.dtype)
         self.optimizer = GPUOptimizer(self.evaluator, self.operators, self.device)
         self.simplifier = GPUSimplifier(self.grammar, self.device, self.max_constants)
+        self.gpu_simplifier = GPUSymbolicSimplifier(self.grammar, self.device, dtype=self.dtype)
         
         # --- Advanced Features ---
         self.sniper = Sniper(self.device)

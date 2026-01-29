@@ -47,25 +47,148 @@ class GPUOperators:
     def generate_random_population(self, size: int) -> torch.Tensor:
         """
         Helper to generate random RPN population of given size.
+        Uses GPU-native generation for speed.
+        """
+        # Use GPU native generator (fast path)
+        return self.generate_random_population_gpu(size)
+    
+    def generate_random_population_cpu(self, size: int) -> torch.Tensor:
+        """
+        CPU-based generation using ExpressionTree (slow, kept for reference).
         """
         formulas = []
-        # Generate full population (slower but ensures diversity)
         for _ in range(size):
             try:
-                # Generate random valid tree
                 tree = ExpressionTree.generate_random(max_depth=GpuGlobals.MAX_TREE_DEPTH_INITIAL, num_variables=self.num_variables)
                 formulas.append(tree.get_infix())
             except:
                 formulas.append("x0")
-        
-        # Helper to convert infix strings to RPN tensor
-        # Since we might not have the converter here, we can rely on a utility or pass it.
-        # But for valid RPN generation, using the Parser is best.
-        # We can reimplement simple infix_to_rpn or rely on one passed in.
-        # Or better: ExpressionTree has post-order traversal logic?
-        # Actually `engine.py` had `infix_to_rpn` using `ExpressionTree`.
-        # Let's include that logic here as a privatish method or utility.
         return self._infix_list_to_rpn(formulas)
+
+    def generate_random_population_gpu(self, size: int) -> torch.Tensor:
+        """
+        GPU-native random RPN generation. No CPU bottleneck.
+        
+        Algorithm:
+        1. Start with stack=0. We need stack=1 at the end.
+        2. For each position, sample a token that keeps the stack valid.
+        3. Terminals add +1 to stack, arity-1 ops add 0, arity-2 ops add -1.
+        4. We need to ensure we can always reach stack=1 at the end.
+        """
+        max_len = self.max_len
+        device = self.device
+        
+        # Output tensor
+        population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+        
+        # Stack balance tracker: starts at 0, needs to end at 1
+        stack = torch.zeros(size, dtype=torch.long, device=device)
+        
+        # Token pools with their stack delta (terminals=+1, arity1=0, arity2=-1)
+        # Combine all valid tokens into a single pool with weights
+        n_terminals = self.terminal_ids.shape[0]
+        n_arity1 = self.arity_1_ids.shape[0]
+        n_arity2 = self.arity_2_ids.shape[0]
+        
+        # Create combined token pool
+        all_tokens = torch.cat([self.terminal_ids, self.arity_1_ids, self.arity_2_ids])
+        n_total = all_tokens.shape[0]
+        
+        # Stack delta for each token type
+        # terminals: +1, arity1: 0 (pops 1, pushes 1), arity2: -1 (pops 2, pushes 1)
+        token_deltas = torch.cat([
+            torch.ones(n_terminals, dtype=torch.long, device=device),   # terminals: +1
+            torch.zeros(n_arity1, dtype=torch.long, device=device),     # arity1: 0
+            -torch.ones(n_arity2, dtype=torch.long, device=device)      # arity2: -1
+        ])
+        
+        # For each position, we need to sample valid tokens
+        for j in range(max_len):
+            remaining = max_len - j - 1  # positions left after this one
+            
+            # For each individual, determine which tokens are valid
+            # Rule: After sampling, the new stack must be >= 0
+            #       AND we must be able to reach stack=1 with remaining positions
+            
+            # Stack after sampling token k: stack + delta[k]
+            # With 'remaining' positions, we can add at most +remaining to stack (all terminals)
+            # and at least -remaining (not realistic, but lower bound)
+            
+            # To reach stack=1:
+            # new_stack + (adjustment from remaining) = 1
+            # We need: new_stack >= 0 (valid RPN)
+            # We need: new_stack <= 1 + remaining (can reduce with operators)
+            # We need: new_stack >= 1 - remaining (can increase with terminals)
+            
+            # Create validity mask for each (individual, token) pair
+            # new_stack = stack.unsqueeze(1) + token_deltas.unsqueeze(0)  # [size, n_total]
+            new_stack = stack.unsqueeze(1) + token_deltas.unsqueeze(0)
+            
+            # Constraints
+            valid_mask = (new_stack >= 0) & \
+                         (new_stack <= 1 + remaining) & \
+                         (new_stack >= 1 - remaining)
+            
+            # At position 0, stack=0, so we MUST pick a terminal (delta=+1)
+            # At final position (remaining=0), we MUST have new_stack=1
+            if remaining == 0:
+                valid_mask = valid_mask & (new_stack == 1)
+            
+            # Convert mask to sampling weights (0 for invalid, 1 for valid)
+            weights = valid_mask.float()
+            
+            # Ensure at least one valid option per row
+            # If no valid tokens, fall back to first terminal
+            row_sums = weights.sum(dim=1, keepdim=True)
+            fallback_mask = (row_sums == 0)
+            if fallback_mask.any():
+                weights[:, 0] = weights[:, 0] + fallback_mask.squeeze().float()
+            
+            # Normalize weights to probabilities
+            probs = weights / weights.sum(dim=1, keepdim=True).clamp(min=1e-8)
+            
+            # Sample token index for each individual
+            sampled_idx = torch.multinomial(probs, num_samples=1).squeeze(1)
+            
+            # Get actual token IDs and their deltas
+            sampled_tokens = all_tokens[sampled_idx]
+            sampled_deltas = token_deltas[sampled_idx]
+            
+            # Update population and stack
+            population[:, j] = sampled_tokens
+            stack = stack + sampled_deltas
+        
+        # Final validation: stack should be exactly 1
+        valid = (stack == 1)
+        n_invalid = (~valid).sum().item()
+        
+        if n_invalid > 0:
+            # Replace invalid with simple "x0" formula
+            x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
+            population[~valid, 0] = x0_id
+            population[~valid, 1:] = PAD_ID
+        
+        return population
+
+    def _validate_rpn_batch(self, population: torch.Tensor) -> torch.Tensor:
+        """
+        Validate that each RPN formula has a final stack balance of exactly 1.
+        Returns a boolean mask of valid formulas.
+        """
+        B, L = population.shape
+        stack = torch.zeros(B, dtype=torch.long, device=self.device)
+        
+        for j in range(L):
+            tokens = population[:, j]
+            # Get arity for each token (0 for PAD)
+            arity = self.token_arity[tokens.clamp(0, self.token_arity.shape[0] - 1)]
+            # Stack delta: -(arity) + 1 for each token (pops arity, pushes 1)
+            # But PAD should have delta 0
+            is_pad = (tokens == PAD_ID)
+            delta = torch.where(is_pad, torch.zeros_like(arity), 1 - arity)
+            stack = stack + delta
+        
+        return (stack == 1)
 
     def _infix_list_to_rpn(self, formulas: list) -> torch.Tensor:
         batch_rpn = []
