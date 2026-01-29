@@ -7,7 +7,7 @@ from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 
 class GPUEvaluator:
-    def __init__(self, grammar: GPUGrammar, device, max_stack=10, dtype=torch.float64):
+    def __init__(self, grammar: GPUGrammar, device, max_stack=64, dtype=torch.float64):
         self.grammar = grammar
         self.device = device
         self.MAX_STACK = max_stack
@@ -61,7 +61,7 @@ class GPUEvaluator:
                 pass
             elif x.shape[0] == y_target.shape[0]:
                 # Matches [Samples, Vars] -> Transpose
-                x = x.T
+                x = x.T.contiguous()
         
         N_vars, N_samples = x.shape
         
@@ -168,7 +168,7 @@ class GPUEvaluator:
                 pass
             elif x.shape[0] == n_samples:
                 # [Samples, Vars] - Transpose to [Vars, Samples]
-                x = x.T
+                x = x.T.contiguous()
         
         N_samples = x.shape[1]
         
@@ -222,7 +222,7 @@ class GPUEvaluator:
                 pass
             elif x.shape[0] == n_samples:
                 # [Samples, Vars] - Transpose to [Vars, Samples]
-                x = x.T
+                x = x.T.contiguous()
         
         D = x.shape[1] # Samples
         

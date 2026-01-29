@@ -125,7 +125,7 @@ if __name__ == "__main__":
     # GpuGlobals.NUM_ISLANDS = 40 <--- REMOVED (Uses config.py value)
     
     GpuGlobals.PROGRESS_REPORT_INTERVAL = 100
-    GpuGlobals.USE_PARETO_SELECTION = False  # Disable NSGA-II for speed test
+    # GpuGlobals.USE_PARETO_SELECTION = False  # Removed override to respect config.py
     
     # Engine will use Globals defaults for pop_size and n_islands
     engine = TensorGeneticEngine(num_variables=3) # 3 variables as per new X_VALUES

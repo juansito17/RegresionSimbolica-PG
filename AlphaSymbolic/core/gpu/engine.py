@@ -190,6 +190,13 @@ class TensorGeneticEngine:
                 const_values = []
                 
                 for t in rpn_tokens:
+                     # Alias Map for GPU Grammar
+                     if t == 'asin': t = 'S'
+                     elif t == 'acos': t = 'acos'
+                     elif t == 'atan': t = 'T'
+                     elif t == 'lgamma': t = 'g'
+                     elif t == 'gamma': t = 'g' # Assuming gamma mapped to g
+                     
                      if t in self.grammar.terminals and t not in ['C', '1', '2', '3', '5'] and not t.startswith('x'):
                          clean_tokens.append(t)
                      elif (t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit())):
@@ -614,6 +621,8 @@ class TensorGeneticEngine:
                 population[:n] = seed_pop[:n]
                 pop_constants[:n] = seed_consts[:n].to(self.dtype)
                 
+                # Seed injected successfully
+                
         # Patterns
         pats = self.detect_patterns(y_t.cpu().numpy().flatten())
         if pats:
@@ -700,7 +709,7 @@ class TensorGeneticEngine:
                 
             # --- Pattern Memory Recording ---
             # Record successful subtrees
-            if GpuGlobals.USE_PATTERN_MEMORY and generations % 5 == 0:  # Hardcoded 5 for frequent recording
+            if GpuGlobals.USE_PATTERN_MEMORY and generations % 20 == 0:  # Reduced frequency for CPU relief
                  self.pattern_memory.record_subtrees(
                      population, fitness_rmse, self.grammar, 
                      min_size=3, max_size=12

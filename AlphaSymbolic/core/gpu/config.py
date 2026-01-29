@@ -63,37 +63,15 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 1_000_000
+    POP_SIZE = 500_000
     GENERATIONS = 500  
-    NUM_ISLANDS = 40 # 4M / 40 = 100k per island
+    NUM_ISLANDS = 20 # 500k / 25 = 20 islands
     MIN_POP_PER_ISLAND = 50
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = True
-
-    # Helper variables for formatting the complex formula
-    # x0 = n, x2 = n % 2
-    _n = "x0" 
-    _tau = "2.5424989444851286"
-    _p = "(1 - 2 * x2)"          # Equivalent to (-1)^n
-    _q = "((-1) ^ floor(x0 / 2))" # Equivalent to (-1)^(n//2)
-    _pq = f"({_p} * {_q})"
-
-    # Simkin-Kotesovec asymptotic expansion with parity/phase corrections
-    # ADAPTED FOR LOG-SPACE: log(Count) = lgamma(n+1) - n*log(tau) + log(ratio)
-    # This matches USE_LOG_TRANSFORMATION = True
-    
-    _ratio_expr = (
-        f"(1.811024785 + "
-        f"(3.161 - 1.44 * {_p} - 1.131 * {_q} + 1.501 * {_pq} + "
-        f"(8.57 + 21.77 * {_p} + 25.69 * {_q} - 20.97 * {_pq} + "
-        f"(12.7 + 2.1 * {_p}) / {_n}) / {_n}) / {_n} + "
-        f"(20.45 - 19.12 * {_p}) * ((8.0 / {_n}) ^ 26))"
-    )
-
-    INITIAL_FORMULA_STRING = (
-        f"(lgamma({_n} + 1) - ({_n} * log({_tau})) + log({_ratio_expr}))"
-    )
+    INITIAL_FORMULA_STRING = "(cos(sqrt((log(x0) + abs(((((x1 + x0) / (lgamma(x0) - x0)) - x0) - abs(1.89429423)))))) + (lgamma((-0.04108304 + x0)) + (5 - x0)))"
+    # INITIAL_FORMULA_STRING = "(lgamma(x0) + 5)"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -223,6 +201,6 @@ class GpuGlobals:
     FORCE_INTEGER_CONSTANTS = False
     
     # Control de Duplicados
-    PREVENT_DUPLICATES = True
+    PREVENT_DUPLICATES = False
     DUPLICATE_RETRIES = 10
     INF = float('inf')
