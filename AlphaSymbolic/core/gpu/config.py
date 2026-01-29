@@ -71,8 +71,8 @@ class GpuGlobals:
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = True
     #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
-    # Dirty Gen 100 seed (Highly optimized structure)
-    INITIAL_FORMULA_STRING = "((lgamma(x0) + sqrt((x0 + (cos(gamma((7.00021942 - x0))) % (5 + log(asin((cos(gamma((pi - x0))) % lgamma(x0))))))))) - (x0 - 0.45874482))"
+    # Evolved Gen 16 seed (Verified < 1% error)
+    INITIAL_FORMULA_STRING = "((lgamma(x0) + sqrt(((x0 + (cos(((x0 + 5) + x1)) / x0)) + (cos(gamma((7.00021942 - x0))) % (5 + log(log(5))))))) - (x0 - 0.45850736))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -189,14 +189,15 @@ class GpuGlobals:
     
     USE_SIMPLIFICATION = True
     K_SIMPLIFY = 20                # Number of top formulas to simplify per island
+    SIMPLIFICATION_INTERVAL = 20    # Simplify every N generations
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
     USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems
     USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
     USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
     
-    USE_SNIPER = False             # Enable Linear/Geometric/Log-Linear detection
-    USE_RESIDUAL_BOOSTING = False  # Enable finding f(x)+g(x) using Sniper on residuals
+    USE_SNIPER = True             # Enable Linear/Geometric/Log-Linear detection
+    USE_RESIDUAL_BOOSTING = True  # Enable finding f(x)+g(x) using Sniper on residuals
     USE_NEURAL_FLASH = False      # Enable Neural Inspiration (Beam Search injection)
     USE_ALPHA_MCTS = False        # Enable Alpha Mode (MCTS Refinement)
     USE_PATTERN_MEMORY = True     # Optimized: GPU-Based Pattern Extraction

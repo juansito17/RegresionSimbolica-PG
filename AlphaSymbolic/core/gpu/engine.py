@@ -988,7 +988,7 @@ class TensorGeneticEngine:
             
             # --- SIMPLIFICATION ---
             # --- SIMPLIFICATION ---
-            if GpuGlobals.USE_SIMPLIFICATION and generations % 5 == 0:
+            if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
                  # Simplify only the BEST formulas in each island to save time
                  # Pattern: Identify top formulas per island
                  k_simplify = GpuGlobals.K_SIMPLIFY
