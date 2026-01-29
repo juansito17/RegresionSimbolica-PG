@@ -128,7 +128,8 @@ if __name__ == "__main__":
     # GpuGlobals.USE_PARETO_SELECTION = False  # Removed override to respect config.py
     
     # Engine will use Globals defaults for pop_size and n_islands
-    engine = TensorGeneticEngine(num_variables=3) # 3 variables as per new X_VALUES
+    # INCREASED max_constants to 10 to support complex seeds with many literals
+    engine = TensorGeneticEngine(num_variables=3, max_constants=GpuGlobals.MAX_CONSTANTS)
     
     start_time_global = time.time()
     

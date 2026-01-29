@@ -29,6 +29,7 @@ class CudaRPNVM:
         self.id_pi = g.get('pi', -100)
         self.id_e = g.get('e', -100)
         
+        # Operators (using standard names from grammar.py)
         self.op_add = g.get('+', -100)
         self.op_sub = g.get('-', -100)
         self.op_mul = g.get('*', -100)
@@ -39,23 +40,29 @@ class CudaRPNVM:
         self.op_sin = g.get('sin', -100)
         self.op_cos = g.get('cos', -100)
         self.op_tan = g.get('tan', -100)
-        self.op_asin = g.get('S', -100)
+        self.op_asin = g.get('asin', -100)
         self.op_acos = g.get('acos', -100)
-        self.op_atan = g.get('T', -100)
-        self.op_exp = g.get('exp', -100) # Ensure 'exp' vs 'e' usage
+        self.op_atan = g.get('atan', -100)
+        self.op_exp = g.get('exp', -100)
         self.op_log = g.get('log', -100)
         self.op_sqrt = g.get('sqrt', -100)
         self.op_abs = g.get('abs', -100)
         self.op_neg = g.get('neg', -100)
         
-        self.op_fact = g.get('!', -100)
-        self.op_floor = g.get('_', -100)
-        self.op_gamma = g.get('g', -100)
+        self.op_fact = g.get('fact', -100)
+        self.op_floor = g.get('floor', -100)
+        self.op_ceil = g.get('ceil', -100)
+        self.op_sign = g.get('sign', -100)
+        self.op_gamma = g.get('gamma', -100)
+        self.op_lgamma = g.get('lgamma', -100)
         
+        # Consants
+        self.id_0 = g.get('0', -999)
         self.id_1 = g.get('1', -999)
         self.id_2 = g.get('2', -999)
         self.id_3 = g.get('3', -999)
         self.id_5 = g.get('5', -999)
+        self.id_10 = g.get('10', -999)
 
         # Variables
         first_var = self.grammar.active_variables[0]
@@ -106,16 +113,19 @@ class CudaRPNVM:
         
         # Call Kernel
         rpn_cuda.eval_rpn(
-            population, x, constants,
+            population.contiguous(), 
+            x.contiguous(), 
+            constants.contiguous() if constants is not None else torch.empty((B, 0), dtype=dtype, device=self.device),
             out_preds, out_sp, out_error,
             self.PAD_ID, self.id_x_start,
             self.id_C, self.id_pi, self.id_e,
-            self.id_1, self.id_2, self.id_3, self.id_5,
+            self.id_0, self.id_1, self.id_2, self.id_3, self.id_5, self.id_10,
             self.op_add, self.op_sub, self.op_mul, self.op_div, self.op_pow, self.op_mod,
             self.op_sin, self.op_cos, self.op_tan,
             self.op_log, self.op_exp,
             self.op_sqrt, self.op_abs, self.op_neg,
-            self.op_fact, self.op_floor, self.op_gamma,
+            self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
+            self.op_gamma, self.op_lgamma,
             self.op_asin, self.op_acos, self.op_atan,
             3.14159265359, 2.718281828
         )

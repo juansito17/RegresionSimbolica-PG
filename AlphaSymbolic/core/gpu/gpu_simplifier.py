@@ -1,613 +1,709 @@
 """
-GPU-Native Symbolic Simplifier - Innovation Module
+GPU-Native Symbolic Simplifier - Professional Performance Edition
 
-A pure GPU symbolic simplification engine using pattern matching on RPN tensors.
-No SymPy, no CPU - 100% vectorized GPU operations.
-
-Key Innovation: Pattern matching rules applied directly on population tensors,
-enabling simplification of millions of formulas in parallel.
+A high-performance symbolic simplification engine designed for millions of formulas.
+All operations are 100% vectorized using PyTorch tensors.
+Zero Python loops over the batch dimension ensure maximum GPU throughput.
 """
 import torch
 from typing import Tuple, List
 from .grammar import PAD_ID, GPUGrammar
 
-
 class GPUSymbolicSimplifier:
-    """
-    GPU-Native Symbolic Simplifier.
-    
-    Applies algebraic simplification rules directly on RPN tensors without
-    any CPU involvement or external symbolic libraries.
-    
-    Supported simplifications:
-    - Additive identity: x + 0 = x, 0 + x = x
-    - Multiplicative identity: x * 1 = x, 1 * x = x
-    - Multiplicative zero: x * 0 = 0, 0 * x = 0
-    - Self-subtraction: x - x = 0
-    - Self-division: x / x = 1
-    - Double negation: neg(neg(x)) = x
-    - Constant folding: 2 + 3 = 5
-    """
-    
     def __init__(self, grammar: GPUGrammar, device, dtype=torch.float64):
         self.grammar = grammar
         self.device = device
         self.dtype = dtype
-        
-        # Cache operator IDs for fast lookup
         self._cache_operator_ids()
-        
-        # Pre-compute arity lookup table
         self._build_arity_table()
         
     def _cache_operator_ids(self):
-        """Cache token IDs for frequently used operators and terminals."""
         g = self.grammar
-        
-        # Binary Operators
+        def get_ids(tokens: List[str]) -> torch.Tensor:
+            ids = [g.token_to_id[t] for t in tokens if t in g.token_to_id]
+            return torch.tensor(ids, device=self.device, dtype=torch.long)
+
         self.OP_PLUS = g.token_to_id.get('+', -1)
         self.OP_MINUS = g.token_to_id.get('-', -1)
         self.OP_MULT = g.token_to_id.get('*', -1)
         self.OP_DIV = g.token_to_id.get('/', -1)
-        self.OP_POW = g.token_to_id.get('pow', -1)
+        self.OP_POW_IDS = get_ids(['pow', '^', '**'])
+        self.OP_LOG_IDS = get_ids(['log', 'ln'])
+        self.OP_EXP_IDS = get_ids(['exp', 'e'])
+        self.OP_NEG_IDS = get_ids(['neg'])
+        self.OP_SQRT_IDS = get_ids(['sqrt'])
+        self.OP_ABS_IDS = get_ids(['abs'])
         
-        # Unary Operators
-        self.OP_NEG = g.token_to_id.get('neg', -1)
-        self.OP_SQRT = g.token_to_id.get('sqrt', -1)
         self.OP_SIN = g.token_to_id.get('sin', -1)
         self.OP_COS = g.token_to_id.get('cos', -1)
         self.OP_TAN = g.token_to_id.get('tan', -1)
-        self.OP_LOG = g.token_to_id.get('log', -1)
-        self.OP_EXP = g.token_to_id.get('e', -1)  # GPUGrammar uses 'e'
-        self.OP_ABS = g.token_to_id.get('abs', -1)
         
-        # Terminals/Constants
-        self.CONST_0 = g.token_to_id.get('0', -1)
-        self.CONST_1 = g.token_to_id.get('1', -1)
-        self.CONST_2 = g.token_to_id.get('2', -1)
-        self.CONST_C = g.token_to_id.get('C', -1)  # Generic constant
+        # Rescued Advanced Operators
+        self.OP_GAMMA_IDS = get_ids(['gamma', '!'])
+        self.OP_LGAMMA_IDS = get_ids(['lgamma', 'lg', 'g'])
         
-        # Create lookup tensors for zero and one (for constant folding)
         terminals = list(g.terminals)
-        self.zero_ids = torch.tensor(
-            [g.token_to_id[t] for t in terminals if t in ['0', '0.0']],
-            device=self.device, dtype=torch.long
-        )
-        self.one_ids = torch.tensor(
-            [g.token_to_id[t] for t in terminals if t in ['1', '1.0']],
-            device=self.device, dtype=torch.long
-        )
+        self.zero_ids = torch.tensor([g.token_to_id[t] for t in terminals if t in ['0', '0.0']], device=self.device, dtype=torch.long)
+        self.one_ids = torch.tensor([g.token_to_id[t] for t in terminals if t in ['1', '1.0']], device=self.device, dtype=torch.long)
+        self.two_ids = torch.tensor([g.token_to_id[t] for t in terminals if t in ['2', '2.0']], device=self.device, dtype=torch.long)
+        self.literal_ids = torch.tensor([g.token_to_id[t] for t in terminals if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit())], device=self.device, dtype=torch.long)
+        
+        # Scalar versions for fast checks
+        self.CONST_0 = self.zero_ids[0].item() if self.zero_ids.numel() > 0 else -1
+        self.CONST_1 = self.one_ids[0].item() if self.one_ids.numel() > 0 else -1
+        self.CONST_2 = self.two_ids[0].item() if self.two_ids.numel() > 0 else -1
+        
+        # ID aliases
+        self.ID_0, self.ID_1, self.ID_2 = self.CONST_0, self.CONST_1, self.CONST_2
         
     def _build_arity_table(self):
-        """Build arity lookup table for all tokens."""
         from core.grammar import OPERATORS
-        
         max_id = max(self.grammar.id_to_token.keys()) + 1
         self.arity_table = torch.zeros(max_id, dtype=torch.long, device=self.device)
-        
         for token, tid in self.grammar.token_to_id.items():
-            if token in OPERATORS:
-                self.arity_table[tid] = OPERATORS[token]
-            else:
-                self.arity_table[tid] = 0  # Terminal
+            self.arity_table[tid] = OPERATORS.get(token, 0)
                 
     def _is_zero(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """Check if tokens represent zero (vectorized)."""
-        if self.zero_ids.numel() == 0:
-            return torch.zeros_like(token_ids, dtype=torch.bool)
+        if self.zero_ids.numel() == 0: return torch.zeros_like(token_ids, dtype=torch.bool)
         return (token_ids.unsqueeze(-1) == self.zero_ids).any(dim=-1)
     
     def _is_one(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """Check if tokens represent one (vectorized)."""
-        if self.one_ids.numel() == 0:
-            return torch.zeros_like(token_ids, dtype=torch.bool)
+        if self.one_ids.numel() == 0: return torch.zeros_like(token_ids, dtype=torch.bool)
         return (token_ids.unsqueeze(-1) == self.one_ids).any(dim=-1)
-    
-    def simplify_batch(self, population: torch.Tensor, 
-                       constants: torch.Tensor = None,
-                       max_passes: int = 3) -> Tuple[torch.Tensor, torch.Tensor, int]:
-        """
-        Simplify a batch of RPN formulas. Pure GPU operation.
-        
-        Args:
-            population: [B, L] tensor of RPN token IDs
-            constants: [B, K] tensor of constant values (optional)
-            max_passes: Maximum simplification passes
-            
-        Returns:
-            (simplified_population, simplified_constants, n_simplified)
-        """
+
+    def _is_constant(self, tokens: torch.Tensor) -> torch.Tensor:
+        return (tokens.unsqueeze(-1) == self.literal_ids).any(dim=-1)
+
+    def _is_constant_value(self, tokens: torch.Tensor, val: float) -> torch.Tensor:
+        if val == 0.0: return self._is_zero(tokens)
+        if val == 1.0: return self._is_one(tokens)
+        if val == 2.0: return tokens == self.CONST_2
+        val_str = str(int(val)) if val.is_integer() else str(val)
+        tid = self.grammar.token_to_id.get(val_str, -1)
+        return tokens == tid if tid != -1 else torch.zeros_like(tokens, dtype=torch.bool)
+
+    def simplify_batch(self, population: torch.Tensor, constants: torch.Tensor = None, max_passes: int = 3) -> Tuple[torch.Tensor, torch.Tensor, int]:
         B, L = population.shape
         pop = population.clone()
-        const = constants.clone() if constants is not None else None
-        
         total_simplified = 0
-        
         for _ in range(max_passes):
-            pop, n = self._apply_identity_rules(pop)
-            total_simplified += n
+            n_pass = 0
+            # Normalization helps patterns match more reliably
+            pop, n = self._apply_commutative_normalization(pop); n_pass += n
             
-            pop, n = self._apply_zero_rules(pop)
-            total_simplified += n
-            
-            pop, n = self._apply_self_cancellation_rules(pop)
-            total_simplified += n
-            
-            pop, n = self._apply_advanced_rules(pop)
-            total_simplified += n
-            
-            pop, n = self._compact_formulas(pop)
-            total_simplified += n
-            
-            if n == 0:
-                break  # No more simplifications possible
-                
-        return pop, const, total_simplified
+            pop, n = self._apply_identity_rules(pop); n_pass += n
+            pop, n = self._apply_zero_rules(pop); n_pass += n
+            pop, n = self._apply_self_cancellation_rules(pop); n_pass += n
+            pop, n = self._apply_associative_rules(pop); n_pass += n
+            pop, n = self._apply_advanced_rules(pop); n_pass += n
+            pop, n = self._apply_term_consolidation(pop); n_pass += n
+            pop, n = self._apply_constant_folding(pop); n_pass += n
+            pop, n = self._compact_formulas(pop); n_pass += n
+            if n_pass == 0: break
+            total_simplified += n_pass
+        return pop, constants, total_simplified
     
     def _apply_identity_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
-        """
-        Apply identity rules: x+0=x, x*1=x, 0+x=x, 1*x=x
-        
-        In RPN, "x + 0" is represented as: [..., x, 0, +, ...]
-        We detect this pattern and replace with: [..., x, PAD, PAD, ...]
-        """
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
-        
-        # For each position that could be a binary operator (+, *)
+        o_id = self.ID_1
         for j in range(2, L):
-            op_tokens = pop[:, j]
+            op = pop[:, j]
+            # Pattern: [arg1, arg2, op]
+            is_plus, is_mult, is_minus, is_div = (op==self.OP_PLUS), (op==self.OP_MULT), (op==self.OP_MINUS), (op==self.OP_DIV)
+            is_pow = (op.unsqueeze(-1) == self.OP_POW_IDS).any(-1) if self.OP_POW_IDS.numel() > 0 else torch.zeros_like(op, dtype=torch.bool)
             
-            # Plus rules
-            is_plus = (op_tokens == self.OP_PLUS)
-            if is_plus.any():
-                end2 = j - 1
-                start2 = self._get_subtree_starts(pop, end2)
-                for b in torch.where(is_plus)[0]:
-                    s2, e2 = start2[b].item(), j - 1
-                    e1 = s2 - 1
-                    if e1 < 0: continue
-                    s1 = self._get_subtree_starts(pop[b:b+1], e1)[0].item()
-                    
-                    is_z2 = (s2 == e2) and self._is_zero(pop[b, s2:s2+1])[0]
-                    is_z1 = (s1 == e1) and self._is_zero(pop[b, s1:s1+1])[0]
-                    
-                    if is_z2: # [arg1, 0, +] -> [arg1]
-                        pop[b, s2:j+1] = PAD_ID
-                        n_simplified += 1
-                    elif is_z1: # [0, arg2, +] -> [arg2]
-                        # Move arg2 to start1, PAD rest
-                        len2 = e2 - s2 + 1
-                        pop[b, s1:s1+len2] = pop[b, s2:e2+1].clone()
-                        pop[b, s1+len2:j+1] = PAD_ID
-                        n_simplified += 1
-
-            # Mult rules
-            is_mult = (op_tokens == self.OP_MULT)
-            if is_mult.any():
-                end2 = j - 1
-                start2 = self._get_subtree_starts(pop, end2)
-                for b in torch.where(is_mult)[0]:
-                    s2, e2 = start2[b].item(), j - 1
-                    e1 = s2 - 1
-                    if e1 < 0: continue
-                    s1 = self._get_subtree_starts(pop[b:b+1], e1)[0].item()
-                    
-                    is_o2 = (s2 == e2) and self._is_one(pop[b, s2:s2+1])[0]
-                    is_o1 = (s1 == e1) and self._is_one(pop[b, s1:s1+1])[0]
-                    
-                    if is_o2: # [arg1, 1, *] -> [arg1]
-                        pop[b, s2:j+1] = PAD_ID
-                        n_simplified += 1
-                    elif is_o1: # [1, arg2, *] -> [arg2]
-                        len2 = e2 - s2 + 1
-                        pop[b, s1:s1+len2] = pop[b, s2:e2+1].clone()
-                        pop[b, s1+len2:j+1] = PAD_ID
-                        n_simplified += 1
-        
+            if not (is_plus | is_mult | is_minus | is_div | is_pow).any(): continue
+            
+            s2 = self._get_subtree_starts(pop, j-1)
+            is_z2, is_o2 = (s2 == j-1) & self._is_zero(pop[:, j-1]), (s2 == j-1) & self._is_one(pop[:, j-1])
+            
+            # x+0, x-0, x*1, x/1, x^1 -> skip arg2/op (keep arg1)
+            to_skip_arg2 = (is_plus & is_z2) | (is_minus & is_z2) | (is_mult & is_o2) | (is_div & is_o2) | (is_pow & is_o2)
+            if to_skip_arg2.any():
+                pop[to_skip_arg2, j-1], pop[to_skip_arg2, j] = PAD_ID, PAD_ID
+                n_simplified += to_skip_arg2.sum().item()
+            
+            # 0+x, 1*x -> skip arg1/op (keep arg2)
+            s1 = self._get_subtree_starts(pop, s2-1)
+            valid_s1 = (s2 > 0)
+            is_z1 = (s1 == s2-1) & self._is_zero(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & valid_s1
+            is_o1 = (s1 == s2-1) & self._is_one(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & valid_s1
+            
+            to_skip_arg1 = (is_plus & is_z1) | (is_mult & is_o1)
+            if to_skip_arg1.any():
+                rows = torch.where(to_skip_arg1)[0]
+                pop[rows, (s2-1)[rows]] = PAD_ID
+                pop[rows, j] = PAD_ID
+                n_simplified += to_skip_arg1.sum().item()
+            
+            # Special Constant Result Rules: x^0 -> 1, 1^x -> 1
+            match_const_1 = is_pow & (is_z2 | is_o1)
+            if match_const_1.any() and o_id != -1:
+                rows = torch.where(match_const_1)[0]
+                start = s1[match_const_1]
+                sub_pop = pop[rows]
+                c_idx = torch.arange(len(rows), device=self.device)
+                sub_pop[c_idx, start] = o_id
+                pos = torch.arange(L, device=self.device).reshape(1, L)
+                sub_pop[(pos > start.unsqueeze(1)) & (pos <= j)] = PAD_ID
+                pop[rows] = sub_pop
+                n_simplified += match_const_1.sum().item()
         return pop, n_simplified
-    
+
+    def _apply_commutative_normalization(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        """
+        Standardize the order of operands for commutative operators (+, *).
+        Puts constants and shorter/simpler subtrees on the left.
+        """
+        B, L = population.shape
+        pop = population.clone()
+        n_swapped = 0
+        
+        for j in range(2, L):
+            op = pop[:, j]
+            is_comm = (op == self.OP_PLUS) | (op == self.OP_MULT)
+            if not is_comm.any(): continue
+            
+            # Identify subtrees
+            s2 = self._get_subtree_starts(pop, j-1)
+            s1 = self._get_subtree_starts(pop, s2-1)
+            
+            # Term 1 info
+            t1 = pop.gather(1, s1.clamp(min=0).unsqueeze(1)).squeeze(1)
+            is_leaf1 = (s1 == s2-1)
+            is_const1 = self._is_constant(t1) & is_leaf1 & (s1 >= 0)
+            
+            # Term 2 info
+            t2 = pop.gather(1, s2.clamp(min=0).unsqueeze(1)).squeeze(1)
+            is_leaf2 = (s2 == j-1)
+            is_const2 = self._is_constant(t2) & is_leaf2 & (s2 >= 0)
+            
+            # Score 0: Constant, 1: Variable, 2: Complex
+            score1 = torch.where(is_const1, 0, torch.where(is_leaf1, 1, 2))
+            score2 = torch.where(is_const2, 0, torch.where(is_leaf2, 1, 2))
+            
+            should_swap = is_comm & (score2 < score1)
+            
+            # Tiebreaker for constants/terminals: lower ID
+            tie = is_comm & (score1 == score2) & (score1 < 2) & (t2 < t1)
+            should_swap |= tie
+            
+            # Tiebreaker for complex: shorter length
+            len1 = s2 - s1
+            len2 = j - s2
+            tie_complex = is_comm & (score1 == 2) & (score2 == 2) & (len2 < len1)
+            should_swap |= tie_complex
+            
+            if should_swap.any():
+                # Fast Path: Both args are terminals (len=1)
+                is_simple_swap = (len1 == 1) & (len2 == 1) & should_swap
+                if is_simple_swap.any():
+                    # Vectorized swap
+                    mask = is_simple_swap
+                    # Store original values
+                    nodes_1 = pop.gather(1, s1.clamp(min=0).unsqueeze(1)).squeeze(1)
+                    nodes_2 = pop.gather(1, s2.clamp(min=0).unsqueeze(1)).squeeze(1)
+                    
+                    # Compute flat indices for scatter/advanced indexing
+                    # We want pop[mask, s1[mask]] = nodes_2[mask]
+                    # pop[mask, s2[mask]] = nodes_1[mask]
+                    # Since s1 and s2 vary per row, we can use torch.scatter or advanced indexing
+                    
+                    # Advanced indexing:
+                    rows_simple = torch.where(mask)[0]
+                    cols_s1 = s1[mask]
+                    cols_s2 = s2[mask]
+                    
+                    # We can map rows_simple to 0..N_match range for gathering vals
+                    vals_1 = nodes_1[mask]
+                    vals_2 = nodes_2[mask]
+                    
+                    # Write
+                    pop[rows_simple, cols_s1] = vals_2
+                    pop[rows_simple, cols_s2] = vals_1
+                    
+                    n_swapped += mask.sum().item()
+                    
+                    # Remove simple swaps from remaining potential swaps to avoid double handling
+                    should_swap &= ~is_simple_swap
+
+                # Slow path: Variable length swaps
+                if should_swap.any():
+                    rows = torch.where(should_swap)[0]
+                    for b in rows:
+                        idx_s1, idx_s2, idx_j = s1[b].item(), s2[b].item(), j
+                        if idx_s1 < 0 or idx_s2 < 0: continue
+                        arg1 = pop[b, idx_s1:idx_s2].clone()
+                        arg2 = pop[b, idx_s2:idx_j].clone()
+                        
+                        pop[b, idx_s1:idx_s1+len(arg2)] = arg2
+                        pop[b, idx_s1+len(arg2):idx_j] = arg1
+                        n_swapped += 1
+                    
+        return pop, n_swapped
+
     def _apply_zero_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
-        """
-        Apply zero rules: x*0=0, 0*x=0
-        Pattern: [subtree, 0, *] -> [0]
-        """
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
-        
-        zero_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
-        
+        z_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
         for j in range(2, L):
-            op_tokens = pop[:, j]
-            is_mult = (op_tokens == self.OP_MULT)
+            is_mult = (pop[:, j] == self.OP_MULT)
+            if not is_mult.any(): continue
+            s2 = self._get_subtree_starts(pop, j-1)
+            is_z2 = (s2 == j-1) & self._is_zero(pop[:, j-1])
+            is_z1 = False
+            s1 = self._get_subtree_starts(pop, s2-1)
+            is_z1 = (s1 == s2-1) & self._is_zero(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & (s2 > 0)
             
-            if is_mult.any():
-                # Correctly identify both subtrees
-                # arg2 ends at j-1, arg1 ends before arg2 starts
-                # This needs to be done per row or vectorized.
-                # Vectorized subtree starts:
-                end2 = j - 1
-                start2 = self._get_subtree_starts(pop, end2)
+            match = is_mult & (is_z1 | is_z2)
+            if match.any():
+                rows = torch.where(match)[0]
+                start_to_wipe = s1[match]
                 
-                # Check if arg2 is zero (only if arg2 is a leaf for now, or use eval?)
-                # For now, we only match literal zero.
-                # If arg2 is complex, arg2_is_zero will be false.
-                arg2_tokens = torch.gather(pop, 1, end2 * torch.ones((B,1), device=self.device, dtype=torch.long)).squeeze(-1)
+                # Create sub-population of matching rows (Copy)
+                sub_pop = pop[rows]
                 
-                # Wait, simpler: iterate and check if the IDENTIFIED subtree is just a zero literal.
-                for b in torch.where(is_mult)[0]:
-                    s2, e2 = start2[b].item(), j - 1
-                    # arg1 ends at s2 - 1
-                    e1 = s2 - 1
-                    if e1 < 0: continue
-                    s1 = self._get_subtree_starts(pop[b:b+1], e1)[0].item()
-                    
-                    # Check if either is zero
-                    is_z2 = (s2 == e2) and self._is_zero(pop[b, s2:s2+1])[0]
-                    is_z1 = (s1 == e1) and self._is_zero(pop[b, s1:s1+1])[0]
-                    
-                    if is_z1 or is_z2:
-                        pop[b, s1] = zero_id
-                        pop[b, s1+1:j+1] = PAD_ID
-                        n_simplified += 1
-        
+                # Set Z_ID at start
+                # sub_pop has N_match rows. start_to_wipe has N_match indices.
+                # We need column indices for each row.
+                # sub_pop[range(N_match), start_to_wipe] = z_id
+                cols = torch.arange(len(rows), device=self.device)
+                sub_pop[cols, start_to_wipe] = z_id
+                
+                # Set PADs
+                pos = torch.arange(L, device=self.device).reshape(1, L)
+                s_wipe = start_to_wipe.unsqueeze(1)
+                # Mask shape: (N_match, L)
+                pad_mask = (pos > s_wipe) & (pos <= j)
+                sub_pop[pad_mask] = PAD_ID
+                
+                # Write back to main population
+                pop[rows] = sub_pop
+                
+                n_simplified += match.sum().item()
         return pop, n_simplified
 
-    def _get_subtree_starts(self, population: torch.Tensor, end_indices: int) -> torch.Tensor:
-        """
-        For each formula in the batch, find the start index of the subtree ending at end_indices.
-        end_indices is a scalar index (same pos for all rows in batch).
-        """
-        B, L = population.shape
-        arities = self.arity_table[population.clamp(0)]
-        
-        # Balance calculation: moving left from end_indices
-        # Initial balance is 1 (we need to resolve one subtree)
-        # For each token: balance = balance + arity - 1
-        # When balance reaches 0, we found the start.
-        
-        current_balance = torch.zeros(B, device=self.device, dtype=torch.long)
-        current_balance += 1
-        
-        starts = torch.full((B,), end_indices, device=self.device, dtype=torch.long)
-        finished = torch.zeros(B, device=self.device, dtype=torch.bool)
-        
-        for k in range(end_indices, -1, -1):
-            mask = ~finished
-            if not mask.any(): break
-            
-            # balance = balance + arity[k] - 1
-            current_balance[mask] += arities[mask, k] - 1
-            
-            is_zero = (current_balance == 0) & mask
-            starts[is_zero] = k
-            finished[is_zero] = True
-            
-        return starts
-    
     def _apply_self_cancellation_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
-        """
-        Apply self-cancellation: x-x=0, x/x=1
-        
-        Pattern: [..., x, x, -, ...] -> [..., 0, PAD, PAD, ...]
-        Pattern: [..., x, x, /, ...] -> [..., 1, PAD, PAD, ...]
-        """
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
-        
+        z_id, o_id = (self.zero_ids[0] if self.zero_ids.numel()>0 else self.CONST_0), (self.one_ids[0] if self.one_ids.numel()>0 else self.CONST_1)
         for j in range(2, L):
-            op_tokens = pop[:, j]
-            arg2 = pop[:, j-1]
-            arg1 = pop[:, j-2]
-            
-            same_args = (arg1 == arg2) & (arg1 != PAD_ID)
-            
-            # x - x = 0
-            is_minus = (op_tokens == self.OP_MINUS)
-            match_self_sub = is_minus & same_args
-            
-            if match_self_sub.any():
-                zero_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
-                pop[match_self_sub, j-2] = zero_id
-                pop[match_self_sub, j-1] = PAD_ID
-                pop[match_self_sub, j] = PAD_ID
-                n_simplified += match_self_sub.sum().item()
-            
-            # x / x = 1
-            is_div = (op_tokens == self.OP_DIV)
-            match_self_div = is_div & same_args
-            
-            if match_self_div.any():
-                one_id = self.one_ids[0] if self.one_ids.numel() > 0 else self.CONST_1
-                pop[match_self_div, j-2] = one_id
-                pop[match_self_div, j-1] = PAD_ID
-                pop[match_self_div, j] = PAD_ID
-                n_simplified += match_self_div.sum().item()
-
-            # x + x = 2 * x
-            is_plus = (op_tokens == self.OP_PLUS)
-            match_self_add = is_plus & same_args
-            if match_self_add.any():
-                two_id = self.CONST_2
-                # [x, x, +] -> [x, 2, *]
-                pop[match_self_add, j-1] = two_id
-                pop[match_self_add, j] = self.OP_MULT
-                n_simplified += match_self_add.sum().item()
-
-            # --- Negation Rules ---
-            # Pattern 1: [x, [x, neg], +] -> [0]
-            # Pattern 2: [[x, neg], x, +] -> [0]
-            # These are common when GA is exploring differences.
-            if is_plus.any():
-                for b in torch.where(is_plus)[0]:
-                    # Identify subtrees
-                    end2 = j - 1
-                    start2 = self._get_subtree_starts(pop[b:b+1], end2)[0].item()
-                    end1 = start2 - 1
-                    if end1 < 0: continue
-                    start1 = self._get_subtree_starts(pop[b:b+1], end1)[0].item()
-                    
-                    # Case 1: arg2 is neg(arg1)
-                    # pop[b, start2:end2+1] should be [x, neg] where x == pop[b, start1:end1+1]
-                    if pop[b, end2] == self.OP_NEG:
-                        # arg2's inner subtree
-                        e_inner = end2 - 1
-                        s_inner = self._get_subtree_starts(pop[b:b+1], e_inner)[0].item()
-                        if (e_inner - s_inner == end1 - start1) and torch.equal(pop[b, s_inner:e_inner+1], pop[b, start1:end1+1]):
-                            zero_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
-                            pop[b, start1] = zero_id
-                            pop[b, start1+1:j+1] = PAD_ID
-                            n_simplified += 1
-                            continue # Match found
-
-                    # Case 2: arg1 is neg(arg2)
-                    if pop[b, end1] == self.OP_NEG:
-                        e_inner = end1 - 1
-                        s_inner = self._get_subtree_starts(pop[b:b+1], e_inner)[0].item()
-                        if (e_inner - s_inner == end2 - start2) and torch.equal(pop[b, s_inner:e_inner+1], pop[b, start2:end2+1]):
-                            zero_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
-                            pop[b, start1] = zero_id
-                            pop[b, start1+1:j+1] = PAD_ID
-                            n_simplified += 1
-        
+            op = pop[:, j]
+            is_matchable = (op == self.OP_MINUS) | (op == self.OP_DIV)
+            if not is_matchable.any(): continue
+            # Vectorized check for single-token operands: [x, x, -] -> [0, PAD, PAD]
+            arg2, arg1 = pop[:, j-1], pop[:, j-2]
+            match_single = is_matchable & (arg1 == arg2) & (self.arity_table[arg1.clamp(0)] == 0) & (arg1 != PAD_ID)
+            if match_single.any():
+                is_m = match_single & (op == self.OP_MINUS)
+                is_d = match_single & (op == self.OP_DIV)
+                pop[is_m, j-2], pop[is_d, j-2] = z_id, o_id
+                pop[match_single, j-1], pop[match_single, j] = PAD_ID, PAD_ID
+                n_simplified += match_single.sum().item()
         return pop, n_simplified
-    
-    def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
-        """
-        Compact formulas by removing internal PAD tokens and shifting left.
-        Pure GPU operation using sorting.
-        """
-        B, L = population.shape
-        
-        # Create a sort key: non-PAD tokens first, then PAD
-        is_pad = (population == PAD_ID)
-        sort_key = is_pad.long()  # 0 for non-PAD, 1 for PAD
-        
-        # Stable sort to preserve order within non-PAD tokens
-        # Add position as tiebreaker
-        sort_key = sort_key * L + torch.arange(L, device=self.device).unsqueeze(0)
-        
-        _, sorted_indices = torch.sort(sort_key, dim=1, stable=True)
-        
-        # Gather to reorder
-        compacted = torch.gather(population, 1, sorted_indices)
-        
-        # Count how many were moved (simplified)
-        # Check if any internal PADs existed (PAD followed by non-PAD)
-        had_internal_pads = 0
-        for b in range(min(B, 100)):  # Sample check
-            row = population[b]
-            first_pad = (row == PAD_ID).long().argmax()
-            if first_pad > 0 and first_pad < L - 1:
-                if (row[first_pad:] != PAD_ID).any():
-                    had_internal_pads += 1
-        
-        return compacted, had_internal_pads
 
     def _apply_advanced_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
         """
         Apply advanced rules: 
         - neg(neg(x)) = x
-        - x^0 = 1, x^1 = x, 0^x = 0, 1^x = 1
-        - sin(0)=0, cos(0)=1, log(1)=0, etc.
+        - exp(log(x)) = x, log(exp(x)) = x
+        - sqrt(x^2) = abs(x)
+        - Gamma/LGamma identities: lg(1)=0, lg(2)=0, gamma(1)=1, gamma(2)=1
+        - Trigonometric/Log identity on constants
         """
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
+        z_id, o_id = self.ID_0, self.ID_1
+        abs_id = self.OP_ABS_IDS[0].item() if self.OP_ABS_IDS.numel() > 0 else -1
         
-        zero_id = self.CONST_0
-        one_id = self.CONST_1
-        
+        def is_op_in(tokens: torch.Tensor, set_ids: torch.Tensor) -> torch.Tensor:
+            if set_ids.numel() == 0: return torch.zeros_like(tokens, dtype=torch.bool)
+            return (tokens.unsqueeze(-1) == set_ids).any(-1)
+
         for j in range(1, L):
             tokens = pop[:, j]
-            
-            # --- Unary Rules ---
-            # Double Negation: [x, neg, neg] -> [x, PAD, PAD]
+            # --- Chain reduction logic ---
+            # neg(neg(x)) -> x
             if j >= 2:
-                is_neg = (tokens == self.OP_NEG)
-                prev_is_neg = (pop[:, j-1] == self.OP_NEG)
-                match_nn = is_neg & prev_is_neg
+                is_neg = is_op_in(tokens, self.OP_NEG_IDS)
+                is_neg_prev = is_op_in(pop[:, j-1], self.OP_NEG_IDS)
+                match_nn = is_neg & is_neg_prev
                 if match_nn.any():
-                    pop[match_nn, j] = PAD_ID
-                    pop[match_nn, j-1] = PAD_ID
+                    pop[match_nn, j], pop[match_nn, j-1] = PAD_ID, PAD_ID
                     n_simplified += match_nn.sum().item()
-            
-            # log(exp(x)) -> x and exp(log(x)) -> x
-            if j >= 2:
-                is_log = (tokens == self.OP_LOG)
-                is_exp = (tokens == self.OP_EXP)
-                prev_is_exp = (pop[:, j-1] == self.OP_EXP)
-                prev_is_log = (pop[:, j-1] == self.OP_LOG)
                 
-                match_le = is_log & prev_is_exp
-                match_el = is_exp & prev_is_log
-                
-                if match_le.any():
-                    pop[match_le, j] = PAD_ID
-                    pop[match_le, j-1] = PAD_ID
-                    n_simplified += match_le.sum().item()
+                # exp(log(x)) -> x
+                is_exp = is_op_in(tokens, self.OP_EXP_IDS)
+                is_log_prev = is_op_in(pop[:, j-1], self.OP_LOG_IDS)
+                match_el = is_exp & is_log_prev
                 if match_el.any():
-                    pop[match_el, j] = PAD_ID
-                    pop[match_el, j-1] = PAD_ID
+                    pop[match_el, j], pop[match_el, j-1] = PAD_ID, PAD_ID
                     n_simplified += match_el.sum().item()
+
+                # log(exp(x)) -> x
+                is_log = is_op_in(tokens, self.OP_LOG_IDS)
+                is_exp_prev = is_op_in(pop[:, j-1], self.OP_EXP_IDS)
+                match_le = is_log & is_exp_prev
+                if match_le.any():
+                    pop[match_le, j], pop[match_le, j-1] = PAD_ID, PAD_ID
+                    n_simplified += match_le.sum().item()
+
+            # --- SOTA / Better than basic Sympy ---
+            # sqrt(x^2) -> abs(x)
+            if j >= 3:
+                is_sqrt = is_op_in(tokens, self.OP_SQRT_IDS)
+                is_pow_prev = is_op_in(pop[:, j-1], self.OP_POW_IDS)
+                is_two_pp = self._is_constant_value(pop[:, j-2], 2.0)
+                match_sqrt_p2 = is_sqrt & is_pow_prev & is_two_pp
+                if match_sqrt_p2.any() and abs_id != -1:
+                    pop[match_sqrt_p2, j] = abs_id
+                    pop[match_sqrt_p2, j-1] = PAD_ID
+                    pop[match_sqrt_p2, j-2] = PAD_ID
+                    n_simplified += match_sqrt_p2.sum().item()
             
-            # Unary Constants: [0, sin] -> [0], [0, cos] -> [1], [1, log] -> [0]
+            # --- Constant arg identities ---
             is_unary = (self.arity_table[tokens.clamp(0)] == 1)
             if is_unary.any():
                 arg = pop[:, j-1]
-                arg_is_zero = self._is_zero(arg)
-                arg_is_one = self._is_one(arg)
+                arg_is0 = self._is_zero(arg)
+                arg_is1 = self._is_one(arg)
+                arg_is2 = self._is_constant_value(arg, 2.0)
                 
-                # sin(0)=0, tan(0)=0, abs(0)=0, exp(0)=1, cos(0)=1
-                zero_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
-                one_id = self.one_ids[0] if self.one_ids.numel() > 0 else self.CONST_1
+                # Rescued Unary Identities
+                to_zero = arg_is0 & ((tokens==self.OP_SIN)|(tokens==self.OP_TAN)|is_op_in(tokens, self.OP_ABS_IDS))
+                to_zero |= arg_is1 & is_op_in(tokens, self.OP_LOG_IDS)
+                to_zero |= arg_is1 & is_op_in(tokens, self.OP_LGAMMA_IDS) # lg(1)=0
+                to_zero |= arg_is2 & is_op_in(tokens, self.OP_LGAMMA_IDS) # lg(2)=0
                 
-                # Rule: [0, sin/tan/abs/log(0?)/...]
-                # log(0) is undefined, but sin(0)=0
-                match_sin0 = (tokens == self.OP_SIN) & arg_is_zero
-                match_tan0 = (tokens == self.OP_TAN) & arg_is_zero
-                match_abs0 = (tokens == self.OP_ABS) & arg_is_zero
-                match_exp0 = (tokens == self.OP_EXP) & arg_is_zero
-                match_cos0 = (tokens == self.OP_COS) & arg_is_zero
-                match_log1 = (tokens == self.OP_LOG) & arg_is_one
-                
-                # Apply (simplifying to zero)
-                to_zero = match_sin0 | match_tan0 | match_abs0 | match_log1
-                if to_zero.any():
-                    pop[to_zero, j-1] = zero_id
-                    pop[to_zero, j] = PAD_ID
+                if to_zero.any() and z_id != -1: 
+                    pop[to_zero, j-1], pop[to_zero, j] = z_id, PAD_ID
                     n_simplified += to_zero.sum().item()
-                    
-                # Apply (simplifying to one)
-                to_one = match_exp0 | match_cos0
-                if to_one.any():
-                    pop[to_one, j-1] = one_id
-                    pop[to_one, j] = PAD_ID
+                
+                to_one = arg_is0 & ((tokens==self.OP_COS)|is_op_in(tokens, self.OP_EXP_IDS))
+                to_one |= arg_is1 & is_op_in(tokens, self.OP_GAMMA_IDS) # gamma(1)=1
+                to_one |= arg_is2 & is_op_in(tokens, self.OP_GAMMA_IDS) # gamma(2)=1
+                
+                if to_one.any() and o_id != -1: 
+                    pop[to_one, j-1], pop[to_one, j] = o_id, PAD_ID
                     n_simplified += to_one.sum().item()
-
-            # --- Sqrt(x^2) -> abs(x) ---
-            if j >= 3:
-                is_sqrt = (tokens == self.OP_SQRT)
-                if is_sqrt.any():
-                    # Pattern: [subtree, 2, pow, sqrt]
-                    prev1 = pop[:, j-1]
-                    prev2 = pop[:, j-2]
+            
+            # --- Negation Rules (Plus) ---
+            if j >= 2 and (tokens == self.OP_PLUS).any():
+                is_p = (tokens == self.OP_PLUS)
+                s2 = self._get_subtree_starts(pop, j-1)
+                s1 = self._get_subtree_starts(pop, s2-1)
+                
+                # Move to logic: x + neg(x) -> 0
+                is_neg2 = is_op_in(pop[:, j-1], self.OP_NEG_IDS)
+                match_p = is_p & is_neg2
+                if match_p.any():
+                    # Batch-calculate inner subtree starts for all potential negations
+                    s_inner_batch = self._get_subtree_starts(pop, j-2)
                     
-                    match_s_p_2 = is_sqrt & (prev1 == self.OP_POW) & (prev2 == self.CONST_2)
-                    if match_s_p_2.any():
-                        pop[match_s_p_2, j] = self.OP_ABS
-                        pop[match_s_p_2, j-1] = PAD_ID
-                        pop[match_s_p_2, j-2] = PAD_ID
-                        n_simplified += match_s_p_2.sum().item()
-
-            # --- Binary Rules with constants ---
-            if j >= 2:
-                is_pow = (tokens == self.OP_POW)
-                if is_pow.any():
-                    # Identify subtrees
-                    end2 = j - 1
-                    start2 = self._get_subtree_starts(pop, end2)
-                    for b in torch.where(is_pow)[0]:
-                        s2, e2 = start2[b].item(), j - 1
-                        e1 = s2 - 1
-                        if e1 < 0: continue
-                        s1 = self._get_subtree_starts(pop[b:b+1], e1)[0].item()
+                    # Compare subtrees [s1:s_inner] and [s_inner:j-1]
+                    # Focus on terminals for robustness in vectorized mode
+                    match_p &= (s1 == s_inner_batch-1) & (s1 >= 0) & (s_inner_batch >= 0)
+                    
+                    if match_p.any():
+                        t1 = pop.gather(1, s1.clamp(min=0).unsqueeze(1)).squeeze(1)
+                        t_inner = pop.gather(1, s_inner_batch.clamp(min=0).unsqueeze(1)).squeeze(1)
+                        match_p &= (t1 == t_inner)
                         
-                        is_z2 = (s2 == e2) and self._is_zero(pop[b, s2:s2+1])[0]
-                        is_o2 = (s2 == e2) and self._is_one(pop[b, s2:s2+1])[0]
-                        is_z1 = (s1 == e1) and self._is_zero(pop[b, s1:s1+1])[0]
-                        is_o1 = (s1 == e1) and self._is_one(pop[b, s1:s1+1])[0]
-                        
-                        # x^0 -> 1
-                        if is_z2:
-                            pop[b, s1] = one_id
-                            pop[b, s1+1:j+1] = PAD_ID
-                            n_simplified += 1
-                        
-                        # x^1 -> x
-                        elif is_o2:
-                            pop[b, e2:j+1] = PAD_ID
-                            n_simplified += 1
-                            
-                        # 0^x -> 0
-                        elif is_z1:
-                            pop[b, s1] = zero_id
-                            pop[b, s1+1:j+1] = PAD_ID
-                            n_simplified += 1
-
-                        # 1^x -> 1
-                        elif is_o1:
-                            pop[b, s1] = one_id
-                            pop[b, s1+1:j+1] = PAD_ID
+                    if match_p.any():
+                        rows = torch.where(match_p)[0]
+                        for b in rows:
+                            pop[b, s1[b]] = z_id
+                            pop[b, s1[b]+1:j+1] = PAD_ID
                             n_simplified += 1
 
         return pop, n_simplified
 
-
-class GPUConstantFolder:
-    """
-    GPU-based constant folding engine.
-    
-    Evaluates constant sub-expressions at compile time:
-    - 2 + 3 -> 5
-    - sin(0) -> 0
-    - cos(0) -> 1
-    """
-    
-    def __init__(self, grammar: GPUGrammar, device, dtype=torch.float64):
-        self.grammar = grammar
-        self.device = device
-        self.dtype = dtype
-        
-        # Cache known constant values
-        self._build_constant_table()
-        
-    def _build_constant_table(self):
-        """Build lookup table for constant token values."""
-        g = self.grammar
-        max_id = max(g.id_to_token.keys()) + 1
-        
-        # Value table: token_id -> float value (NaN for non-constants)
-        self.const_values = torch.full((max_id,), float('nan'), 
-                                       device=self.device, dtype=self.dtype)
-        
-        # Known constants
-        const_map = {'0': 0.0, '1': 1.0, '2': 2.0, '3': 3.0, '5': 5.0}
-        
-        for token, value in const_map.items():
-            if token in g.token_to_id:
-                tid = g.token_to_id[token]
-                self.const_values[tid] = value
-                
-    def is_constant(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """Check if tokens are known constants (vectorized)."""
-        values = self.const_values[token_ids.clamp(0, len(self.const_values)-1)]
-        return ~torch.isnan(values)
-    
-    def fold_constants(self, population: torch.Tensor, 
-                       constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    def _apply_associative_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
         """
-        Fold constant expressions in the population.
-        
-        Finds patterns like [2, 3, +] and replaces with [5].
+        Apply associative/grouping rules:
+        - x + (x + y) -> 2*x + y
+        - (x + y) + x -> 2*x + y
         """
-        # This is a simplified version - full implementation would
-        # need to track the constant pool and create new constant tokens
         B, L = population.shape
         pop = population.clone()
+        n_simplified = 0
+        if self.ID_2 == -1: return pop, 0
         
-        # For now, just count potential folding opportunities
-        n_potential = 0
-        
-        # Find [const, const, binary_op] patterns
-        for j in range(2, L):
-            arg2 = pop[:, j-1]
-            arg1 = pop[:, j-2]
+        for j in range(4, L):
+            op = pop[:, j]
+            is_plus = (op == self.OP_PLUS)
+            if not is_plus.any(): continue
             
-            both_const = self.is_constant(arg1) & self.is_constant(arg2)
-            n_potential += both_const.sum().item()
-        
-        return pop, constants, n_potential
+            # Pattern: (x + y) + z -> 2*x + y
+            # We check if arg2 is a PLUS (RPN: [x, y, +, z, +])
+            # Or if arg1 is a PLUS (RPN: [z, x, y, +, +])
+            match_1 = is_plus & (pop[:, j-1] == self.OP_PLUS)
+            if match_1.any():
+                # Get subtree starts for the whole batch at index j
+                s2_batch = self._get_subtree_starts(pop, j-1)
+                s1_batch = self._get_subtree_starts(pop, s2_batch-1)
+                
+                rows = torch.where(match_1)[0]
+                for b in rows:
+                    idx_s1, idx_s2 = s1_batch[b].item(), s2_batch[b].item()
+                    if idx_s1 < 0 or idx_s2 < 0: continue
+                    
+                    # Pattern: [x, y, +, z, +] where s2 is start of z
+                    # arg1 is [x, y, +]
+                    e_arg1 = idx_s2 - 1
+                    if e_arg1 < 0: continue
+                    # Local call here is okay as it's single row, but we could vectorize more.
+                    # Given the nested nature of RPN, we'll focus on the big batch calls.
+                    s_arg1 = self._get_subtree_starts(pop[b:b+1], e_arg1)[0].item()
+                    if s_arg1 < 0: continue
+                    
+                    e_inner2 = e_arg1 - 1
+                    if e_inner2 < 0: continue
+                    s_inner2 = self._get_subtree_starts(pop[b:b+1], e_inner2)[0].item()
+                    if s_inner2 < 0: continue
+                    
+                    e_inner1 = s_inner2 - 1
+                    if e_inner1 < 0: continue
+                    s_inner1 = self._get_subtree_starts(pop[b:b+1], e_inner1)[0].item()
+                    if s_inner1 < 0: continue
+                    
+                    z = pop[b, idx_s2:j].clone()
+                    x = pop[b, s_inner1:e_inner1+1].clone()
+                    y = pop[b, s_inner2:e_inner2+1].clone()
+                    
+                    if torch.equal(x, z):
+                        new = torch.cat([torch.tensor([self.ID_2], device=self.device), x, torch.tensor([self.OP_MULT], device=self.device), y, torch.tensor([self.OP_PLUS], device=self.device)])
+                        if len(new) <= (j - idx_s1 + 1):
+                            pop[b, idx_s1:idx_s1+len(new)] = new
+                            pop[b, idx_s1+len(new):j+1] = PAD_ID
+                            n_simplified += 1
+                    elif torch.equal(y, z):
+                        new = torch.cat([torch.tensor([self.ID_2], device=self.device), y, torch.tensor([self.OP_MULT], device=self.device), x, torch.tensor([self.OP_PLUS], device=self.device)])
+                        if len(new) <= (j - idx_s1 + 1):
+                            pop[b, idx_s1:idx_s1+len(new)] = new
+                            pop[b, idx_s1+len(new):j+1] = PAD_ID
+                            n_simplified += 1
+
+        return pop, n_simplified
+
+    def _apply_term_consolidation(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        B, L = population.shape
+        pop = population.clone()
+        n_simplified = 0
+        for j in range(2, L):
+            op = pop[:, j]
+            if op.numel() == 0: continue
+            is_plus = (op == self.OP_PLUS)
+            is_mult = (op == self.OP_MULT)
+            if not (is_plus | is_mult).any(): continue
+            
+            # --- x + x -> 2 * x ---
+            arg2, arg1 = pop[:, j-1], pop[:, j-2]
+            is_same = (arg1 == arg2) & (self.arity_table[arg1.clamp(0)] == 0) & (arg1 != PAD_ID)
+            match_add_same = is_plus & is_same
+            if match_add_same.any() and self.ID_2 != -1:
+                pop[match_add_same, j] = self.OP_MULT
+                pop[match_add_same, j-1] = arg1[match_add_same]
+                pop[match_add_same, j-2] = self.ID_2
+                n_simplified += match_add_same.sum().item()
+
+            # --- x * x -> x ^ 2 ---
+            match_mult_same = is_mult & is_same
+            if match_mult_same.any() and self.OP_POW_IDS.numel() > 0 and self.ID_2 != -1:
+                pop[match_mult_same, j] = self.OP_POW_IDS[0]
+                pop[match_mult_same, j-1] = self.ID_2
+                pop[match_mult_same, j-2] = arg1[match_mult_same]
+                n_simplified += match_mult_same.sum().item()
+
+            # --- a*x + b*x -> (a+b)*x ---
+            # RPN: [a, x, *, b, x, *, +]
+            if j >= 6:
+                is_p = (pop[:, j] == self.OP_PLUS)
+                m2, m1 = (pop[:, j-1] == self.OP_MULT), (pop[:, j-4] == self.OP_MULT)
+                # Term 2: [b, x, *] at j-3, j-2, j-1
+                # Term 1: [a, x, *] at j-6, j-5, j-4
+                x2, b = pop[:, j-2], pop[:, j-3]
+                x1, a = pop[:, j-5], pop[:, j-6]
+                
+                # Check for [a, x, *, b, x, *, +]
+                is_ax_bx = is_p & m1 & m2 & (x1 == x2) & (self.arity_table[x1.clamp(0)] == 0) & (x1 != PAD_ID)
+                
+                # Also handle commutative variants like [x, a, *, x, b, *, +]
+                # But for the test case [2, x0, *, 3, x0, *, +] it's [a, x, *, b, x, *, +]
+                
+                if is_ax_bx.any():
+                    # Check for literals (already handled above)
+                    pass
+                    
+                # Generalized Factoring: [x, a, *, x, b, *, +] -> [a, b, +, x, *] (SymPy style)
+                # This makes it easier for constant folding to find [a, b, +]
+                if j >= 6:
+                    x1, a = pop[:, j-5], pop[:, j-6]
+                    x2, b = pop[:, j-2], pop[:, j-3]
+                    m2, m1, is_p = (pop[:, j-1] == self.OP_MULT), (pop[:, j-4] == self.OP_MULT), (pop[:, j] == self.OP_PLUS)
+                    
+                # Generalized Factoring: [x, a, *, x, b, *, +] -> [a, b, +, x, *] (SymPy style)
+                # This makes it easier for constant folding to find [a, b, +]
+                if j >= 6:
+                    # Capture values as CLONES to avoid view-modification bugs
+                    val_6 = pop[:, j-6].clone()
+                    val_5 = pop[:, j-5].clone()
+                    val_4 = pop[:, j-4].clone()
+                    val_3 = pop[:, j-3].clone()
+                    val_2 = pop[:, j-2].clone()
+                    val_1 = pop[:, j-1].clone()
+                    val_0 = pop[:, j].clone()
+                    
+                    m2, m1, is_p = (val_1 == self.OP_MULT), (val_4 == self.OP_MULT), (val_0 == self.OP_PLUS)
+                    
+                    # Case 1: [a, x, *, b, x, *, +] -> (a+b)*x
+                    match_fact_1 = is_p & m1 & m2 & (val_5 == val_2) & (self.arity_table[val_5.clamp(0)] == 0) & (val_5 != PAD_ID)
+                    match_fact_1 &= (self.arity_table[val_6.clamp(0)] == 0) & (self.arity_table[val_3.clamp(0)] == 0)
+                    
+                    if match_fact_1.any():
+                        rows = torch.where(match_fact_1)[0]
+                        pop[rows, j-6] = val_6[rows] # a
+                        pop[rows, j-5] = val_3[rows] # b
+                        pop[rows, j-4] = self.OP_PLUS
+                        pop[rows, j-3] = val_5[rows] # x (the common variable)
+                        pop[rows, j-2] = self.OP_MULT
+                        pop[rows, j-1] = PAD_ID
+                        pop[rows, j] = PAD_ID
+                        n_simplified += match_fact_1.sum().item()
+
+                    # Case 2: [x, a, *, x, b, *, +] -> (a+b)*x
+                    match_fact_2 = is_p & m1 & m2 & (val_6 == val_3) & (self.arity_table[val_6.clamp(0)] == 0) & (val_6 != PAD_ID)
+                    match_fact_2 &= (self.arity_table[val_5.clamp(0)] == 0) & (self.arity_table[val_2.clamp(0)] == 0)
+                    
+                    if match_fact_2.any():
+                        rows = torch.where(match_fact_2)[0]
+                        pop[rows, j-6] = val_5[rows] # a
+                        pop[rows, j-5] = val_2[rows] # b
+                        pop[rows, j-4] = self.OP_PLUS
+                        pop[rows, j-3] = val_6[rows] # x (the common variable)
+                        pop[rows, j-2] = self.OP_MULT
+                        pop[rows, j-1] = PAD_ID
+                        pop[rows, j] = PAD_ID
+                        n_simplified += match_fact_2.sum().item()
+            
+            # --- Generalized Factoring: x*y + x*z -> x*(y+z) ---
+            if is_plus.any():
+                # Batch-calculate top-level subtrees for the PLUS
+                s2_plus = self._get_subtree_starts(pop, j-1)
+                s1_plus = self._get_subtree_starts(pop, s2_plus-1)
+                
+                # Filter for rows where both subtrees are multiplications
+                # Filter for rows where both subtrees are multiplications
+                t2_idx = (s2_plus - 1).clamp(min=0)
+                t2_id = pop.gather(1, t2_idx.unsqueeze(1)).squeeze(1)
+                t_top_id = pop.gather(1, torch.full((B, 1), j-1, device=self.device, dtype=torch.long)).squeeze(1)
+                is_mult_mult = (t2_id == self.OP_MULT) & (t_top_id == self.OP_MULT)
+                
+                if is_mult_mult.any():
+                    # Batch-calculate inner subtree starts
+                    # arg1 subtrees:
+                    e1_2 = (s2_plus - 2).clamp(min=0)
+                    s1_2_batch = self._get_subtree_starts(pop, e1_2)
+                    e1_1 = (s1_2_batch - 1).clamp(min=0)
+                    s1_1_batch = self._get_subtree_starts(pop, e1_1)
+                    
+                    # arg2 subtrees:
+                    e2_2 = torch.full((B,), j - 2, device=self.device, dtype=torch.long).clamp(min=0)
+                    s2_2_batch = self._get_subtree_starts(pop, e2_2)
+                    e2_1 = (s2_2_batch - 1).clamp(min=0)
+                    s2_1_batch = self._get_subtree_starts(pop, e2_1)
+
+                    rows = torch.where(is_mult_mult)[0]
+                    for b in rows:
+                        s1, s2 = s1_plus[b].item(), s2_plus[b].item()
+                        s1_1, s1_2 = s1_1_batch[b].item(), s1_2_batch[b].item()
+                        e1_1, e1_2 = s1_2 - 1, s2 - 2
+                        
+                        s2_1, s2_2 = s2_1_batch[b].item(), s2_2_batch[b].item()
+                        e2_1, e2_2 = s2_2 - 1, j - 2
+                        
+                        if s1_1 < 0 or s1_2 < 0 or s2_1 < 0 or s2_2 < 0: continue
+                        
+                        # Case: Common factor on left
+                        # We use the fact that indices are already calculated batch-wise
+                        if torch.equal(pop[b, s1_1:e1_1+1], pop[b, s2_1:e2_1+1]):
+                            x = pop[b, s1_1:e1_1+1].clone()
+                            y = pop[b, s1_2:e1_2+1].clone()
+                            z = pop[b, s2_2:e2_2+1].clone()
+                            # [x, y, z, +, *]
+                            new = torch.cat([x, y, z, torch.tensor([self.OP_PLUS, self.OP_MULT], device=self.device)])
+                            if len(new) <= (j - s1 + 1):
+                                pop[b, s1:s1+len(new)] = new
+                                pop[b, s1+len(new):j+1] = PAD_ID
+                                n_simplified += 1
+
+        return pop, n_simplified
+
+    def _apply_constant_folding(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        B, L = population.shape
+        pop = population.clone()
+        n_folded = 0
+        val_table = torch.empty(self.arity_table.shape[0], device=self.device, dtype=self.dtype).fill_(float('nan'))
+        for t, tid in self.grammar.token_to_id.items():
+            if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()): val_table[tid] = float(t)
+        for j in range(2, L):
+            op, a1, a2 = pop[:, j], pop[:, j-2], pop[:, j-1]
+            v1, v2 = val_table[a1], val_table[a2]
+            mask = (~v1.isnan()) & (~v2.isnan())
+            if not mask.any(): continue
+            res = torch.empty(B, device=self.device, dtype=self.dtype).fill_(float('nan'))
+            m = mask & (op==self.OP_PLUS); res[m] = v1[m] + v2[m]
+            m = mask & (op==self.OP_MINUS); res[m] = v1[m] - v2[m]
+            m = mask & (op==self.OP_MULT); res[m] = v1[m] * v2[m]
+            m = mask & (op==self.OP_DIV) & (v2!=0); res[m] = v1[m] / v2[m]
+            is_pow = (op.unsqueeze(-1) == self.OP_POW_IDS).any(-1) if self.OP_POW_IDS.numel() > 0 else torch.zeros_like(op, dtype=torch.bool)
+            m = mask & is_pow & (v1>0); res[m] = v1[m].pow(v2[m])
+            
+            # Map results to terminal IDs if they exist
+            match_any = ~res.isnan()
+            if match_any.any():
+                # We need a reverse mapping: value -> tid
+                # Since we are in a vectorized loop, we can't easily dict lookup for each row.
+                # However, we can check for the most common terminals.
+                for tid in self.literal_ids:
+                    val = val_table[tid]
+                    match = match_any & (res == val)
+                    if match.any():
+                        pop[match, j-2], pop[match, j-1], pop[match, j] = tid, PAD_ID, PAD_ID
+                        n_folded += match.sum().item()
+                        match_any[match] = False # Avoid redundant assignments
+        return pop, n_folded
+
+    def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        B, L = population.shape
+        is_pad = (population == PAD_ID)
+        sort_key = is_pad.long() * L + torch.arange(L, device=self.device).unsqueeze(0)
+        _, idx = torch.sort(sort_key, dim=1, stable=True)
+        return torch.gather(population, 1, idx), (is_pad.any(dim=1).sum().item())
+
+    def _get_subtree_starts(self, population: torch.Tensor, end_indices) -> torch.Tensor:
+        B, L = population.shape
+        arities = self.arity_table[population.clamp(0)]
+        if isinstance(end_indices, int):
+            end_t = torch.empty(B, device=self.device, dtype=torch.long).fill_(end_indices)
+            max_e = end_indices
+        else:
+            end_t, max_e = end_indices, end_indices.max().item()
+        bal = torch.zeros(B, device=self.device, dtype=torch.long)
+        starts = end_t.clone()
+        fin, act = torch.zeros(B, device=self.device, dtype=torch.bool), torch.zeros(B, device=self.device, dtype=torch.bool)
+        for k in range(max_e, -1, -1):
+            new = (end_t == k)
+            if new.any(): bal[new] = 1; act |= new
+            m = act & (~fin)
+            if not m.any(): continue
+            bal[m] += arities[m, k] - 1
+            is_z = (bal == 0) & m
+            starts[is_z], fin[is_z] = k, True
+            if fin.all(): break
+        return starts

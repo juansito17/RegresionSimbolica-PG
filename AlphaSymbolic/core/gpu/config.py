@@ -65,13 +65,14 @@ class GpuGlobals:
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
     POP_SIZE = 1_000_000
     GENERATIONS = 500  
-    NUM_ISLANDS = 50 # 1M / 50 = 20 islands
+    NUM_ISLANDS = 50 # 1M / 50 = 100k pop per island
     MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = True
-    INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((x0 + (x0 + x2)) / (lgamma(x0) - x0)) - floor((log(x0) + x0))) - 5.53928843)))) + (lgamma((-0.10223076 + x0)) + (5 - x0)))"
-    # INITIAL_FORMULA_STRING = "(lgamma(x0) + 5)"
+    #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
+    # Dirty Gen 100 seed (Highly optimized structure)
+    INITIAL_FORMULA_STRING = "((lgamma(x0) + sqrt((x0 + (cos(gamma((7.00021942 - x0))) % (5 + log(asin((cos(gamma((pi - x0))) % lgamma(x0))))))))) - (x0 - 0.45874482))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -90,6 +91,7 @@ class GpuGlobals:
     CONSTANT_INT_MAX_VALUE = 10
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 30  # MÁXIMO - expresiones muy complejas
+    MAX_CONSTANTS = 50 # Increased to 50 to guarantee ANY generated formula (size < 30) fits as a seed without truncation.
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
@@ -110,6 +112,8 @@ class GpuGlobals:
     USE_OP_ASIN     = True
     USE_OP_ACOS     = True
     USE_OP_ATAN     = True
+    USE_OP_CEIL     = True
+    USE_OP_SIGN     = True
 
     # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
     OPERATOR_WEIGHTS = [
@@ -128,7 +132,9 @@ class GpuGlobals:
         0.01 * (1.0 if USE_OP_GAMMA else 0.0),
         0.01 * (1.0 if USE_OP_ASIN else 0.0),
         0.01 * (1.0 if USE_OP_ACOS else 0.0),
-        0.01 * (1.0 if USE_OP_ATAN else 0.0)
+        0.01 * (1.0 if USE_OP_ATAN else 0.0),
+        0.005 * (1.0 if USE_OP_CEIL else 0.0),
+        0.005 * (1.0 if USE_OP_SIGN else 0.0)
     ]
 
     # ----------------------------------------
@@ -182,6 +188,7 @@ class GpuGlobals:
     LOCAL_SEARCH_ATTEMPTS = 30
     
     USE_SIMPLIFICATION = True
+    K_SIMPLIFY = 20                # Number of top formulas to simplify per island
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
     USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems

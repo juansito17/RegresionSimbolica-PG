@@ -12,12 +12,13 @@ void launch_rpn_kernel(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_1, int id_2, int id_3, int id_5,
+    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
     int op_sqrt, int op_abs, int op_neg,
-    int op_fact, int op_floor, int op_gamma,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val
 );
@@ -32,12 +33,13 @@ void run_rpn_cuda(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_1, int id_2, int id_3, int id_5,
+    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
     int op_sqrt, int op_abs, int op_neg,
-    int op_fact, int op_floor, int op_gamma,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val
 ) {
@@ -45,12 +47,13 @@ void run_rpn_cuda(
         population, x, constants, out_preds, out_sp, out_error,
         PAD_ID, id_x_start, 
         id_C, id_pi, id_e,
-        id_1, id_2, id_3, id_5,
+        id_0, id_1, id_2, id_3, id_5, id_10,
         op_add, op_sub, op_mul, op_div, op_pow, op_mod,
         op_sin, op_cos, op_tan,
         op_log, op_exp,
         op_sqrt, op_abs, op_neg,
-        op_fact, op_floor, op_gamma,
+        op_fact, op_floor, op_ceil, op_sign,
+        op_gamma, op_lgamma,
         op_asin, op_acos, op_atan,
         pi_val, e_val
     );

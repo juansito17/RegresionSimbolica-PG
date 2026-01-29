@@ -182,8 +182,15 @@ class ExpressionTree:
                 processed_str = processed_str.replace('!', 'fact', 1)
 
         # 1b. Handle 'pow' and 'mod' keywords if they leak in
-        processed_str = processed_str.replace(' pow ', ' ^ ') # Be careful not to replace 'power' variable names if any, though we don't have them.
+        processed_str = processed_str.replace(' pow ', ' ^ ') 
         processed_str = processed_str.replace(' mod ', ' % ')
+        
+        # 1c. Handle double negatives which might confuse some versions or edge cases
+        # Replace '- -' with '+' (and '--' just in case)
+        # We use a loop to handle triple negatives etc.
+        while '- -' in processed_str or '--' in processed_str:
+            processed_str = processed_str.replace('- -', '+ ')
+            processed_str = processed_str.replace('--', '+ ')
 
         # 2. C++ uses ^ for power, Python uses **. AST parses ^ as BitXor.
         try:
@@ -227,11 +234,25 @@ class ExpressionTree:
                 # Map back to short tokens if used by engine
                 # We assume engine uses short tokens for S, C, T, e, !, _, g
                 token = func_id
-                if func_id == 'asin': token = 'S'
-                if func_id == 'acos': token = 'C'
-                if func_id == 'atan': token = 'T'
-                if func_id == 'exp': token = 'e'
-                if func_id == 'fact' or func_id == 'factorial': token = '!' # Map fact to !
+                # Only map critical C++ aliases if absolutely needed, but prefer standard tokens
+                # if func_id == 'asin': token = 'S'  <-- S risks conflict? No, but let's be explicit
+                # if func_id == 'acos': token = 'C'  <-- C conflicts with Constant C!
+                # if func_id == 'atan': token = 'T'  <-- T risks conflict?
+                if func_id == 'exp': token = 'e'     # e is also constant e (2.71)?
+                # Check 'e'. CONSTANTS has 'e'. OPERATORS has 'e'.
+                # COLLISION on 'e'!
+                # exp(x) arity 1. e constant arity 0.
+                # Must fix 'e' too. Use 'exp'.
+                
+                if func_id == 'fact' or func_id == 'factorial': token = '!' 
+                if func_id == 'floor': token = '_'
+                if func_id == 'lgamma': token = 'g' # g is safe?
+                
+                # Force standard names to avoid collisions with Constants (C, e)
+                if func_id == 'exp': token = 'exp'
+                if func_id == 'acos': token = 'acos' 
+                if func_id == 'asin': token = 'asin'
+                if func_id == 'atan': token = 'atan'
                 if func_id == 'floor': token = '_'
                 if func_id == 'lgamma': token = 'g'
                 # func_id == 'gamma' stays 'gamma' (True Gamma)

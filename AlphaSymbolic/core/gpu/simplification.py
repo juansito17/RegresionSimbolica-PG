@@ -254,7 +254,9 @@ class GPUSimplifier:
             if token in grammar.operators:
                 arity = grammar.token_arity.get(token, 2)
                 if arity == 1:
-                    if not stack: return "Invalid"
+                    if not stack: 
+                        print(f"[DEBUG] Stack Underflow for Unary {token}")
+                        return "Invalid"
                     a = stack.pop()
                     if token == 's' or token == 'sin': stack.append(f"sin({a})")
                     elif token == 'c' or token == 'cos': stack.append(f"cos({a})")
@@ -271,12 +273,16 @@ class GPUSimplifier:
                     elif token == 'T' or token == 'atan': stack.append(f"atan({a})")
                     else: stack.append(f"{token}({a})")
                 else: 
-                    if len(stack) < 2: return "Invalid"
+                    if len(stack) < 2: 
+                        print(f"[DEBUG] Stack Underflow for Binary {token}")
+                        return "Invalid"
                     b = stack.pop()
                     a = stack.pop()
                     
                     if token == '+' and b.startswith("-") and not b.startswith("(-"):
                          stack.append(f"({a} - {b[1:]})")
+                    elif token == '-' and b.startswith("-") and not b.startswith("(-"):
+                         stack.append(f"({a} + {b[1:]})")
                     elif token == '-' and a == "0":
                          stack.append(f"(-{b})")
                     elif token == 'pow':
@@ -299,4 +305,7 @@ class GPUSimplifier:
                 
         if len(stack) == 1:
             return stack[0]
-        return "Invalid"
+        else:
+            # DEBUG: Leftover stack
+            print(f"[DEBUG] Invalid Stack Size: {len(stack)}. Top: {stack[-1] if stack else 'Empty'}")
+            return "Invalid"
