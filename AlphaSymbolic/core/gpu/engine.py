@@ -82,7 +82,13 @@ class TensorGeneticEngine:
         return self.optimizer.optimize_constants(population, constants, x, y, steps, lr)
         
     def simplify_population(self, population, constants, top_k=None):
-        return self.simplifier.simplify_population(population, constants, top_k)
+        # GPU-native symbolic simplifier (vectorized, no CPU roundtrip)
+        if top_k is None:
+            # For the GPU simplifier, we can afford more than 5.
+            # But let's keep a reasonable limit to avoid bloating formulas too much every gen.
+            top_k = min(100, population.shape[0])
+            
+        return self.gpu_simplifier.simplify_batch(population, constants)
 
     def infix_to_rpn(self, formulas: List[str]) -> torch.Tensor:
         return self.operators._infix_list_to_rpn(formulas)
@@ -636,6 +642,7 @@ class TensorGeneticEngine:
                     population[offset:offset+n] = pat_pop[:n]
                     pop_constants[offset:offset+n] = pat_consts[:n].to(self.dtype)
 
+        last_reported_fitness = float('inf')
         best_rmse = float('inf')
         best_rpn = None
         best_consts_vec = None
@@ -747,7 +754,16 @@ class TensorGeneticEngine:
 
                 stagnation = 0
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
-                if callback: callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
+
+                # Only report to user if improvement is significant (> 0.1%)
+                # Case 1: First best found (last_reported_fitness is inf)
+                # Case 2: Improvement > 0.1%
+                is_first = (last_reported_fitness == float('inf'))
+                rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
+                
+                if callback and (is_first or rel_improvement > 0.001):
+                    last_reported_fitness = best_rmse
+                    callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             else:
                 stagnation += 1
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")

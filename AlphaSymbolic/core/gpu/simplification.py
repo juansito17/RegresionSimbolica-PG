@@ -151,6 +151,9 @@ class GPUSimplifier:
         pop_out = population.clone()
         const_out = constants.clone()
         
+        process_indices = []
+        process_hashes = []
+        
         # Process only cache hits on GPU, defer SymPy to rare cases
         # Convert hashes to Python only for cache lookup (minimal CPU touch)
         for i in range(min(top_k, population.shape[0])):

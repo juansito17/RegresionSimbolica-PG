@@ -19,7 +19,7 @@ class GPUGrammar:
         elif num_variables == 1:
             self.active_variables = ['x', 'x0'] 
 
-        self.terminals = self.active_variables + ['C', '1', '2', '3', '5'] # Removed pi, e to avoid collision
+        self.terminals = self.active_variables + ['C', '0', '1', '2', '3', '5', '10', 'pi'] # Sync with core.grammar.CONSTANTS
         for t in self.terminals:
             self.token_to_id[t] = self.next_id
             self.id_to_token[self.next_id] = t

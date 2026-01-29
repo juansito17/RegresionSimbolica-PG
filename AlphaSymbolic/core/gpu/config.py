@@ -63,10 +63,10 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 500_000
+    POP_SIZE = 1_000_000
     GENERATIONS = 500  
-    NUM_ISLANDS = 20 # 500k / 25 = 20 islands
-    MIN_POP_PER_ISLAND = 50
+    NUM_ISLANDS = 50 # 1M / 50 = 20 islands
+    MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = True

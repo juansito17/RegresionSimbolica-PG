@@ -221,7 +221,7 @@ class ExpressionTree:
             # Functions like sin(x)
             func_id = node.func.id
             # Allow both standard names and GPU short tokens
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial',
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial', 'pow',
                            'S', 'C', 'T', 'e', 'g', '_', '!']: 
                 
                 # Map back to short tokens if used by engine
@@ -255,8 +255,11 @@ class ExpressionTree:
             return [str(node.value)]
         elif isinstance(node, ast.Num): # Older python
             return [str(node.n)]
+        elif hasattr(node, 'value') and not isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Call, ast.Name)):
+            # Catch-all for other constant-like objects (e.g. Constant in some environments)
+            return [str(node.value)]
 
-        raise ValueError(f"Unsupported AST node: {node}")
+        raise ValueError(f"Unsupported AST node: {node} ({type(node)})")
 
 
     def _build_tree(self, tokens):
