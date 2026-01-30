@@ -285,7 +285,7 @@ class GPUSimplifier:
                          stack.append(f"({a} + {b[1:]})")
                     elif token == '-' and a == "0":
                          stack.append(f"(-{b})")
-                    elif token == 'pow':
+                    elif token == 'pow' or token == '^':
                          stack.append(f"({a} ^ {b})")
                     elif token == '%':
                          stack.append(f"({a} % {b})")

@@ -69,10 +69,11 @@ class GpuGlobals:
     MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = True
+    # --- Fórmula Inicial ---
+    USE_INITIAL_FORMULA = False
     #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "(log(((log(((pi + x0) + sign(cos(fact(sqrt(x0)))))) + (floor((3 / sqrt(x0))) * ((x0 - 1) / 3))) * fact(x0))) + (x0 / -1.04728078))"
+    INITIAL_FORMULA_STRING = ""
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -154,7 +155,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
-    COMPLEXITY_PENALTY = 0.0001 # Reduced to allow growth
+    COMPLEXITY_PENALTY = 0.001 # Reduced to allow growth
     LOSS_FUNCTION = 'RMSE' # Changed from RMSLE because USE_LOG_TRANSFORMATION=True. 
                            # RMSE on Log(y) == RMSLE on y. Avoids double log.
     USE_RMSE_FITNESS = True

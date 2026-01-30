@@ -69,32 +69,44 @@ def parse_data(x_str, y_str):
 
 def create_fit_plot(x, y, y_pred, formula):
     """Create a plot showing data vs prediction."""
-    fig, ax = plt.subplots(figsize=(8, 5), facecolor='#1a1a2e')
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(8, 5), facecolor='#1a1a2e')
+    ax = fig.add_subplot(111)
     ax.set_facecolor('#1a1a2e')
     
     # Check dimensions
+    
+    # Modern dark theme styling
+    fig.patch.set_facecolor('#0f172a')
+    ax.set_facecolor('#0f172a')
+    
+    # Plot Real Data
     if x.ndim > 1 and x.shape[1] > 1:
-        # Multi-Variable: Parity Plot (Real vs Predicted)
-        ax.scatter(y, y_pred, color='#4ade80', s=100, edgecolors='white', alpha=0.7)
-        
-        # Perfect fit line
-        min_val = min(y.min(), y_pred.min())
-        max_val = max(y.max(), y_pred.max())
-        ax.plot([min_val, max_val], [min_val, max_val], '--', color='white', alpha=0.5, label='Ideal')
-        
-        ax.set_xlabel('Valor Real (Target)', color='white')
-        ax.set_ylabel('Prediccion', color='white')
-        ax.set_title(f'Multi-Variable: {x.shape[1]} Features', color='white', fontweight='bold')
-        
+        # Multi-variable: Plot only target values (Y) vs Index
+        indices = np.arange(len(y))
+        ax.scatter(indices, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1.5)
     else:
-        # 1D: Standard X vs Y
-        # Flatten if needed
+        # 1D: Plot X vs Y
         if x.ndim > 1: x = x.flatten()
-        
-        ax.scatter(x, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1)
-        
-        sort_idx = np.argsort(x)
-        ax.plot(x[sort_idx], y_pred[sort_idx], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
+        ax.scatter(x, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1.5)
+
+    # Plot Prediction (Handle NaNs)
+    if y_pred is not None:
+        if x.ndim > 1 and x.shape[1] > 1:
+            indices = np.arange(len(y_pred))
+            # Filter NaNs
+            valid = np.isfinite(y_pred)
+            if valid.any():
+                ax.plot(indices[valid], y_pred[valid], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
+        else:
+            sort_idx = np.argsort(x)
+            x_sorted = x[sort_idx]
+            y_pred_sorted = y_pred[sort_idx]
+            
+            # Filter NaNs
+            valid = np.isfinite(y_pred_sorted)
+            if valid.any():
+                ax.plot(x_sorted[valid], y_pred_sorted[valid], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
         
         ax.set_xlabel('X', color='white', fontsize=12)
         ax.set_ylabel('Y', color='white', fontsize=12)
@@ -107,7 +119,7 @@ def create_fit_plot(x, y, y_pred, formula):
     for spine in ax.spines.values():
         spine.set_color('#00d4ff')
     
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
 
 

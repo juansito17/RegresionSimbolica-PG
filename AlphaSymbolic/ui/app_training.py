@@ -733,8 +733,9 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
 
 def create_loss_plot(losses, title):
     """Create a loss plot with dark theme."""
-    plt.close('all')
-    fig, ax = plt.subplots(figsize=(8, 4), facecolor='#1a1a2e')
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(8, 4), facecolor='#1a1a2e')
+    ax = fig.add_subplot(111)
     ax.set_facecolor('#1a1a2e')
     
     if losses and len(losses) > 0:
@@ -754,14 +755,16 @@ def create_loss_plot(losses, title):
     ax.grid(True, alpha=0.2)
     for spine in ax.spines.values():
         spine.set_color('#00d4ff')
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
 
 
 def create_selfplay_plot(losses, rmses):
     """Create dual plot for self-play results."""
-    plt.close('all')
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor='#1a1a2e')
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(12, 4), facecolor='#1a1a2e')
+    ax1 = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
     
     ax1.set_facecolor('#1a1a2e')
     if losses:
@@ -788,7 +791,7 @@ def create_selfplay_plot(losses, rmses):
         for spine in ax.spines.values():
             spine.set_color('#00d4ff')
     
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
 
 def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Progress()):

@@ -13,6 +13,7 @@
 *.a
 *.pdb
 *.ilk
+*.pyd
 
 # CMake & Ninja
 CMakeCache.txt
