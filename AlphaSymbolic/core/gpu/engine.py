@@ -54,19 +54,20 @@ class TensorGeneticEngine:
         # Pass dtype to sub-components
         self.evaluator = GPUEvaluator(self.grammar, self.device, dtype=self.dtype)
         self.operators = GPUOperators(self.grammar, self.device, self.pop_size, self.max_len, self.num_variables, dtype=self.dtype)
-        self.optimizer = GPUOptimizer(self.evaluator, self.operators, self.device)
+        self.optimizer = GPUOptimizer(self.evaluator, self.operators, self.device, dtype=self.dtype)
         self.simplifier = GPUSimplifier(self.grammar, self.device, self.max_constants)
         self.gpu_simplifier = GPUSymbolicSimplifier(self.grammar, self.device, dtype=self.dtype)
         
         # --- Advanced Features ---
         self.sniper = Sniper(self.device)
-        self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE)
+        self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE, dtype=self.dtype)
         self.pattern_memory = PatternMemory(
             self.device, 
             self.operators,
             max_patterns=100,
             fitness_threshold=GpuGlobals.PATTERN_RECORD_FITNESS_THRESHOLD,
-            min_uses=GpuGlobals.PATTERN_MEM_MIN_USES
+            min_uses=GpuGlobals.PATTERN_MEM_MIN_USES,
+            dtype=self.dtype
         )
         
         # --- Persistent Cache for Initial Population ---
@@ -360,29 +361,36 @@ class TensorGeneticEngine:
     def migrate_islands(self, population, constants, fitness):
         if self.n_islands <= 1: return population, constants
         
-        pop_out = population.clone()
-        const_out = constants.clone()
         island_size = self.island_size
         mig_size = min(GpuGlobals.MIGRATION_SIZE, island_size // 2)
         
-        for island in range(self.n_islands):
-            src_start = island * island_size
-            src_end = src_start + island_size
-            dst_island = (island + 1) % self.n_islands
-            dst_start = dst_island * island_size
-            dst_end = dst_start + island_size
-            
-            src_fitness = fitness[src_start:src_end]
-            _, best_idx_local = torch.topk(src_fitness, mig_size, largest=False)
-            best_idx_global = best_idx_local + src_start
-            
-            dst_fitness = fitness[dst_start:dst_end]
-            _, worst_idx_local = torch.topk(dst_fitness, mig_size, largest=True)
-            worst_idx_global = worst_idx_local + dst_start
-            
-            pop_out[worst_idx_global] = population[best_idx_global]
-            const_out[worst_idx_global] = constants[best_idx_global]
-            
+        # 1. Reshape fitness to [n_islands, island_size]
+        fit_view = fitness.view(self.n_islands, island_size)
+        
+        # 2. Find best and worst indices in each island (Vectorized)
+        _, best_local_idx = torch.topk(fit_view, mig_size, dim=1, largest=False)
+        _, worst_local_idx = torch.topk(fit_view, mig_size, dim=1, largest=True)
+        
+        # 3. Convert to global indices
+        island_offsets = torch.arange(0, self.pop_size, island_size, device=self.device).view(self.n_islands, 1)
+        best_global_idx = (best_local_idx + island_offsets).view(-1)
+        worst_global_idx = (worst_local_idx + island_offsets).view(-1)
+        
+        # 4. Extract Migrants
+        migrants_pop = population[best_global_idx].view(self.n_islands, mig_size, self.max_len)
+        migrants_const = constants[best_global_idx].view(self.n_islands, mig_size, self.max_constants)
+        
+        # 5. Circular Shift (Migration Logic): Island i -> Island (i+1)%N
+        # We roll the first dimension to the right
+        shifted_migrants_pop = torch.roll(migrants_pop, shifts=1, dims=0).view(-1, self.max_len)
+        shifted_migrants_const = torch.roll(migrants_const, shifts=1, dims=0).view(-1, self.max_constants)
+        
+        # 6. Apply to next buffers (In-place on current clone)
+        pop_out = population.clone()
+        const_out = constants.clone()
+        pop_out[worst_global_idx] = shifted_migrants_pop
+        const_out[worst_global_idx] = shifted_migrants_const
+        
         return pop_out, const_out
 
     def tournament_selection_island(self, population, fitness, n_islands, tournament_size=3):
@@ -960,7 +968,7 @@ class TensorGeneticEngine:
                 return winner_global_idx.view(-1) # Flatten to [Total Needed]
 
             # --- CROSSOVER (Global Batch) ---
-            chunk_size = 1000000
+            chunk_size = 50000
             
             if total_cross > 0:
                 parents_idx = get_island_parents(n_cross_per_island)
@@ -986,7 +994,7 @@ class TensorGeneticEngine:
                 parents_idx = get_island_parents(n_mut_per_island)
                      
                 m_ptr = 0
-                chunk_size = 1000000
+                chunk_size = 50000
                 while m_ptr < total_mut:
                     curr = min(chunk_size, total_mut - m_ptr)
                     sub_idx = parents_idx[m_ptr : m_ptr + curr]

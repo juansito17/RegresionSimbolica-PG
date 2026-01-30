@@ -9,7 +9,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
-    USE_FLOAT32 = False # Optimización: Float32 (10x velocidad)
+    USE_FLOAT32 = True # Optimización: Float32 (10x velocidad)
     USE_LOG_TRANSFORMATION = True # Default False for general usage (User can enable it)
 
     # DATASET CENTRALIZADO (N-Reinas)

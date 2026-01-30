@@ -19,9 +19,10 @@ class ParetoOptimizer:
         - complexity: number of tokens (lower is better)
     """
     
-    def __init__(self, device: torch.device, max_front_size: int = 50):
+    def __init__(self, device: torch.device, max_front_size: int = 50, dtype=None):
         self.device = device
         self.max_front_size = max_front_size
+        self.dtype = dtype if dtype is not None else torch.float64
     
     def dominates(self, obj_a: Tuple[float, float], obj_b: Tuple[float, float]) -> bool:
         """
@@ -167,7 +168,7 @@ class ParetoOptimizer:
         """
         fronts, ranks = self.non_dominated_sort(fitness, complexity)
         n = fitness.shape[0]
-        crowding = torch.zeros(n, dtype=torch.float64, device=self.device)
+        crowding = torch.zeros(n, dtype=self.dtype, device=self.device)
         
         for front in fronts:
              # Compute crowding for each front
@@ -182,7 +183,7 @@ class ParetoOptimizer:
              c_vals = complexity[front]
              
              # Sub-crowding
-             dists = torch.zeros(k, dtype=torch.float64, device=self.device)
+             dists = torch.zeros(k, dtype=self.dtype, device=self.device)
              
              # Objective 1: Fitness
              sorted_idx = torch.argsort(f_vals)
@@ -229,7 +230,7 @@ class ParetoOptimizer:
                 f_vals = fitness[front]
                 c_vals = complexity[front]
                 
-                dists = torch.zeros(k, dtype=torch.float64, device=self.device)
+                dists = torch.zeros(k, dtype=self.dtype, device=self.device)
                 
                 # Fit
                 idx = torch.argsort(f_vals)
@@ -260,7 +261,7 @@ class ParetoOptimizer:
              f_vals = fitness[front]
              c_vals = complexity[front]
              k = front.shape[0]
-             dists = torch.zeros(k, dtype=torch.float64, device=self.device)
+             dists = torch.zeros(k, dtype=self.dtype, device=self.device)
              
              idx = torch.argsort(f_vals)
              dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')

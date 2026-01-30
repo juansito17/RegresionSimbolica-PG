@@ -6,10 +6,11 @@ from .evaluation import GPUEvaluator
 from .operators import GPUOperators
 
 class GPUOptimizer:
-    def __init__(self, evaluator: GPUEvaluator, operators: GPUOperators, device):
+    def __init__(self, evaluator: GPUEvaluator, operators: GPUOperators, device, dtype=torch.float64):
         self.evaluator = evaluator
         self.operators = operators
         self.device = device
+        self.dtype = dtype
 
     def optimize_constants(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, steps=10, lr=0.1):
         """
@@ -19,7 +20,7 @@ class GPUOptimizer:
         optimized_consts = constants.clone().detach().requires_grad_(True)
         optimizer = torch.optim.Adam([optimized_consts], lr=lr)
         
-        best_mse = torch.full((population.shape[0],), float('inf'), device=self.device, dtype=torch.float64)
+        best_mse = torch.full((population.shape[0],), float('inf'), device=self.device, dtype=self.dtype)
         best_consts = constants.clone().detach() 
         
         for _ in range(steps):
@@ -85,7 +86,7 @@ class GPUOptimizer:
         
         pos = constants.unsqueeze(1).repeat(1, num_particles, 1) # [B, P, K]
         # Jitter
-        noise = torch.randn(B, num_particles - 1, K, device=self.device, dtype=torch.float64) * 1.0
+        noise = torch.randn(B, num_particles - 1, K, device=self.device, dtype=self.dtype) * 1.0
         pos[:, 1:, :] += noise
         
         vel = torch.randn_like(pos) * 0.1
@@ -96,12 +97,12 @@ class GPUOptimizer:
         
         # Best Memory
         pbest_pos = flat_pos.clone()
-        pbest_err = torch.full((B * num_particles,), float('inf'), device=self.device, dtype=torch.float64)
+        pbest_err = torch.full((B * num_particles,), float('inf'), device=self.device, dtype=self.dtype)
         
         # Global Best (per swarm/individual)
         # We store this as [B, K] and [B] err
         gbest_pos = constants.clone()
-        gbest_err = torch.full((B,), float('inf'), device=self.device, dtype=torch.float64)
+        gbest_err = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
         
         # Loop
         for step in range(steps):

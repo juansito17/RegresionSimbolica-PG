@@ -16,16 +16,17 @@ class PatternMemory:
     """
     
     def __init__(self, device: torch.device, operators, max_patterns: int = 100, 
-                 fitness_threshold: float = 10.0, min_uses: int = 3):
+                 fitness_threshold: float = 10.0, min_uses: int = 3, dtype=None):
         """
         Args:
             device: Torch device
             operators: GPUOperators instance
             max_patterns: Maximum number of patterns to store
-            fitness_threshold: Only record patterns from individuals with fitness below this
             min_uses: Minimum uses before a pattern is considered "useful"
+            dtype: Floating point dtype for fitness (default float64)
         """
         self.device = device
+        self.dtype = dtype if dtype is not None else torch.float64
         self.operators = operators
         self.max_patterns = max_patterns
         self.fitness_threshold = fitness_threshold
@@ -44,7 +45,7 @@ class PatternMemory:
         self.patterns_hash = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_count = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_fitness = torch.full((max_patterns,), float('inf'), 
-                                           dtype=torch.float64, device=device)
+                                           dtype=self.dtype, device=device)
         self.patterns_len = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.n_patterns = 0  # Current number of stored patterns
         
