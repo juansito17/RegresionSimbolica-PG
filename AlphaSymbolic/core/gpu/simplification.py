@@ -20,6 +20,19 @@ except ImportError:
     
 from .grammar import PAD_ID, GPUGrammar
 
+try:
+    from sys import path as sys_path
+    from os import path as os_path
+    # Ensure CUDA module is reachable
+    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
+    if cuda_path not in sys_path: sys_path.append(cuda_path)
+    
+    import rpn_cuda_native
+    RPN_CUDA_AVAILABLE = True
+except ImportError:
+    RPN_CUDA_AVAILABLE = False
+    print("[GPUSimplifier] Warning: rpn_cuda_native not found. Using slow Python decoding.")
+
 class GPUSimplifier:
     def __init__(self, grammar: GPUGrammar, device, max_constants=5):
         self.grammar = grammar
@@ -237,6 +250,48 @@ class GPUSimplifier:
 
     @staticmethod
     def rpn_to_infix_static(rpn_tensor, constants, grammar) -> str:
+        # Fast Path: C++ Decoder
+        if RPN_CUDA_AVAILABLE:
+             # Prepare Inputs
+             if rpn_tensor.ndim == 1:
+                 # Single formula
+                 pop = rpn_tensor.unsqueeze(0).long() # [1, L]
+                 # Constants
+                 if constants is None: K=0
+                 else: K = constants.numel()
+                 
+                 consts = constants.unsqueeze(0) if constants is not None else torch.empty((1,0))
+                 if consts.ndim == 1: consts = consts.unsqueeze(0)
+                 
+                 # Vocab & Arities
+                 # Ideally we cache these, but grammar is passed here.
+                 # Reconstruct minimal inputs
+                 vocab_list = [grammar.id_to_token.get(i, "") for i in range(len(grammar.id_to_token))]
+                 # Pad vocab if needed? No, decoder checks range.
+                 # Ensure strict size
+                 max_id = max(grammar.id_to_token.keys())
+                 if len(vocab_list) <= max_id:
+                      # Fill gaps
+                      new_vocab = [""] * (max_id + 1)
+                      for k,v in grammar.id_to_token.items(): new_vocab[k] = v
+                      vocab_list = new_vocab
+                 
+                 # Arities
+                 arities = [0] * len(vocab_list)
+                 for k,v in grammar.id_to_token.items():
+                     arities[k] = grammar.token_arity.get(v, 0)
+                     
+                 # Decode
+                 # PAD_ID is global
+                 try:
+                     result = rpn_cuda_native.decode_rpn(pop, consts, vocab_list, arities, PAD_ID)
+                     if result and len(result) > 0:
+                         return result[0]
+                 except Exception as e:
+                     print(f"[GPUSimplifier] C++ Decode Error: {e}")
+                     # Fallback to python
+        
+        # Slow Path: Python Decoder
         # Inline logic from engine
         from .formatting import format_const
         
@@ -255,7 +310,7 @@ class GPUSimplifier:
                 arity = grammar.token_arity.get(token, 2)
                 if arity == 1:
                     if not stack: 
-                        print(f"[DEBUG] Stack Underflow for Unary {token}")
+                        # print(f"[DEBUG] Stack Underflow for Unary {token}")
                         return "Invalid"
                     a = stack.pop()
                     if token == 's' or token == 'sin': stack.append(f"sin({a})")
@@ -274,7 +329,7 @@ class GPUSimplifier:
                     else: stack.append(f"{token}({a})")
                 else: 
                     if len(stack) < 2: 
-                        print(f"[DEBUG] Stack Underflow for Binary {token}")
+                        # print(f"[DEBUG] Stack Underflow for Binary {token}")
                         return "Invalid"
                     b = stack.pop()
                     a = stack.pop()
@@ -306,6 +361,4 @@ class GPUSimplifier:
         if len(stack) == 1:
             return stack[0]
         else:
-            # DEBUG: Leftover stack
-            print(f"[DEBUG] Invalid Stack Size: {len(stack)}. Top: {stack[-1] if stack else 'Empty'}")
             return "Invalid"

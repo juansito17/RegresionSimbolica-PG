@@ -1,5 +1,8 @@
 
 #include <torch/extension.h>
+#include <vector>
+#include <string>
+#include <pybind11/stl.h>
 
 // Forward declaration
 void launch_rpn_kernel(
@@ -59,6 +62,16 @@ void run_rpn_cuda(
     );
 }
 
+// Forward declaration for decoder
+std::vector<std::string> decode_rpn(
+    torch::Tensor population, 
+    torch::Tensor constants, 
+    const std::vector<std::string>& vocab,
+    const std::vector<int>& arities,
+    int PAD_ID
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
+    m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)");
 }
