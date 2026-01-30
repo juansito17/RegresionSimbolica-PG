@@ -69,10 +69,10 @@ class GpuGlobals:
     MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = False
+    USE_INITIAL_FORMULA = True
     #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "((lgamma(x0) + sqrt(((x0 + (cos(((x0 + 5) + x1)) / x0)) + (cos(gamma((7.00021942 - x0))) % (5 + log(log(5))))))) - (x0 - 0.45850736))"
+    INITIAL_FORMULA_STRING = "(log(((log(((pi + x0) + sign(cos(fact(sqrt(x0)))))) + (floor((3 / sqrt(x0))) * ((x0 - 1) / 3))) * fact(x0))) + (x0 / -1.04728078))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas

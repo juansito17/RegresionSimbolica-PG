@@ -204,18 +204,20 @@ class TensorGeneticEngine:
                 
                 for t in rpn_tokens:
                      # Harmonize aliases to canonical GPU tokens
-                     # (ExpressionTree might output ^ instead of pow, or mod instead of %, etc)
                      if t in ['g', 'lgamma']: t = 'lgamma'
-                     elif t in ['!', 'fact', 'gamma']: 
-                         # Note: fact is tgamma(x+1). gamma is tgamma(x).
-                         # We rely on ExpressionTree to distinguish, but if ambiguous:
-                         pass 
+                     elif t == '!': t = 'fact' # Standardize ! to fact for GPU
                      elif t in ['S', 'asin']: t = 'asin'
                      elif t in ['T', 'atan']: t = 'atan'
                      elif t in ['_', 'floor']: t = 'floor'
-                     elif t in ['e', 'exp']: t = 'exp'
-                     elif t in ['%', 'mod']: t = '%' # Use % as canonical in grammar
-                     elif t in ['^', 'pow']: t = 'pow' # Use pow as canonical in grammar
+                     elif t == 'e': 
+                         # Disambiguate: if 'e' is followed by arguments it's exp, 
+                         # but here we have flat RPN. 
+                         # ExpressionTree from_infix usually maps exp() to 'exp' 
+                         # and constant e to 'e'.
+                         pass 
+                     elif t == 'exp': t = 'exp'
+                     elif t in ['%', 'mod']: t = '%' 
+                     elif t in ['^', 'pow']: t = 'pow' 
                      
                      if t in self.grammar.terminals and t not in ['C', '0', '1', '2', '3', '5', '10'] and not t.startswith('x'):
                          clean_tokens.append(t)
