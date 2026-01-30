@@ -182,8 +182,15 @@ class ExpressionTree:
                 processed_str = processed_str.replace('!', 'fact', 1)
 
         # 1b. Handle 'pow' and 'mod' keywords if they leak in
-        processed_str = processed_str.replace(' pow ', ' ^ ') # Be careful not to replace 'power' variable names if any, though we don't have them.
+        processed_str = processed_str.replace(' pow ', ' ^ ') 
         processed_str = processed_str.replace(' mod ', ' % ')
+        
+        # 1c. Handle double negatives which might confuse some versions or edge cases
+        # Replace '- -' with '+' (and '--' just in case)
+        # We use a loop to handle triple negatives etc.
+        while '- -' in processed_str or '--' in processed_str:
+            processed_str = processed_str.replace('- -', '+ ')
+            processed_str = processed_str.replace('--', '+ ')
 
         # 2. C++ uses ^ for power, Python uses **. AST parses ^ as BitXor.
         try:
@@ -221,17 +228,31 @@ class ExpressionTree:
             # Functions like sin(x)
             func_id = node.func.id
             # Allow both standard names and GPU short tokens
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial',
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial', 'pow',
                            'S', 'C', 'T', 'e', 'g', '_', '!']: 
                 
                 # Map back to short tokens if used by engine
                 # We assume engine uses short tokens for S, C, T, e, !, _, g
                 token = func_id
-                if func_id == 'asin': token = 'S'
-                if func_id == 'acos': token = 'C'
-                if func_id == 'atan': token = 'T'
-                if func_id == 'exp': token = 'e'
-                if func_id == 'fact' or func_id == 'factorial': token = '!' # Map fact to !
+                # Only map critical C++ aliases if absolutely needed, but prefer standard tokens
+                # if func_id == 'asin': token = 'S'  <-- S risks conflict? No, but let's be explicit
+                # if func_id == 'acos': token = 'C'  <-- C conflicts with Constant C!
+                # if func_id == 'atan': token = 'T'  <-- T risks conflict?
+                if func_id == 'exp': token = 'e'     # e is also constant e (2.71)?
+                # Check 'e'. CONSTANTS has 'e'. OPERATORS has 'e'.
+                # COLLISION on 'e'!
+                # exp(x) arity 1. e constant arity 0.
+                # Must fix 'e' too. Use 'exp'.
+                
+                if func_id == 'fact' or func_id == 'factorial': token = '!' 
+                if func_id == 'floor': token = '_'
+                if func_id == 'lgamma': token = 'g' # g is safe?
+                
+                # Force standard names to avoid collisions with Constants (C, e)
+                if func_id == 'exp': token = 'exp'
+                if func_id == 'acos': token = 'acos' 
+                if func_id == 'asin': token = 'asin'
+                if func_id == 'atan': token = 'atan'
                 if func_id == 'floor': token = '_'
                 if func_id == 'lgamma': token = 'g'
                 # func_id == 'gamma' stays 'gamma' (True Gamma)
@@ -255,8 +276,11 @@ class ExpressionTree:
             return [str(node.value)]
         elif isinstance(node, ast.Num): # Older python
             return [str(node.n)]
+        elif hasattr(node, 'value') and not isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Call, ast.Name)):
+            # Catch-all for other constant-like objects (e.g. Constant in some environments)
+            return [str(node.value)]
 
-        raise ValueError(f"Unsupported AST node: {node}")
+        raise ValueError(f"Unsupported AST node: {node} ({type(node)})")
 
 
     def _build_tree(self, tokens):
@@ -369,28 +393,35 @@ class ExpressionTree:
             if val == '/': 
                 return np.divide(args[0], args[1], out=np.zeros(n_samples, dtype=np.float64), where=args[1]!=0)
             if val == 'pow':
-                # Safe power
-                return np.power(np.abs(args[0]) + 1e-10, np.clip(args[1], -10, 10))
+                # Power logic in CUDA is standard pow(a, b)
+                return np.power(args[0], args[1])
             if val == 'mod':
-                return np.mod(args[0], args[1] + 1e-10)
+                # Python-style mod to match safe_mod in CUDA
+                # CUDA: r = fmod(a, b); if ((b > 0 && r < 0) || (b < 0 && r > 0)) r += b;
+                # This is exactly what np.mod does by default.
+                # However, we must handle the case where b is near zero as 0.0 to match CUDA's safe_mod.
+                return torch.where(torch.abs(args[1]) < 1e-9, torch.zeros_like(args[0]), np.mod(args[0], args[1])).numpy() if hasattr(args[1], 'device') else np.where(np.abs(args[1]) < 1e-9, 0.0, np.mod(args[0], args[1]))
             if val == 'sin': return np.sin(args[0])
             if val == 'cos': return np.cos(args[0])
             if val == 'tan': return np.tan(args[0])
             
             if val == 'asin' or val == 'S': 
-                # Protected asin: asin(clip(x, -1, 1))
-                return np.arcsin(np.clip(args[0], -1 + 1e-7, 1 - 1e-7))
+                # Match safe_asin: clip to [-1, 1] then asin, no extra epsilon
+                return np.arcsin(np.clip(args[0], -1.0, 1.0))
             if val == 'acos' or val == 'C': 
-                # Protected acos: acos(clip(x, -1, 1))
-                return np.arccos(np.clip(args[0], -1 + 1e-7, 1 - 1e-7))
+                # Match safe_acos: clip to [-1, 1] then acos, no extra epsilon
+                return np.arccos(np.clip(args[0], -1.0, 1.0))
             if val == 'atan' or val == 'T': return np.arctan(args[0])
             
             if val == 'exp' or val == 'e': 
-                return np.exp(np.clip(args[0], -100, 100))
+                # CUDA safe_exp clamps at [-80, 80]
+                return np.exp(np.clip(args[0], -80.0, 80.0))
             if val == 'log': 
-                return np.log(np.abs(args[0]) + 1e-10)
+                # CUDA safe_log returns NaN if <= 0
+                return np.log(args[0])
             if val == 'sqrt':
-                return np.sqrt(np.abs(args[0]))
+                # CUDA safe_sqrt returns NaN if < 0
+                return np.sqrt(args[0])
             if val == 'abs':
                 return np.abs(args[0])
             if val == 'floor' or val == '_':
@@ -399,24 +430,22 @@ class ExpressionTree:
                 return np.ceil(args[0])
             
             if val == '!':
-                # Factorial: x! = gamma(|x| + 1)
-                arg = np.abs(args[0]) + 1.0
-                clipped = np.clip(arg, 0.1, 50)
-                return scipy_gamma(clipped)
+                # CUDA safe_fact uses tgamma(arg + 1) with overflow check
+                arg = args[0] + 1.0
+                clipped = np.clip(arg, -30.0, 30.0) # match safe_tgamma clamp
+                res = scipy_gamma(clipped)
+                # If original was > 30, return 1e30 to match GPU
+                return np.where(np.abs(arg) > 30.0, 1e30, res)
                 
             if val == 'gamma':
-                # True Gamma: gamma(|x|)
-                # Note: Gamma(0) is undef, Gamma(negative int) is undef.
-                # Use |x| to avoid complex, and small offset to avoid 0.
-                arg = np.abs(args[0]) + 1e-10 
-                clipped = np.clip(arg, 0.1, 50)
-                return scipy_gamma(clipped)
+                # CUDA safe_tgamma: clamp at 30
+                clipped = np.clip(args[0], -30.0, 30.0)
+                res = scipy_gamma(clipped)
+                return np.where(np.abs(args[0]) > 30.0, 1e30, res)
 
             if val == 'lgamma' or val == 'g':
-                # Log Gamma: lgamma(|x|)
-                arg = np.abs(args[0]) + 1e-10
-                clipped = np.clip(arg, 0.1, 1000) 
-                return gammaln(clipped)
+                # CUDA safe_lgamma: standard lgamma
+                return gammaln(args[0])
             if val == 'neg':
                 return -args[0]
             if val == 'sign':

@@ -127,44 +127,37 @@ class GPUSimplifier:
             return population, constants, 0
         
         if top_k is None:
-            top_k = max(1, int(population.shape[0] * 0.1))
+            top_k = min(5, int(population.shape[0] * 0.01))  # Limit to 5 for CPU relief
             
         # Initialize Cache and Weights if needed
         if not hasattr(self, 'cache'):
-            self.cache = {} # Hash -> (RPN List, Const List)
-            # Use a limited size cache to prevent OOM over long runs?
-            # 100k items is fine.
+            self.cache = {}  # Hash -> (RPN List, Const List)
             
         if not hasattr(self, 'hash_weights'):
-             # Create weights for hashing (max_len)
-             L = population.shape[1]
-             self.hash_weights = torch.randint(-9223372036854775807, 9223372036854775807, (L,), device=self.device, dtype=torch.long)
+            L = population.shape[1]
+            self.hash_weights = torch.randint(-2**30, 2**30, (L,), device=self.device, dtype=torch.long)
 
-        # Compute Hashes for Top K
-        # Slice inputs
-        pop_slice = population[:top_k] # Assume sorted by fitness? 
-        # engine.py sorts by valid/fitness usually.
-        # But here we just take first k rows.
+        # Compute Hashes for Top K (GPU only)
+        pop_slice = population[:top_k]
         
-        # Ensure weights match L
         curr_L = population.shape[1]
         if self.hash_weights.shape[0] < curr_L:
-             self.hash_weights = torch.randint(-9223372036854775807, 9223372036854775807, (curr_L,), device=self.device, dtype=torch.long)
+            self.hash_weights = torch.randint(-2**30, 2**30, (curr_L,), device=self.device, dtype=torch.long)
         weights = self.hash_weights[:curr_L]
         
-        hashes = (pop_slice * weights).sum(dim=1) # [K]
-        hashes_cpu = hashes.cpu().numpy()
+        hashes = (pop_slice * weights).sum(dim=1)  # [K] - stays on GPU
         
         n_simplified = 0
         pop_out = population.clone()
         const_out = constants.clone()
         
-        # Indices to process
         process_indices = []
         process_hashes = []
         
+        # Process only cache hits on GPU, defer SymPy to rare cases
+        # Convert hashes to Python only for cache lookup (minimal CPU touch)
         for i in range(min(top_k, population.shape[0])):
-            h = hashes_cpu[i]
+            h = hashes[i].item()  # Single scalar transfer, not full array
             if h in self.cache:
                 # Cache Hit
                 cached_rpn, cached_consts = self.cache[h]
@@ -261,7 +254,9 @@ class GPUSimplifier:
             if token in grammar.operators:
                 arity = grammar.token_arity.get(token, 2)
                 if arity == 1:
-                    if not stack: return "Invalid"
+                    if not stack: 
+                        print(f"[DEBUG] Stack Underflow for Unary {token}")
+                        return "Invalid"
                     a = stack.pop()
                     if token == 's' or token == 'sin': stack.append(f"sin({a})")
                     elif token == 'c' or token == 'cos': stack.append(f"cos({a})")
@@ -278,12 +273,16 @@ class GPUSimplifier:
                     elif token == 'T' or token == 'atan': stack.append(f"atan({a})")
                     else: stack.append(f"{token}({a})")
                 else: 
-                    if len(stack) < 2: return "Invalid"
+                    if len(stack) < 2: 
+                        print(f"[DEBUG] Stack Underflow for Binary {token}")
+                        return "Invalid"
                     b = stack.pop()
                     a = stack.pop()
                     
                     if token == '+' and b.startswith("-") and not b.startswith("(-"):
                          stack.append(f"({a} - {b[1:]})")
+                    elif token == '-' and b.startswith("-") and not b.startswith("(-"):
+                         stack.append(f"({a} + {b[1:]})")
                     elif token == '-' and a == "0":
                          stack.append(f"(-{b})")
                     elif token == 'pow':
@@ -306,4 +305,7 @@ class GPUSimplifier:
                 
         if len(stack) == 1:
             return stack[0]
-        return "Invalid"
+        else:
+            # DEBUG: Leftover stack
+            print(f"[DEBUG] Invalid Stack Size: {len(stack)}. Top: {stack[-1] if stack else 'Empty'}")
+            return "Invalid"

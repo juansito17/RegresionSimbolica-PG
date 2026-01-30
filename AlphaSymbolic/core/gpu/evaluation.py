@@ -7,7 +7,7 @@ from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 
 class GPUEvaluator:
-    def __init__(self, grammar: GPUGrammar, device, max_stack=10, dtype=torch.float64):
+    def __init__(self, grammar: GPUGrammar, device, max_stack=64, dtype=torch.float64):
         self.grammar = grammar
         self.device = device
         self.MAX_STACK = max_stack
@@ -61,7 +61,7 @@ class GPUEvaluator:
                 pass
             elif x.shape[0] == y_target.shape[0]:
                 # Matches [Samples, Vars] -> Transpose
-                x = x.T
+                x = x.T.contiguous()
         
         N_vars, N_samples = x.shape
         
@@ -168,7 +168,7 @@ class GPUEvaluator:
                 pass
             elif x.shape[0] == n_samples:
                 # [Samples, Vars] - Transpose to [Vars, Samples]
-                x = x.T
+                x = x.T.contiguous()
         
         N_samples = x.shape[1]
         
@@ -189,10 +189,13 @@ class GPUEvaluator:
             diff = log_pred - log_target
             sq_err = diff**2
             
-            # Masking
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=self.dtype))
+            # Masking: Use high penalty for invalid keys instead of 0.0
+            # This prevents invalid individuals from having "perfect" 0.0 fitness
+            PENALTY = 1e10
+            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(PENALTY, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
-            loss = masked_sq_err.mean(dim=1)
+            # Clip loss to avoid huge gradients if we ever diff through valid path? 
+            # (Penalty is constant so grad is 0, safe)
             return loss, preds
             
         else:
@@ -200,7 +203,10 @@ class GPUEvaluator:
             sq_err = (preds - target)**2
             sq_err = torch.clamp(sq_err, max=1e10)
             
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(0.0, device=self.device, dtype=self.dtype))
+            # Masking: Use high penalty (same as max clamp)
+            # 0.0 caused "Invalid" formulas to appear as Perfect.
+            PENALTY = 1e10 
+            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(PENALTY, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
             # Return preds for visualization/boosting
             # preds is [B, N_samples]. We return it.
@@ -222,7 +228,7 @@ class GPUEvaluator:
                 pass
             elif x.shape[0] == n_samples:
                 # [Samples, Vars] - Transpose to [Vars, Samples]
-                x = x.T
+                x = x.T.contiguous()
         
         D = x.shape[1] # Samples
         

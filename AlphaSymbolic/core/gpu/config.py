@@ -10,7 +10,7 @@ class GpuGlobals:
     # Datos del Problema (Regresión Simbólica)
     # ----------------------------------------
     USE_FLOAT32 = False # Optimización: Float32 (10x velocidad)
-    USE_LOG_TRANSFORMATION = False # Default False for general usage (User can enable it)
+    USE_LOG_TRANSFORMATION = True # Default False for general usage (User can enable it)
 
     # DATASET CENTRALIZADO (N-Reinas)
     # x0 = n
@@ -18,9 +18,13 @@ class GpuGlobals:
     # x2 = n % 2
     # Targets: OEIS A000170
     _PROBLEM_Y_RAW = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,24233937684440,227514171973736,2207893435808352], dtype=np.float64)
+    # _PROBLEM_Y_RAW = np.array([1, 2, 6, 24, 120, 144, 28, 1408, 2025, 86400, 1782, 1092096, 4186, 31360, 241920000, 23953408, 140692, 114108912, 1092690], dtype=np.float64)
     
-    PROBLEM_X_START = 1
-    PROBLEM_X_END = 25 # Inclusive
+    # Coefficients optimized for n=8..27 (User Note).
+    # We must skip N < 8 because the (8/n)^26 term explodes.
+    PROBLEM_X_START = 8
+    # PROBLEM_X_END = 25 # Inclusive
+    PROBLEM_X_END = 24 # Inclusive
     
     DATA_FILTER_TYPE = "ALL" # Options: "ALL", "ODD", "EVEN"
 
@@ -35,7 +39,8 @@ class GpuGlobals:
         _mask = np.ones(len(_indices_raw), dtype=bool)
 
     PROBLEM_X_FILTERED = _indices_raw[_mask]
-    PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[_mask]
+    # Slice Y to match the X range (N=1 at index 0)
+    PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[(PROBLEM_X_START - 1) : PROBLEM_X_END][_mask]
     
     # Legacy/Direct Access Alias (pointing to FILTERED data to ensure usage)
     PROBLEM_Y_FULL = PROBLEM_Y_FILTERED 
@@ -58,14 +63,16 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 100_000 
+    POP_SIZE = 1_000_000
     GENERATIONS = 500  
-    NUM_ISLANDS = 40 # 4M / 40 = 100k per island
-    MIN_POP_PER_ISLAND = 50
+    NUM_ISLANDS = 50 # 1M / 50 = 100k pop per island
+    MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
     USE_INITIAL_FORMULA = False
-    INITIAL_FORMULA_STRING = "((lgamma((x0 + 2)) - cos((x1 / ((-0.15604612 * (x0 - (sqrt((x0 - sin(sin(3)))) ^ x2))) ^ x0)))) - x0)"
+    #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
+    # Evolved Gen 16 seed (Verified < 1% error)
+    INITIAL_FORMULA_STRING = "((lgamma(x0) + sqrt(((x0 + (cos(((x0 + 5) + x1)) / x0)) + (cos(gamma((7.00021942 - x0))) % (5 + log(log(5))))))) - (x0 - 0.45850736))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -84,6 +91,7 @@ class GpuGlobals:
     CONSTANT_INT_MAX_VALUE = 10
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 30  # MÁXIMO - expresiones muy complejas
+    MAX_CONSTANTS = 50 # Increased to 50 to guarantee ANY generated formula (size < 30) fits as a seed without truncation.
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
@@ -93,17 +101,19 @@ class GpuGlobals:
     USE_OP_MULT     = True
     USE_OP_DIV      = True
     USE_OP_POW      = True
-    USE_OP_MOD      = False
-    USE_OP_SIN      = False  # ENABLED for Trig Benchmark
-    USE_OP_COS      = False  # ENABLED for Trig Benchmark
+    USE_OP_MOD      = True
+    USE_OP_SIN      = True
+    USE_OP_COS      = True
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = True
-    USE_OP_FLOOR    = False
+    USE_OP_FLOOR    = True
     USE_OP_GAMMA    = True
-    USE_OP_ASIN     = False
-    USE_OP_ACOS     = False
-    USE_OP_ATAN     = False
+    USE_OP_ASIN     = True
+    USE_OP_ACOS     = True
+    USE_OP_ATAN     = True
+    USE_OP_CEIL     = True
+    USE_OP_SIGN     = True
 
     # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
     OPERATOR_WEIGHTS = [
@@ -122,7 +132,9 @@ class GpuGlobals:
         0.01 * (1.0 if USE_OP_GAMMA else 0.0),
         0.01 * (1.0 if USE_OP_ASIN else 0.0),
         0.01 * (1.0 if USE_OP_ACOS else 0.0),
-        0.01 * (1.0 if USE_OP_ATAN else 0.0)
+        0.01 * (1.0 if USE_OP_ATAN else 0.0),
+        0.005 * (1.0 if USE_OP_CEIL else 0.0),
+        0.005 * (1.0 if USE_OP_SIGN else 0.0)
     ]
 
     # ----------------------------------------
@@ -176,6 +188,8 @@ class GpuGlobals:
     LOCAL_SEARCH_ATTEMPTS = 30
     
     USE_SIMPLIFICATION = True
+    K_SIMPLIFY = 20                # Number of top formulas to simplify per island
+    SIMPLIFICATION_INTERVAL = 20    # Simplify every N generations
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
     USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems
@@ -186,7 +200,7 @@ class GpuGlobals:
     USE_RESIDUAL_BOOSTING = True  # Enable finding f(x)+g(x) using Sniper on residuals
     USE_NEURAL_FLASH = False      # Enable Neural Inspiration (Beam Search injection)
     USE_ALPHA_MCTS = False        # Enable Alpha Mode (MCTS Refinement)
-    USE_PATTERN_MEMORY = True     # Enable Lamarckian Subtree Learning
+    USE_PATTERN_MEMORY = True     # Optimized: GPU-Based Pattern Extraction
 
     # ----------------------------------------
     # Otros Parámetros

@@ -16,6 +16,7 @@ from .evaluation import GPUEvaluator
 from .operators import GPUOperators
 from .optimization import GPUOptimizer
 from .simplification import GPUSimplifier
+from .gpu_simplifier import GPUSymbolicSimplifier
 
 class TensorGeneticEngine:
     def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None, model=None):
@@ -55,12 +56,14 @@ class TensorGeneticEngine:
         self.operators = GPUOperators(self.grammar, self.device, self.pop_size, self.max_len, self.num_variables, dtype=self.dtype)
         self.optimizer = GPUOptimizer(self.evaluator, self.operators, self.device)
         self.simplifier = GPUSimplifier(self.grammar, self.device, self.max_constants)
+        self.gpu_simplifier = GPUSymbolicSimplifier(self.grammar, self.device, dtype=self.dtype)
         
         # --- Advanced Features ---
         self.sniper = Sniper(self.device)
         self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE)
         self.pattern_memory = PatternMemory(
             self.device, 
+            self.operators,
             max_patterns=100,
             fitness_threshold=GpuGlobals.PATTERN_RECORD_FITNESS_THRESHOLD,
             min_uses=GpuGlobals.PATTERN_MEM_MIN_USES
@@ -79,13 +82,24 @@ class TensorGeneticEngine:
         return self.optimizer.optimize_constants(population, constants, x, y, steps, lr)
         
     def simplify_population(self, population, constants, top_k=None):
-        return self.simplifier.simplify_population(population, constants, top_k)
+        # GPU-native symbolic simplifier (vectorized, no CPU roundtrip)
+        if top_k is None:
+            # For the GPU simplifier, we can afford more than 5.
+            # But let's keep a reasonable limit to avoid bloating formulas too much every gen.
+            top_k = min(100, population.shape[0])
+            
+        return self.gpu_simplifier.simplify_batch(population, constants)
 
     def infix_to_rpn(self, formulas: List[str]) -> torch.Tensor:
         return self.operators._infix_list_to_rpn(formulas)
         
     def rpn_to_infix(self, rpn_tensor: torch.Tensor, constants: torch.Tensor = None) -> str:
-        return self.simplifier._rpn_to_infix_str(rpn_tensor, constants)
+        res = self.simplifier._rpn_to_infix_str(rpn_tensor, constants)
+        if res == "Invalid":
+             # Debugging: Why invalid?
+             # print(f"[DEBUG Engine] Simplifier returned Invalid. RPN Tensor: {rpn_tensor}")
+             pass
+        return res
 
     def predict_individual(self, rpn: torch.Tensor, consts: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """
@@ -173,7 +187,7 @@ class TensorGeneticEngine:
             try:
                 tree = ExpressionTree.from_infix(f)
                 if not tree.is_valid:
-                     rpn_list.append(torch.zeros(self.max_len, dtype=torch.long, device=self.device))
+                     rpn_list.append(torch.full((self.max_len,), PAD_ID, dtype=torch.long, device=self.device))
                      # FIX: Use self.dtype
                      const_list.append(torch.zeros(self.max_constants, dtype=self.dtype, device=self.device))
                      continue
@@ -189,10 +203,24 @@ class TensorGeneticEngine:
                 const_values = []
                 
                 for t in rpn_tokens:
-                     if t in self.grammar.terminals and t not in ['C', '1', '2', '3', '5'] and not t.startswith('x'):
+                     # Harmonize aliases to canonical GPU tokens
+                     # (ExpressionTree might output ^ instead of pow, or mod instead of %, etc)
+                     if t in ['g', 'lgamma']: t = 'lgamma'
+                     elif t in ['!', 'fact', 'gamma']: 
+                         # Note: fact is tgamma(x+1). gamma is tgamma(x).
+                         # We rely on ExpressionTree to distinguish, but if ambiguous:
+                         pass 
+                     elif t in ['S', 'asin']: t = 'asin'
+                     elif t in ['T', 'atan']: t = 'atan'
+                     elif t in ['_', 'floor']: t = 'floor'
+                     elif t in ['e', 'exp']: t = 'exp'
+                     elif t in ['%', 'mod']: t = '%' # Use % as canonical in grammar
+                     elif t in ['^', 'pow']: t = 'pow' # Use pow as canonical in grammar
+                     
+                     if t in self.grammar.terminals and t not in ['C', '0', '1', '2', '3', '5', '10'] and not t.startswith('x'):
                          clean_tokens.append(t)
                      elif (t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit())):
-                         if t in ['1', '2', '3', '5']:
+                         if t in ['0', '1', '2', '3', '5', '10']:
                              clean_tokens.append(t)
                          else:
                              clean_tokens.append('C')
@@ -612,6 +640,8 @@ class TensorGeneticEngine:
                 # Update Buffer directly
                 population[:n] = seed_pop[:n]
                 pop_constants[:n] = seed_consts[:n].to(self.dtype)
+            else:
+                print("[DEBUG] CRITICAL: Seed loading returned None!")
                 
         # Patterns
         pats = self.detect_patterns(y_t.cpu().numpy().flatten())
@@ -624,6 +654,7 @@ class TensorGeneticEngine:
                     population[offset:offset+n] = pat_pop[:n]
                     pop_constants[offset:offset+n] = pat_consts[:n].to(self.dtype)
 
+        last_reported_fitness = float('inf')
         best_rmse = float('inf')
         best_rpn = None
         best_consts_vec = None
@@ -699,7 +730,7 @@ class TensorGeneticEngine:
                 
             # --- Pattern Memory Recording ---
             # Record successful subtrees
-            if GpuGlobals.USE_PATTERN_MEMORY and generations % 5 == 0:  # Hardcoded 5 for frequent recording
+            if GpuGlobals.USE_PATTERN_MEMORY and generations % 20 == 0:  # Reduced frequency for CPU relief
                  self.pattern_memory.record_subtrees(
                      population, fitness_rmse, self.grammar, 
                      min_size=3, max_size=12
@@ -735,7 +766,16 @@ class TensorGeneticEngine:
 
                 stagnation = 0
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
-                if callback: callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
+
+                # Only report to user if improvement is significant (> 0.1%)
+                # Case 1: First best found (last_reported_fitness is inf)
+                # Case 2: Improvement > 0.1%
+                is_first = (last_reported_fitness == float('inf'))
+                rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
+                
+                if callback and (is_first or rel_improvement > 0.001):
+                    last_reported_fitness = best_rmse
+                    callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             else:
                 stagnation += 1
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")
@@ -945,6 +985,44 @@ class TensorGeneticEngine:
                     p_ptr += curr
                     m_ptr += curr
                     del parents, offspring
+            
+            # --- SIMPLIFICATION ---
+            # --- SIMPLIFICATION ---
+            if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
+                 # Simplify only the BEST formulas in each island to save time
+                 # Pattern: Identify top formulas per island
+                 k_simplify = GpuGlobals.K_SIMPLIFY
+                 
+                 # Reshape fitness to islands
+                 island_fitness = selection_metric.view(self.n_islands, self.island_size)
+                 
+                 # Find top K indices within each island
+                 # We want the SMALLEST metrics (RMSE + penalty)
+                 _, top_local_idx = torch.topk(island_fitness, k_simplify, dim=1, largest=False)
+                 
+                 # Convert to global indices
+                 offsets = island_offsets.view(self.n_islands, 1)
+                 top_global_idx = (top_local_idx + offsets).view(-1)
+                 
+                 # Simplify only these individuals
+                 # Next_pop and next_c are already updated for the next generation
+                 # but we can simplify them now before the next loop starts.
+                 sub_pop = next_pop[top_global_idx]
+                 sub_const = next_c[top_global_idx]
+                 
+                  # Pass to optimized symbolic simplifier (vectorized)
+                 try:
+                     sim_pop, _, n_s = self.gpu_simplifier.simplify_batch(sub_pop, sub_const)
+                 except Exception as e:
+                     print(f"CRASH IN SIMPLIFIER: {e}")
+                     # Fallback: do not simplify
+                     sim_pop = sub_pop
+                 
+                 # Note: gpu_symbolic_simplifier.simplify_batch only returns population (constants are handled via PADs)
+                 
+                 # Write back
+                 next_pop[top_global_idx] = sim_pop
+                 # next_c[top_global_idx] = ... (constants preserved if not PADed)
             
             # Swap Buffers
             population = next_pop

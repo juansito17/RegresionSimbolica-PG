@@ -1,52 +1,55 @@
-# Python
+# Python Caches
 __pycache__/
 *.py[cod]
 *$py.class
+**/__pycache__/
 
-# Models
+# Models (Keep directories, ignore weights)
 models/*.pth
 models/*.pt
 alpha_symbolic_model_*.pth
 
-# Logs
+# Logs & Transient Data
 logs/
 *.log
 *.txt
 !requirements.txt
 !README.md
+cache/
+.gradio/
 
-# Jupyter
-.ipynb_checkpoints/
-notebooks/.ipynb_checkpoints/
-
-# System
-.DS_Store
-Thumbs.db
-
-# Data & Results
+# Results & Jupyter
 results/
 *.csv
 *.json
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Allow specific data patterns
 !data/
 !data/*.csv
 !data/*.json
 
-# Scripts & Code
-__pycache__/
-*.py[cod]
-*$py.class
-models/*.pth
-models/*.pt
+# System files
+.DS_Store
+Thumbs.db
 
-# Tracked directories (allow scripts)
-!tests/
-!tools/
-!benchmarks/
-!experiments/
-!debug/
+# Protected dirs (core logic and main engine)
+!core/
 !scripts/
+!search/
+!ui/
+!utils/
 
-# Ignore internal caches/temp
-**/__pycache__/
-.gradio/
+# Ignore utility, experimental and legacy folders
+debug/
+experiments/
+benchmarks/
+tests/
+tools/
+training/
+data/
+notebooks/
+results/
 cache/
+.gradio/

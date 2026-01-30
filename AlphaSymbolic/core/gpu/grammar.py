@@ -19,7 +19,7 @@ class GPUGrammar:
         elif num_variables == 1:
             self.active_variables = ['x', 'x0'] 
 
-        self.terminals = self.active_variables + ['C', '1', '2', '3', '5'] # Removed pi, e to avoid collision
+        self.terminals = self.active_variables + ['C', '0', '1', '2', '3', '5', '10', 'pi'] # Sync with core.grammar.CONSTANTS
         for t in self.terminals:
             self.token_to_id[t] = self.next_id
             self.id_to_token[self.next_id] = t
@@ -44,27 +44,37 @@ class GPUGrammar:
             if GpuGlobals.USE_OP_MINUS: self.operators.append('-')
             if GpuGlobals.USE_OP_MULT:  self.operators.append('*')
             if GpuGlobals.USE_OP_DIV:   self.operators.append('/')
-            if GpuGlobals.USE_OP_POW:   self.operators.append('pow')
-            if GpuGlobals.USE_OP_MOD:   self.operators.append('%')
+            if GpuGlobals.USE_OP_POW:   
+                self.operators.append('pow')
+                self.operators.append('^')
+            if GpuGlobals.USE_OP_MOD:   
+                self.operators.append('%')
+                self.operators.append('mod')
             if GpuGlobals.USE_OP_SIN:   self.operators.append('sin')
             if GpuGlobals.USE_OP_COS:   self.operators.append('cos')
             if GpuGlobals.USE_OP_LOG:   self.operators.append('log')
-            if GpuGlobals.USE_OP_EXP:   self.operators.append('e')
-            if GpuGlobals.USE_OP_FACT:  self.operators.append('!') # tgamma
-            # if GpuGlobals.USE_OP_FLOOR: self.operators.append('_') 
-            if GpuGlobals.USE_OP_GAMMA: self.operators.append('g')
-            if GpuGlobals.USE_OP_ASIN:  self.operators.append('S')
-            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos') # Avoid 'C' collision
-            if GpuGlobals.USE_OP_ATAN:  self.operators.append('T')
+            if GpuGlobals.USE_OP_EXP:   self.operators.append('exp')
+            if GpuGlobals.USE_OP_FACT:  self.operators.append('fact') 
+            if GpuGlobals.USE_OP_GAMMA: 
+                self.operators.append('gamma')
+                self.operators.append('lgamma')
+            if GpuGlobals.USE_OP_ASIN:  self.operators.append('asin')
+            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos')
+            if GpuGlobals.USE_OP_ATAN:  self.operators.append('atan')
+            if GpuGlobals.USE_OP_FLOOR: self.operators.append('floor')
+            if GpuGlobals.USE_OP_CEIL:  self.operators.append('ceil')
+            if GpuGlobals.USE_OP_SIGN:  self.operators.append('sign')
         else:
             # Fallback set
-            self.operators = ['+', '-', '*', '/', 'pow', 'sin', 'cos', 'log', 'e']
+            self.operators = ['+', '-', '*', '/', 'pow', 'sin', 'cos', 'log', 'exp']
 
         # Always active standard ops
         self.operators.append('sqrt')
         self.operators.append('abs')
         self.operators.append('neg')
-        self.operators.append('_') # Floor
+        if 'floor' not in self.operators: self.operators.append('floor')
+        if 'mod' not in self.operators: self.operators.append('mod')
+        if 'pow' not in self.operators: self.operators.append('pow')
 
         for op in self.operators:
             # check uniqueness (C vs cos collision? 'C' is const, 'C' op is Acos?)
