@@ -125,8 +125,16 @@ class Sniper:
         x_data, y_data: CPU lists or arrays.
         """
         try:
-            x_t = torch.tensor(x_data, device=self.device, dtype=torch.float32).flatten()
-            y_t = torch.tensor(y_data, device=self.device, dtype=torch.float32).flatten()
+            # Optimize: If inputs are already tensors, use them directly
+            if isinstance(x_data, torch.Tensor):
+                x_t = x_data.flatten()
+            else:
+                x_t = torch.tensor(x_data, device=self.device, dtype=torch.float32).flatten()
+                
+            if isinstance(y_data, torch.Tensor):
+                y_t = y_data.flatten()
+            else:
+                y_t = torch.tensor(y_data, device=self.device, dtype=torch.float32).flatten()
             
             # Check 1: Linear (y = mx+c)
             res = self.check_linear(x_t, y_t)

@@ -146,20 +146,22 @@ class TensorGeneticEngine:
              # 1. Get current predictions
              y_pred = self.predict_individual(best_rpn, best_consts, x_t)
              
-             # Convert to CPU for Sniper
-             x_cpu = x_t.cpu().numpy()
-             y_cpu = y_t.cpu().numpy()
-             pred_cpu = y_pred.detach().cpu().numpy()
+             # Optimize: Don't move to CPU yet
+             # x_cpu = x_t.cpu().numpy()
+             # y_cpu = y_t.cpu().numpy()
+             # pred_cpu = y_pred.detach().cpu().numpy()
              
              best_boost_str = None
              
              # --- Additive Boost: y = f(x) + g(x) ---
              # g(x) = y - f(x)
-             res_add = y_cpu - pred_cpu
+             # Optimization: Do this on GPU
+             res_add = y_t - y_pred.detach()
              
              # Check SNR: if residual is just noise (very small), skip
-             if np.std(res_add) > 1e-6:
-                 boost_add = self.sniper.run(x_cpu, res_add)
+             # Use torch.std which is on GPU
+             if torch.std(res_add) > 1e-6:
+                 boost_add = self.sniper.run(x_t, res_add)
                  if boost_add:
                      # Construct new formula
                      base_str = self.rpn_to_infix(best_rpn, best_consts)
@@ -170,13 +172,17 @@ class TensorGeneticEngine:
              # g(x) = y / f(x)
              # Avoid div by zero
              if best_boost_str is None: # Only try if additive failed (priority to additive)
-                 mask = np.abs(pred_cpu) > 1e-6
-                 if np.sum(mask) > len(mask) * 0.9: # 90% valid
-                     res_mult = np.zeros_like(y_cpu)
-                     res_mult[mask] = y_cpu[mask] / pred_cpu[mask]
+                 # Optimization: GPU masking
+                 mask = torch.abs(y_pred) > 1e-6
+                 if mask.sum() > len(mask) * 0.9: # 90% valid
+                     res_mult = torch.zeros_like(y_t)
+                     valid_pred = y_pred[mask]
+                     valid_y = y_t[mask]
                      
-                     if np.std(res_mult) > 1e-6:
-                         boost_mult = self.sniper.run(x_cpu, res_mult)
+                     res_mult[mask] = valid_y / valid_pred
+                     
+                     if torch.std(res_mult) > 1e-6:
+                         boost_mult = self.sniper.run(x_t, res_mult)
                          if boost_mult:
                               base_str = self.rpn_to_infix(best_rpn, best_consts)
                               new_str = f"({base_str} * {boost_mult})"
