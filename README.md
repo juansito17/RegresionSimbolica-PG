@@ -132,7 +132,7 @@ Las fórmulas se representan como árboles binarios:
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/tu-usuario/Algoritmo-Genetico-de-Formulas.git
+git clone https://github.com/juansito17/RegresionSimbolica-PG.git
 cd Algoritmo-Genetico-de-Formulas/Code
 
 # Crear directorio de compilación
@@ -282,7 +282,7 @@ Algoritmo-Genetico-de-Formulas/
 
 - 🎓 Estudiante de Ingeniería Informática (Quinto Semestre)
 - 🏛️ Politécnico Colombiano Jaime Isaza Cadavid
-- 📅 Última actualización: Diciembre 2025
+- 📅 Última actualización: Enero 2026
 
 ---
 
@@ -291,7 +291,7 @@ Algoritmo-Genetico-de-Formulas/
 Este proyecto está licenciado bajo la **Licencia Apache 2.0** - ver el archivo [LICENSE](LICENSE) para más detalles.
 
 ```
-Copyright 2025 Juan Manuel Peña Usuga
+Copyright 2026 Juan Manuel Peña Usuga
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

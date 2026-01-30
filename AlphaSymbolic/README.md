@@ -30,7 +30,7 @@ AlphaSymbolic es una inteligencia artificial autónoma capaz de **descubrir fór
 
 1.  **Clonar repositorio**:
     ```bash
-    git clone https://github.com/juansito17/AlphaSymbolic.git
+    git clone https://github.com/juansito17/RegresionSimbolica-PG.git
     cd AlphaSymbolic
     ```
 
@@ -82,7 +82,7 @@ Ve a `Benchmark (IQ Test)`.
 ## 📂 Despliegue en Google Colab
 
 Si no tienes GPU potente, usa Google Colab:
-1. Sube el archivo `AlphaSymbolic_Colab.ipynb` a tu Google Drive.
+1. Sube el archivo `Code/notebooks/GoogleColab_Project.ipynb` a tu Google Drive.
 2. Ábrelo y cambia el entorno a **T4 GPU**.
 3. Ejecuta todo.
 4. Obtendrás un link público (Gradio) para usar tu IA desde cualquier lugar.
