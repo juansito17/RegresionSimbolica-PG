@@ -59,6 +59,7 @@ cache/
 .gradio/
 *.pkl
 *.bak
+*.temp
 
 # Project specific
 AlphaSymbolic/data/*.json
