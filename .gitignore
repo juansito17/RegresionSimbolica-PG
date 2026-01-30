@@ -1,27 +1,20 @@
-# Build directories
-build/
-Code/build/
-bin/
-lib/
-out/
-
-# Executables
+# Build and binary files
+[Bb]uild/
+[Oo]ut/
+[Bb]in/
+[Ll]ib/
 *.exe
 *.dll
 *.so
 *.dylib
 *.bin
-SymbolicRegressionGP.exe
-a.exe
-CMakeDetermineCompilerABI_CXX.bin
-ompver_CXX.bin
-
-# Object files
 *.obj
 *.o
 *.a
+*.pdb
+*.ilk
 
-# CMake generated files
+# CMake & Ninja
 CMakeCache.txt
 CMakeFiles/
 Makefile
@@ -31,67 +24,50 @@ CMakeConfigureLog.yaml
 rules.ninja
 TargetDirectories.txt
 *.cmake
-
-# Ninja build files
 .ninja_deps
 .ninja_log
 build.ninja
 
-# Visual Studio files
+# VS Code & Visual Studio
+.vscode/
 .vs/
 *.user
-*.pdb
-*.ilk
 *.suo
 *.sln
 *.sdf
 *.opensdf
 
-# Python
+# Python artifacts
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 .ipynb_checkpoints/
 venv/
 env/
 .env
 
-# PyTorch / Models
-*.pth
-*.pt
-*.ckpt
-
-# Data & Artifacts
-AlphaSymbolic/data/*.json
-pattern_memory.json
-
-# IDEs
-.idea/
-.vscode/
-
-# OS generated files
-.DS_Store
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-# Logs
+# Data, Caches & Logs
 logs/
 *.log
 *.txt
 !README.md
 !LICENSE
 !requirements.txt
-
-# Output files
 outputs/
-
-# Temporary/test files
-hh.py
+results/
+cache/
 .gradio/
-
-# Pickle files
 *.pkl
-
-# Backup files
 *.bak
+
+# Project specific
+AlphaSymbolic/data/*.json
+pattern_memory.json
+hh.py
+comparison_results.txt
+
+# OS generated
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
