@@ -71,7 +71,44 @@ std::vector<std::string> decode_rpn(
     int PAD_ID
 );
 
+// --- Phase 2 Forward Declarations ---
+void launch_find_subtree_ranges(
+    const torch::Tensor& population,
+    const torch::Tensor& token_arities,
+    torch::Tensor& out_starts,
+    int PAD_ID
+);
+
+void launch_mutation_kernel(
+    torch::Tensor& population,
+    const torch::Tensor& rand_floats,
+    const torch::Tensor& rand_ints,
+    const torch::Tensor& token_arities,
+    const torch::Tensor& arity_0_ids,
+    const torch::Tensor& arity_1_ids,
+    const torch::Tensor& arity_2_ids,
+    float mutation_rate,
+    int PAD_ID
+);
+
+void launch_crossover_splicing(
+    const torch::Tensor& parent1,
+    const torch::Tensor& parent2,
+    const torch::Tensor& starts1,
+    const torch::Tensor& ends1,
+    const torch::Tensor& starts2,
+    const torch::Tensor& ends2,
+    torch::Tensor& child1,
+    torch::Tensor& child2,
+    int PAD_ID
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)");
+    
+    // Phase 2
+    m.def("find_subtree_ranges", &launch_find_subtree_ranges, "Find Subtree Ranges (CUDA)");
+    m.def("mutate_population", &launch_mutation_kernel, "Mutation Kernel (CUDA)");
+    m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)");
 }

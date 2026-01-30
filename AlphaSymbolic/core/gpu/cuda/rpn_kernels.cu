@@ -305,3 +305,282 @@ void launch_rpn_kernel(
         printf("CUDA Error: %s\n", cudaGetErrorString(err));
     }
 }
+
+// --- Phase 2: Crossover & Mutation Kernels ---
+
+__global__ void find_subtree_ranges_kernel(
+    const int64_t* __restrict__ population, // [B, L]
+    const int* __restrict__ token_arities,  // [VocabSize]
+    int64_t* __restrict__ out_starts,       // [B, L]
+    int B, int L, int vocab_size, int PAD_ID
+) {
+    int b = blockIdx.x; // Batch index
+    int tid = threadIdx.x; // Token index in sequence (0..L-1)
+    
+    if (b >= B || tid >= L) return;
+    
+    const int64_t* my_pop = &population[b * L];
+    int64_t* my_starts = &out_starts[b * L];
+    
+    int64_t token = my_pop[tid];
+    
+    // Default invalid
+    my_starts[tid] = -1;
+    
+    if (token == PAD_ID) return;
+    
+    // Get arity
+    int arity = 0;
+    if (token >= 0 && token < vocab_size) {
+        arity = token_arities[token];
+    }
+    
+    // Terminal (arity 0) -> Subtree is just itself
+    if (arity == 0) {
+        my_starts[tid] = tid;
+        return;
+    }
+    
+    // Operator -> Scan backwards to find bounds
+    // We need to satisfy 'arity' arguments.
+    int needed = arity;
+    
+    for (int j = tid - 1; j >= 0; --j) {
+        int64_t t = my_pop[j];
+        if (t == PAD_ID) break; // Invalid structure if we hit PAD
+        
+        int a = 0;
+        if (t >= 0 && t < vocab_size) {
+            a = token_arities[t];
+        }
+        
+        // Token j produces 1 output, satisfies 1 need
+        needed -= 1;
+        // But token j requires 'a' inputs
+        needed += a;
+        
+        if (needed == 0) {
+            // Found the start
+            my_starts[tid] = j;
+            return;
+        }
+    }
+    // If loop finishes and needed > 0, it's an invalid subtree (incomplete)
+}
+
+void launch_find_subtree_ranges(
+    const torch::Tensor& population,
+    const torch::Tensor& token_arities,
+    torch::Tensor& out_starts,
+    int PAD_ID
+) {
+    CHECK_INPUT(population);
+    CHECK_INPUT(token_arities);
+    CHECK_INPUT(out_starts);
+    
+    int B = population.size(0);
+    int L = population.size(1);
+    int vocab_size = token_arities.size(0);
+    
+    // 1 Block per Individual, L threads per block (since L is usually 30-256)
+    // If L > 1024, need loops, but typically L < 128 here.
+    dim3 blocks(B);
+    dim3 threads(L);
+    if (L > 1024) threads.x = 1024; // Simple cap, logic assumes single block per row implies L <= threads
+    
+    find_subtree_ranges_kernel<<<blocks, threads>>>(
+        population.data_ptr<int64_t>(),
+        token_arities.data_ptr<int32_t>(),
+        out_starts.data_ptr<int64_t>(),
+        B, L, vocab_size, PAD_ID
+    );
+    
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in find_subtree_ranges: %s\n", cudaGetErrorString(err));
+    }
+}
+
+__global__ void mutation_kernel(
+    int64_t* __restrict__ population,        // [B, L]
+    const float* __restrict__ rand_floats,   // [B, L] (0..1)
+    const int64_t* __restrict__ rand_ints,   // [B, L] (random integers)
+    const int* __restrict__ token_arities,   // [VocabSize]
+    const int64_t* __restrict__ arity_0_ids, int n_0,
+    const int64_t* __restrict__ arity_1_ids, int n_1,
+    const int64_t* __restrict__ arity_2_ids, int n_2,
+    float mutation_rate,
+    int B, int L, int vocab_size, int PAD_ID
+) {
+    int b = blockIdx.x;
+    int tid = threadIdx.x;
+    if (b >= B || tid >= L) return;
+    
+    int idx = b * L + tid;
+    int64_t token = population[idx];
+    
+    if (token == PAD_ID) return;
+    
+    // Check mutation probability
+    if (rand_floats[idx] >= mutation_rate) return;
+    
+    // Get arity
+    int arity = 0;
+    if (token >= 0 && token < vocab_size) {
+        arity = token_arities[token];
+    }
+    
+    // Select replacement
+    int64_t new_token = token;
+    uint64_t rand_val = (uint64_t)rand_ints[idx]; // Use raw bits
+    
+    if (arity == 0 && n_0 > 0) {
+        new_token = arity_0_ids[rand_val % n_0];
+    } else if (arity == 1 && n_1 > 0) {
+        new_token = arity_1_ids[rand_val % n_1];
+    } else if (arity == 2 && n_2 > 0) {
+        new_token = arity_2_ids[rand_val % n_2];
+    }
+    
+    population[idx] = new_token;
+}
+
+void launch_mutation_kernel(
+    torch::Tensor& population,
+    const torch::Tensor& rand_floats,
+    const torch::Tensor& rand_ints,
+    const torch::Tensor& token_arities,
+    const torch::Tensor& arity_0_ids,
+    const torch::Tensor& arity_1_ids,
+    const torch::Tensor& arity_2_ids,
+    float mutation_rate,
+    int PAD_ID
+) {
+    CHECK_INPUT(population);
+    CHECK_INPUT(rand_floats);
+    CHECK_INPUT(rand_ints);
+    
+    int B = population.size(0);
+    int L = population.size(1);
+    int vocab_size = token_arities.size(0);
+    
+    dim3 blocks(B);
+    dim3 threads(L);
+    if (L > 1024) threads.x = 1024;
+    
+    mutation_kernel<<<blocks, threads>>>(
+        population.data_ptr<int64_t>(),
+        rand_floats.data_ptr<float>(),
+        rand_ints.data_ptr<int64_t>(),
+        token_arities.data_ptr<int32_t>(),
+        arity_0_ids.data_ptr<int64_t>(), arity_0_ids.numel(),
+        arity_1_ids.data_ptr<int64_t>(), arity_1_ids.numel(),
+        arity_2_ids.data_ptr<int64_t>(), arity_2_ids.numel(),
+        mutation_rate,
+        B, L, vocab_size, PAD_ID
+    );
+}
+
+__global__ void crossover_splicing_kernel(
+    const int64_t* __restrict__ parent1, // [N, L]
+    const int64_t* __restrict__ parent2, // [N, L]
+    const int64_t* __restrict__ starts1, // [N]
+    const int64_t* __restrict__ ends1,   // [N]
+    const int64_t* __restrict__ starts2, // [N]
+    const int64_t* __restrict__ ends2,   // [N]
+    int64_t* __restrict__ child1,        // [N, L]
+    int64_t* __restrict__ child2,        // [N, L]
+    int N_pairs, int L, int PAD_ID
+) {
+    int n = blockIdx.x; // Pair index
+    int t = threadIdx.x; // Token index in child
+    
+    if (n >= N_pairs || t >= L) return;
+    
+    // --- Child 1 Construction ---
+    // Child 1 = P1_Pre + P2_Sub + P1_Post
+    int64_t s1 = starts1[n];
+    int64_t e1 = ends1[n];
+    int64_t s2 = starts2[n];
+    int64_t e2 = ends2[n];
+    
+    int64_t len_pre1 = s1; // [0, s1-1]
+    int64_t len_sub2 = e2 - s2 + 1;
+    int64_t cut1 = len_pre1 + len_sub2;
+    
+    int64_t val_c1 = PAD_ID;
+    
+    if (t < len_pre1) {
+        val_c1 = parent1[n * L + t];
+    } else if (t < cut1) {
+        // From Sub2
+        // t corresponds to index relative to start of sub2
+        // offset = t - len_pre1
+        // src_idx = s2 + offset
+        val_c1 = parent2[n * L + (s2 + t - len_pre1)];
+    } else {
+        // From Post1
+        // offset = t - cut1
+        // src_idx = e1 + 1 + offset
+        int64_t src_idx = e1 + 1 + t - cut1;
+        if (src_idx < L) {
+            val_c1 = parent1[n * L + src_idx];
+        } else {
+            val_c1 = PAD_ID;
+        }
+    }
+    child1[n * L + t] = val_c1;
+    
+    // --- Child 2 Construction ---
+    // Child 2 = P2_Pre + P1_Sub + P2_Post
+    int64_t len_pre2 = s2;
+    int64_t len_sub1 = e1 - s1 + 1;
+    int64_t cut2 = len_pre2 + len_sub1;
+    
+    int64_t val_c2 = PAD_ID;
+    
+    if (t < len_pre2) {
+        val_c2 = parent2[n * L + t];
+    } else if (t < cut2) {
+        val_c2 = parent1[n * L + (s1 + t - len_pre2)];
+    } else {
+        int64_t src_idx = e2 + 1 + t - cut2;
+        if (src_idx < L) {
+            val_c2 = parent2[n * L + src_idx];
+        } else {
+            val_c2 = PAD_ID;
+        }
+    }
+    child2[n * L + t] = val_c2;
+}
+
+void launch_crossover_splicing(
+    const torch::Tensor& parent1,
+    const torch::Tensor& parent2,
+    const torch::Tensor& starts1,
+    const torch::Tensor& ends1,
+    const torch::Tensor& starts2,
+    const torch::Tensor& ends2,
+    torch::Tensor& child1,
+    torch::Tensor& child2,
+    int PAD_ID
+) {
+    int N = parent1.size(0);
+    int L = parent1.size(1);
+    
+    dim3 blocks(N);
+    dim3 threads(L);
+    if (L > 1024) threads.x = 1024;
+    
+    crossover_splicing_kernel<<<blocks, threads>>>(
+        parent1.data_ptr<int64_t>(),
+        parent2.data_ptr<int64_t>(),
+        starts1.data_ptr<int64_t>(),
+        ends1.data_ptr<int64_t>(),
+        starts2.data_ptr<int64_t>(),
+        ends2.data_ptr<int64_t>(),
+        child1.data_ptr<int64_t>(),
+        child2.data_ptr<int64_t>(),
+        N, L, PAD_ID
+    );
+}

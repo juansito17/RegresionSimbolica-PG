@@ -6,6 +6,18 @@ from core.grammar import OPERATORS, ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 
+try:
+    from sys import path as sys_path
+    from os import path as os_path
+    # Ensure CUDA module is reachable
+    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
+    if cuda_path not in sys_path: sys_path.append(cuda_path)
+    import rpn_cuda_native
+    RPN_CUDA_AVAILABLE = True
+except ImportError:
+    RPN_CUDA_AVAILABLE = False
+    # print("[GPUOperators] Warning: rpn_cuda_native not found. Using pure PyTorch.")
+
 class GPUOperators:
     def __init__(self, grammar: GPUGrammar, device, pop_size, max_len=30, num_variables=1, dtype=torch.float64):
         self.grammar = grammar
@@ -43,6 +55,9 @@ class GPUOperators:
         self.arity_0_ids = torch.tensor(self.arity_0_ids, device=self.device)
         self.arity_1_ids = torch.tensor(self.arity_1_ids, device=self.device)
         self.arity_2_ids = torch.tensor(self.arity_2_ids, device=self.device)
+        
+        # Cache int32 arities for CUDA
+        self.token_arity_int = self.token_arity.to(dtype=torch.int32)
 
     def generate_random_population(self, size: int) -> torch.Tensor:
         """
@@ -243,6 +258,25 @@ class GPUOperators:
         """
         Performs arity-safe mutation on the population.
         """
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'mutate_population'):
+             # CUDA Fast Path
+             B, L = population.shape
+             rand_floats = torch.rand(population.shape, device=self.device, dtype=torch.float32)
+             rand_ints = torch.randint(0, 2**30, population.shape, device=self.device, dtype=torch.long)
+             
+             # In-place modification? No, clone to be safe (or in-place if allowed)
+             # PyTorch usually clones for mutation.
+             mutated_pop = population.clone()
+             
+             rpn_cuda_native.mutate_population(
+                 mutated_pop, rand_floats, rand_ints,
+                 self.token_arity_int,
+                 self.arity_0_ids, self.arity_1_ids, self.arity_2_ids,
+                 mutation_rate, PAD_ID
+             )
+             return mutated_pop
+
+        # Fallback to PyTorch
         mask = torch.rand_like(population, dtype=self.dtype) < mutation_rate
         mask = mask & (population != PAD_ID)
         
@@ -283,10 +317,17 @@ class GPUOperators:
         """
         Calculates the start index of the subtree ending at each position.
         Returns tensor [B, L] where value is start_index, or -1 if invalid/padding.
-        
-        Optimized version: O(L) instead of O(L^2).
-        Uses a single pass to track the last position where each stack depth occurred.
         """
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'find_subtree_ranges'):
+            B, L = population.shape
+            starts = torch.full((B, L), -1, dtype=torch.long, device=self.device)
+            # Ensure token_arity_int exists (legacy safety)
+            if not hasattr(self, 'token_arity_int'): self.token_arity_int = self.token_arity.to(dtype=torch.int32)
+            
+            rpn_cuda_native.find_subtree_ranges(population, self.token_arity_int, starts, PAD_ID)
+            return starts
+
+        # PyTorch Fallback
         B, L = population.shape
         device = self.device
         
@@ -301,40 +342,22 @@ class GPUOperators:
         depths = torch.cumsum(arities, dim=1)
         
         # 3. Find subtrees
-        # A subtree ending at i starts at j where depth[j-1] == depth[i] - 1
-        # and all depths between j and i are >= depth[i].
-        # In RPN, this j is the last position before i where depth was (depth[i] - 1).
-        
-        # We track the last index seen for each depth
-        # Max depth can be L, so we use a buffer of size L+1
-        # last_idx_for_depth[batch, depth] = index
         max_possible_depth = L + 2
         last_idx_for_depth = torch.full((B, max_possible_depth), -1, device=device, dtype=torch.long)
         
         # Initial depth is 0 at "index -1"
-        # We use depth + 1 as index to handle depth 0 safely
         last_idx_for_depth[:, 1] = 0 # depth 0 seen at start (virtual index)
         
         subtree_starts = torch.full((B, L), -1, device=device, dtype=torch.long)
         
-        # Single loop over sequence length
         for i in range(L):
             d = depths[:, i]
-            
-            # Target depth we're looking for is d - 1
-            # But the subtree starts AT the token AFTER the target depth was reached.
-            # So if depth was (d-1) at index 'prev', the subtree starts at 'prev + 1'.
-            
-            # Use gather to get the last index for (d-1)
             target_d_idx = (d).clamp(0, max_possible_depth - 1)
             starts = last_idx_for_depth.gather(1, target_d_idx.unsqueeze(1)).squeeze(1)
             
-            # If we found a valid start (starts >= 0), and it's not padding
             is_valid = (starts != -1) & (population[:, i] != PAD_ID)
             subtree_starts[is_valid, i] = starts[is_valid]
             
-            # Update last index seen for current depth d
-            # Shift depth index by 1 to handle 0
             update_idx = (d + 1).clamp(0, max_possible_depth - 1)
             last_idx_for_depth.scatter_(1, update_idx.unsqueeze(1), torch.full((B, 1), i + 1, device=device, dtype=torch.long))
 
@@ -374,48 +397,62 @@ class GPUOperators:
         len_2_pre = start_2
         len_2_sub = end_2 - start_2 + 1
         
-        # Reconstruct Child 1
-        grid = torch.arange(L, device=self.device).unsqueeze(0).expand(n_pairs, L)
-        
-        cut_1 = len_1_pre + len_2_sub
-        mask_c1_pre = (grid < len_1_pre.unsqueeze(1))
-        mask_c1_mid = (grid >= len_1_pre.unsqueeze(1)) & (grid < cut_1.unsqueeze(1))
-        # post is rest
-        
-        src_idx_c1 = torch.zeros((n_pairs, L), dtype=torch.long, device=self.device)
-        term_1 = grid
-        term_2 = grid - len_1_pre.unsqueeze(1) + start_2.unsqueeze(1)
-        term_3 = grid - cut_1.unsqueeze(1) + end_1.unsqueeze(1) + 1
-        
-        src_idx_c1 = torch.where(mask_c1_pre, term_1, 
-                       torch.where(mask_c1_mid, term_2, term_3))
-                       
-        # Child 2
-        cut_2 = len_2_pre + len_1_sub
-        mask_c2_pre = (grid < len_2_pre.unsqueeze(1))
-        mask_c2_mid = (grid >= len_2_pre.unsqueeze(1)) & (grid < cut_2.unsqueeze(1))
-        
-        term_2_1 = grid
-        term_2_2 = grid - len_2_pre.unsqueeze(1) + start_1.unsqueeze(1)
-        term_2_3 = grid - cut_2.unsqueeze(1) + end_2.unsqueeze(1) + 1
-        
-        src_idx_c2 = torch.where(mask_c2_pre, term_2_1,
-                       torch.where(mask_c2_mid, term_2_2, term_2_3))
-        
-        sel_c1 = torch.where(mask_c1_mid, torch.tensor(1, device=self.device), torch.tensor(0, device=self.device))
-        sel_c2 = torch.where(mask_c2_mid, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
-        
-        def gather_mixed(idx_map, sel_map, t0, t1):
-            safe_idx = torch.clamp(idx_map, 0, L-1)
-            val0 = t0.gather(1, safe_idx)
-            val1 = t1.gather(1, safe_idx)
-            res = torch.where(sel_map == 0, val0, val1)
-            is_pad = (idx_map < 0) | (idx_map >= L)
-            res[is_pad] = PAD_ID
-            return res
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'crossover_splicing'):
+             # CUDA Fast Splicing
+             # Allocate children
+             c1 = torch.full((n_pairs, L), PAD_ID, dtype=torch.long, device=self.device)
+             c2 = torch.full((n_pairs, L), PAD_ID, dtype=torch.long, device=self.device)
+             
+             rpn_cuda_native.crossover_splicing(
+                 parents_1, parents_2,
+                 start_1, end_1,
+                 start_2, end_2,
+                 c1, c2, PAD_ID
+             )
+        else:
+            # PyTorch Fallback
+            # Reconstruct Child 1
+            grid = torch.arange(L, device=self.device).unsqueeze(0).expand(n_pairs, L)
             
-        c1 = gather_mixed(src_idx_c1, sel_c1, parents_1, parents_2)
-        c2 = gather_mixed(src_idx_c2, sel_c2, parents_1, parents_2)
+            cut_1 = len_1_pre + len_2_sub
+            mask_c1_pre = (grid < len_1_pre.unsqueeze(1))
+            mask_c1_mid = (grid >= len_1_pre.unsqueeze(1)) & (grid < cut_1.unsqueeze(1))
+            # post is rest
+            
+            src_idx_c1 = torch.zeros((n_pairs, L), dtype=torch.long, device=self.device)
+            term_1 = grid
+            term_2 = grid - len_1_pre.unsqueeze(1) + start_2.unsqueeze(1)
+            term_3 = grid - cut_1.unsqueeze(1) + end_1.unsqueeze(1) + 1
+            
+            src_idx_c1 = torch.where(mask_c1_pre, term_1, 
+                           torch.where(mask_c1_mid, term_2, term_3))
+                           
+            # Child 2
+            cut_2 = len_2_pre + len_1_sub
+            mask_c2_pre = (grid < len_2_pre.unsqueeze(1))
+            mask_c2_mid = (grid >= len_2_pre.unsqueeze(1)) & (grid < cut_2.unsqueeze(1))
+            
+            term_2_1 = grid
+            term_2_2 = grid - len_2_pre.unsqueeze(1) + start_1.unsqueeze(1)
+            term_2_3 = grid - cut_2.unsqueeze(1) + end_2.unsqueeze(1) + 1
+            
+            src_idx_c2 = torch.where(mask_c2_pre, term_2_1,
+                           torch.where(mask_c2_mid, term_2_2, term_2_3))
+            
+            sel_c1 = torch.where(mask_c1_mid, torch.tensor(1, device=self.device), torch.tensor(0, device=self.device))
+            sel_c2 = torch.where(mask_c2_mid, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+            
+            def gather_mixed(idx_map, sel_map, t0, t1):
+                safe_idx = torch.clamp(idx_map, 0, L-1)
+                val0 = t0.gather(1, safe_idx)
+                val1 = t1.gather(1, safe_idx)
+                res = torch.where(sel_map == 0, val0, val1)
+                is_pad = (idx_map < 0) | (idx_map >= L)
+                res[is_pad] = PAD_ID
+                return res
+                
+            c1 = gather_mixed(src_idx_c1, sel_c1, parents_1, parents_2)
+            c2 = gather_mixed(src_idx_c2, sel_c2, parents_1, parents_2)
         
         parents[p1_idx] = c1
         parents[p2_idx] = c2
