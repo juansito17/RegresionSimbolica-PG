@@ -94,11 +94,14 @@ class TensorGeneticEngine:
         return self.operators._infix_list_to_rpn(formulas)
         
     def rpn_to_infix(self, rpn_tensor: torch.Tensor, constants: torch.Tensor = None) -> str:
+        if not GpuGlobals.USE_SYMPY:
+             # Basic conversion without SymPy cleanup
+             return self.simplifier.rpn_to_infix_static(rpn_tensor, constants, self.grammar)
+             
         res = self.simplifier._rpn_to_infix_str(rpn_tensor, constants)
         if res == "Invalid":
-             # Debugging: Why invalid?
-             # print(f"[DEBUG Engine] Simplifier returned Invalid. RPN Tensor: {rpn_tensor}")
-             pass
+             # Fallback to basic
+             return self.simplifier.rpn_to_infix_static(rpn_tensor, constants, self.grammar)
         return res
 
     def predict_individual(self, rpn: torch.Tensor, consts: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -106,17 +109,32 @@ class TensorGeneticEngine:
         Predicts y for a single individual.
         rpn: [L]
         consts: [MaxConstants]
-        x: [D]
-        Returns: [D] prediction
+        x: [N, Vars] or [Vars, N] or [N]
+        Returns: [N] predictions
         """
         # Wrap as batch of 1
         pop = rpn.unsqueeze(0)
         c = consts.unsqueeze(0)
-        # Use evaluate_differentiable to get preds (ignoring gradients/MSE)
-        # It handles the full stack logic properly.
-        # But evaluate_differentiable returns (rmse, preds).
-        _, preds = self.evaluator.evaluate_differentiable(pop, c, x, x) # passing x as dummy y
-        return preds.squeeze(0)
+        
+        # Standardize x to [Vars, N]
+        if x.dim() == 1:
+            x_for_vm = x.unsqueeze(0)
+        elif x.dim() == 2:
+            # If x is [N, Vars], and Vars matches num_variables, transpose.
+            # But wait, how do we know which is which? 
+            # We can check against self.num_variables.
+            if x.shape[1] == self.num_variables:
+                x_for_vm = x.T.contiguous()
+            else:
+                x_for_vm = x
+        else:
+            x_for_vm = x
+
+        # Run VM directly
+        preds_flat, sp, err = self.evaluator._run_vm(pop, x_for_vm, c)
+        
+        # Reshape to [N]
+        return preds_flat
 
     def attempt_residual_boost(self, best_rpn, best_consts, x_t, y_t):
         """
@@ -942,7 +960,7 @@ class TensorGeneticEngine:
                 return winner_global_idx.view(-1) # Flatten to [Total Needed]
 
             # --- CROSSOVER (Global Batch) ---
-            chunk_size = 50000
+            chunk_size = 1000000
             
             if total_cross > 0:
                 parents_idx = get_island_parents(n_cross_per_island)
@@ -968,6 +986,7 @@ class TensorGeneticEngine:
                 parents_idx = get_island_parents(n_mut_per_island)
                      
                 m_ptr = 0
+                chunk_size = 1000000
                 while m_ptr < total_mut:
                     curr = min(chunk_size, total_mut - m_ptr)
                     sub_idx = parents_idx[m_ptr : m_ptr + curr]

@@ -63,17 +63,17 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 4_000_000
+    POP_SIZE = 1_000_000
     GENERATIONS = 500  
-    NUM_ISLANDS = 40 # 4M / 40 = 100k pop per island
+    NUM_ISLANDS = 40 # 1M / 40 = 25k pop per island
     MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = True
+    USE_INITIAL_FORMULA = False
     #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "((atan(fact(sin(log((3 + x0))))) ^ (3.09679056 % sqrt(x0))) + (lgamma((atan(((x0 - atan(gamma(cos(x0)))) - (x0 % ceil(pi)))) + x0)) - x0))"
+    INITIAL_FORMULA_STRING = "((atan(fact(sin(log((3 + x0))))) ^ (3.09679054 % sqrt(x0))) + (lgamma((atan(((x0 - atan(gamma(cos(x0)))) - (x0 % ceil(pi)))) + x0)) - x0))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -212,4 +212,8 @@ class GpuGlobals:
     # Control de Duplicados
     PREVENT_DUPLICATES = True
     DUPLICATE_RETRIES = 10
+    
+    # Simplicación CPU (SymPy)
+    USE_SYMPY = False  # Set to False to reduce CPU load and rely on GPU-native simplification
+    
     INF = float('inf')

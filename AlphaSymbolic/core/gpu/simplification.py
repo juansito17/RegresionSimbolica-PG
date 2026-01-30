@@ -28,7 +28,7 @@ class GPUSimplifier:
         self.num_variables = len(self.grammar.active_variables)
 
     def simplify_expression(self, rpn_tensor: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, bool]:
-        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION:
+        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION or not GpuGlobals.USE_SYMPY:
             return rpn_tensor, constants, False
         
         try:

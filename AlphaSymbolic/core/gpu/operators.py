@@ -283,51 +283,61 @@ class GPUOperators:
         """
         Calculates the start index of the subtree ending at each position.
         Returns tensor [B, L] where value is start_index, or -1 if invalid/padding.
+        
+        Optimized version: O(L) instead of O(L^2).
+        Uses a single pass to track the last position where each stack depth occurred.
         """
         B, L = population.shape
-        subtree_starts = torch.full((B, L), -1, device=self.device, dtype=torch.long)
+        device = self.device
         
-        # Arities map
-        # Variable/Const/0-Arity -> 1 (Push 1)
-        # Unary -> 0 (Pop 1 Push 1)
-        # Binary -> -1 (Pop 2 Push 1)
-        
-        # We need efficient lookup. Using a tensor map is best.
-        # self.token_arity has 0/1/2.
-        # Net Stack Delta = 1 - Arity
-        # 0 -> +1
-        # 1 -> 0
-        # 2 -> -1
-        
+        # 1. Compute Stack Delta for each token
+        # terminals: +1, arity1: 0, arity2: -1
         token_net_change = 1 - self.token_arity
-        
         arities = token_net_change[population]
-        arities[population == PAD_ID] = -999 # Invalid
+        arities[population == PAD_ID] = 0
         
-        # Cumulative Sum (Stack Depth Profile)
-        safe_arities = arities.clone()
-        safe_arities[population == PAD_ID] = 0
-        depths = torch.cumsum(safe_arities, dim=1)
+        # 2. Compute Stack Depths at each position
+        # depth[i] is the stack size AFTER processing token i
+        depths = torch.cumsum(arities, dim=1)
         
+        # 3. Find subtrees
+        # A subtree ending at i starts at j where depth[j-1] == depth[i] - 1
+        # and all depths between j and i are >= depth[i].
+        # In RPN, this j is the last position before i where depth was (depth[i] - 1).
+        
+        # We track the last index seen for each depth
+        # Max depth can be L, so we use a buffer of size L+1
+        # last_idx_for_depth[batch, depth] = index
+        max_possible_depth = L + 2
+        last_idx_for_depth = torch.full((B, max_possible_depth), -1, device=device, dtype=torch.long)
+        
+        # Initial depth is 0 at "index -1"
+        # We use depth + 1 as index to handle depth 0 safely
+        last_idx_for_depth[:, 1] = 0 # depth 0 seen at start (virtual index)
+        
+        subtree_starts = torch.full((B, L), -1, device=device, dtype=torch.long)
+        
+        # Single loop over sequence length
         for i in range(L):
-            is_pad = (population[:, i] == PAD_ID)
+            d = depths[:, i]
             
-            # Target: depth[start-1] = depth[i] - 1
-            target_depth = depths[:, i] - 1
+            # Target depth we're looking for is d - 1
+            # But the subtree starts AT the token AFTER the target depth was reached.
+            # So if depth was (d-1) at index 'prev', the subtree starts at 'prev + 1'.
             
-            current_start = torch.full((B,), -1, device=self.device, dtype=torch.long)
-            found = torch.zeros(B, dtype=torch.bool, device=self.device)
+            # Use gather to get the last index for (d-1)
+            target_d_idx = (d).clamp(0, max_possible_depth - 1)
+            starts = last_idx_for_depth.gather(1, target_d_idx.unsqueeze(1)).squeeze(1)
             
-            for j in range(i, -1, -1):
-                prev_depth = depths[:, j-1] if j > 0 else torch.zeros(B, device=self.device)
-                match = (prev_depth == target_depth)
-                new_found = match & (~found)
-                current_start[new_found] = j
-                found = found | new_found
+            # If we found a valid start (starts >= 0), and it's not padding
+            is_valid = (starts != -1) & (population[:, i] != PAD_ID)
+            subtree_starts[is_valid, i] = starts[is_valid]
             
-            valid_i = (~is_pad) & found
-            subtree_starts[valid_i, i] = current_start[valid_i]
-            
+            # Update last index seen for current depth d
+            # Shift depth index by 1 to handle 0
+            update_idx = (d + 1).clamp(0, max_possible_depth - 1)
+            last_idx_for_depth.scatter_(1, update_idx.unsqueeze(1), torch.full((B, 1), i + 1, device=device, dtype=torch.long))
+
         return subtree_starts
 
     def crossover_population(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
