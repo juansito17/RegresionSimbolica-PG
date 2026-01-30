@@ -572,6 +572,7 @@ void launch_crossover_splicing(
     dim3 threads(L);
     if (L > 1024) threads.x = 1024;
     
+
     crossover_splicing_kernel<<<blocks, threads>>>(
         parent1.data_ptr<int64_t>(),
         parent2.data_ptr<int64_t>(),
@@ -583,4 +584,72 @@ void launch_crossover_splicing(
         child2.data_ptr<int64_t>(),
         N, L, PAD_ID
     );
+}
+
+// --- Phase 3: Tournament Selection ---
+
+__global__ void tournament_selection_kernel(
+    const float* __restrict__ fitness,      // [PopSize]
+    const int64_t* __restrict__ rand_idx,   // [PopSize, TourSize]
+    int64_t* __restrict__ selected_idx,     // [PopSize]
+    int pop_size, int tour_size
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pop_size) return;
+    
+    // My tournament candidates
+    // Access rand_idx[idx, 0..k]
+    // We assume rand_idx is flattened [PopSize * TourSize]
+    
+    const int64_t* my_candidates = &rand_idx[idx * tour_size];
+    
+    int64_t best_idx = my_candidates[0];
+    float best_fit = fitness[best_idx];
+    
+    for (int k = 1; k < tour_size; ++k) {
+        int64_t candidate = my_candidates[k];
+        float fit = fitness[candidate];
+        // Smaller RMSE is better
+        if (fit < best_fit) {
+            best_fit = fit;
+            best_idx = candidate;
+        }
+    }
+    
+    selected_idx[idx] = best_idx;
+}
+
+void launch_tournament_selection(
+    const torch::Tensor& fitness,
+    const torch::Tensor& rand_idx,
+    torch::Tensor& selected_idx
+) {
+    // fitness: [B]
+    // rand_idx: [B, K]
+    // selected_idx: [B]
+    
+    CHECK_INPUT(fitness);
+    CHECK_INPUT(rand_idx);
+    CHECK_INPUT(selected_idx);
+    
+    int B = fitness.size(0);
+    int K = rand_idx.size(1);
+    
+    int threads = 256;
+    int blocks = (B + threads - 1) / threads;
+    
+    // Dispatch based on fitness type? Assuming float32 fitness for now based on Plan
+    // If double, need template. Implementation assumes float.
+    
+    tournament_selection_kernel<<<blocks, threads>>>(
+        fitness.data_ptr<float>(),
+        rand_idx.data_ptr<int64_t>(),
+        selected_idx.data_ptr<int64_t>(),
+        B, K
+    );
+     
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in tournament_selection: %s\n", cudaGetErrorString(err));
+    }
 }

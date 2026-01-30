@@ -432,6 +432,29 @@ class TensorGeneticEngine:
         
         # Flatten to select fitness: [B * TourSize]
         flat_all_idx = global_rand_idx.view(-1)
+        
+        try:
+             import rpn_cuda_native
+             # CUDA Fast Path
+             # We need indices as [B, TourSize]
+             # flat_all_idx is [B * TourSize]. Reshape to [B, TourSize]
+             all_idx_mat = flat_all_idx.view(B, tournament_size)
+             
+             winner_indices = torch.zeros(B, dtype=torch.long, device=self.device)
+             
+             # Fitness needs to be float32 for current kernel?
+             # Check kernel signature. It takes float* fitness.
+             # If engine uses float64, we might need casting or template update.
+             # My kernel assumed float32. Let's cast to safety.
+             
+             fit_f32 = fitness.float()
+             
+             rpn_cuda_native.tournament_selection(fit_f32, all_idx_mat, winner_indices)
+             
+             return winner_indices
+        except ImportError:
+             pass
+        
         flat_fitness = fitness[flat_all_idx].view(B, tournament_size)
         
         # ArgMin per row (Tournament Winners)

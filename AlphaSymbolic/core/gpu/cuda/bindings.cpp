@@ -103,6 +103,32 @@ void launch_crossover_splicing(
     int PAD_ID
 );
 
+// --- Phase 3 Forward Declarations ---
+void launch_tournament_selection(
+    const torch::Tensor& fitness,
+    const torch::Tensor& rand_idx,
+    torch::Tensor& selected_idx
+);
+
+void launch_pso_update(
+    torch::Tensor& pos,
+    torch::Tensor& vel,
+    const torch::Tensor& pbest,
+    const torch::Tensor& gbest,
+    const torch::Tensor& r1,
+    const torch::Tensor& r2,
+    float w, float c1, float c2
+);
+
+void launch_pso_update_bests(
+    const torch::Tensor& current_err,
+    torch::Tensor& pbest_err,
+    torch::Tensor& pbest_pos,
+    const torch::Tensor& current_pos,
+    torch::Tensor& gbest_err,
+    torch::Tensor& gbest_pos
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)");
@@ -111,4 +137,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("find_subtree_ranges", &launch_find_subtree_ranges, "Find Subtree Ranges (CUDA)");
     m.def("mutate_population", &launch_mutation_kernel, "Mutation Kernel (CUDA)");
     m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)");
+    
+    // Phase 3
+    m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)");
+    m.def("pso_update", &launch_pso_update, "PSO Update (CUDA)");
+    m.def("pso_update_bests", &launch_pso_update_bests, "PSO Update Bests (CUDA)");
 }
+
+

@@ -110,41 +110,86 @@ class GPUOptimizer:
             # shape [B*P]
             errors = self.evaluator.evaluate_batch(pop_expanded, x, y, flat_pos)
             
-            # 4. Update Personal Bests
-            improved = errors < pbest_err
-            pbest_pos[improved] = flat_pos[improved]
-            pbest_err[improved] = errors[improved]
-            
-            # 5. Update Global Bests
-            # Reshape to [B, P]
-            reshaped_err = pbest_err.view(B, num_particles)
-            min_errs, min_indices = torch.min(reshaped_err, dim=1) # [B]
-            
-            improved_g = min_errs < gbest_err
-            if improved_g.any():
-                gbest_err[improved_g] = min_errs[improved_g]
-                # Get indices in flat array
+            # 4. & 5. Update Bests (CUDA or PyTorch)
+            try:
+                import rpn_cuda_native
+                # Resize errors to [B, P] for kernel
+                curr_err_view = errors.view(B, num_particles)
+                pbest_err_view = pbest_err.view(B, num_particles)
                 
+                # Reshape pos to [B, P, K]
                 pbest_pos_view = pbest_pos.view(B, num_particles, K)
+                curr_pos_view = flat_pos.view(B, num_particles, K)
                 
-                # Expand indices to [B, 1, K] to gather
-                gather_idx = min_indices.view(B, 1, 1).expand(B, 1, K)
-                new_gbests = pbest_pos_view.gather(1, gather_idx).squeeze(1)
+                rpn_cuda_native.pso_update_bests(
+                    curr_err_view, pbest_err_view, pbest_pos_view, curr_pos_view,
+                    gbest_err, gbest_pos
+                )
+            except ImportError:
+                # 4. Update Personal Bests
+                improved = errors < pbest_err
+                pbest_pos[improved] = flat_pos[improved]
+                pbest_err[improved] = errors[improved]
                 
-                gbest_pos[improved_g] = new_gbests[improved_g]
+                # 5. Update Global Bests
+                # Reshape to [B, P]
+                reshaped_err = pbest_err.view(B, num_particles)
+                min_errs, min_indices = torch.min(reshaped_err, dim=1) # [B]
                 
-            # 6. PSO Update
-            # V = w*V + c1*r1*(Pbest - X) + c2*r2*(Gbest - X)
-            
-            r1 = torch.rand_like(flat_pos)
-            r2 = torch.rand_like(flat_pos)
-            
-            # Broadcast Gbest [B, K] -> [B*P, K]
-            gbest_expanded = gbest_pos.repeat_interleave(num_particles, dim=0)
-            
-            # Reshape vel/pos to match? They are already flat [B*P]
-            vel = w * vel + c1 * r1 * (pbest_pos - flat_pos) + c2 * r2 * (gbest_expanded - flat_pos)
-            flat_pos += vel
+                improved_g = min_errs < gbest_err
+                if improved_g.any():
+                    gbest_err[improved_g] = min_errs[improved_g]
+                    # Get indices in flat array
+                    
+                    pbest_pos_view = pbest_pos.view(B, num_particles, K)
+                    
+                    # Expand indices to [B, 1, K] to gather
+                    gather_idx = min_indices.view(B, 1, 1).expand(B, 1, K)
+                    new_gbests = pbest_pos_view.gather(1, gather_idx).squeeze(1)
+                    
+                    gbest_pos[improved_g] = new_gbests[improved_g]
+                
+                
+            # 6. PSO Update (CUDA or PyTorch)
+            if hasattr(self.operators, 'RPN_CUDA_AVAILABLE') and self.operators.RPN_CUDA_AVAILABLE is False:
+                 pass # Check flag from operators if module loaded?
+                 # Actually easier: try import here or use checking
+                 
+            try:
+                import rpn_cuda_native
+                # CUDA Fast Path
+                # Generate random numbers on GPU
+                r1_3d = torch.rand(B, num_particles, K, device=self.device, dtype=self.dtype)
+                r2_3d = torch.rand(B, num_particles, K, device=self.device, dtype=self.dtype)
+                
+                # Reshape views for kernel (must be 3D [B, P, K])
+                pos_3d = flat_pos.view(B, num_particles, K)
+                vel_3d = vel.view(B, num_particles, K)
+                pbest_3d = pbest_pos.view(B, num_particles, K)
+                
+                # gbest_pos is [B, K], kernel handles broadcasting if logic allows, 
+                # BUT pso_update_kernel signature takes `const scalar_t* gbest` and indexes it as `gbest[b * K + k]`.
+                # This means gbest should be passed as [B, K] directly to C++, C++ treats it as flat buffer.
+                # PyTorch check in C++ might require contiguous.
+                
+                rpn_cuda_native.pso_update(
+                    pos_3d, vel_3d, pbest_3d, gbest_pos, r1_3d, r2_3d,
+                    w, c1, c2
+                )
+            except ImportError:
+                 # PyTorch Fallback
+                 r1 = torch.rand_like(flat_pos)
+                 r2 = torch.rand_like(flat_pos)
+                 
+                 # Broadcast Gbest [B, K] -> [B*P, K] of flattened view?
+                 # gbest_pos is [B, K]. We need it for each particle.
+                 # gbest_expanded = gbest_pos.repeat_interleave(num_particles, dim=0) -> [B*P, K]
+                 # But wait, the kernel handles broadcasting inside.
+                 # PyTorch fallback needs explicit expansion
+                 gbest_expanded = gbest_pos.repeat_interleave(num_particles, dim=0)
+                 
+                 vel = w * vel + c1 * r1 * (pbest_pos - flat_pos) + c2 * r2 * (gbest_expanded - flat_pos)
+                 flat_pos += vel
             
              # Handle Bounds? (Optional)
             

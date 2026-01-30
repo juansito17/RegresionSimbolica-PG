@@ -102,7 +102,7 @@ class GpuGlobals:
     USE_OP_MULT     = True
     USE_OP_DIV      = True
     USE_OP_POW      = True
-    USE_OP_MOD      = True
+    USE_OP_MOD      = False
     USE_OP_SIN      = True
     USE_OP_COS      = True
     USE_OP_LOG      = True

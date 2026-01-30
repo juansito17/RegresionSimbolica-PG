@@ -15,9 +15,8 @@ mkdir "%BUILD_DIR%" 2>nul
 
 echo Copying sources...
 copy setup.py "%BUILD_DIR%"
-copy rpn_kernels.cu "%BUILD_DIR%"
-copy bindings.cpp "%BUILD_DIR%"
-copy decoder.cpp "%BUILD_DIR%"
+copy *.cu "%BUILD_DIR%"
+copy *.cpp "%BUILD_DIR%"
 
 pushd "%BUILD_DIR%"
 echo Building in %CD% ...
