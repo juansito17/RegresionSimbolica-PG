@@ -97,6 +97,7 @@ class GPUSymbolicSimplifier:
             pop, n = self._apply_associative_rules(pop); n_pass += n
             pop, n = self._apply_advanced_rules(pop); n_pass += n
             pop, n = self._apply_term_consolidation(pop); n_pass += n
+            pop, n = self._apply_modulo_rules(pop); n_pass += n
             pop, n = self._apply_constant_folding(pop); n_pass += n
             pop, n = self._compact_formulas(pop); n_pass += n
             if n_pass == 0: break
@@ -642,6 +643,30 @@ class GPUSymbolicSimplifier:
                                 pop[b, s1+len(new):j+1] = PAD_ID
                                 n_simplified += 1
 
+        return pop, n_simplified
+
+    def _apply_modulo_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        B, L = population.shape
+        pop = population.clone()
+        n_simplified = 0
+        z_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
+        
+        self.OP_MOD = self.grammar.token_to_id.get('mod', -1)
+        if self.OP_MOD == -1: return pop, 0
+
+        for j in range(2, L):
+            op = pop[:, j]
+            if not (op == self.OP_MOD).any(): continue
+            
+            # x % x -> 0
+            arg2, arg1 = pop[:, j-1], pop[:, j-2]
+            match_self = (op == self.OP_MOD) & (arg1 == arg2) & (self.arity_table[arg1.clamp(0)] == 0) & (arg1 != PAD_ID)
+            
+            if match_self.any() and z_id != -1:
+                pop[match_self, j-2] = z_id
+                pop[match_self, j-1] = PAD_ID
+                pop[match_self, j] = PAD_ID
+                n_simplified += match_self.sum().item()
         return pop, n_simplified
 
     def _apply_constant_folding(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:

@@ -391,31 +391,26 @@ class ExpressionTree:
             if val == '-': return args[0] - args[1]
             if val == '*': return args[0] * args[1]
             if val == '/': 
-                return np.divide(args[0], args[1], out=np.zeros(n_samples, dtype=np.float64), where=args[1]!=0)
+                return np.divide(args[0], args[1], out=np.full(n_samples, np.nan, dtype=np.float64), where=args[1]!=0)
             if val == 'pow':
                 # Power logic in CUDA is standard pow(a, b)
                 return np.power(args[0], args[1])
             if val == 'mod':
-                # Python-style mod to match safe_mod in CUDA
-                # CUDA: r = fmod(a, b); if ((b > 0 && r < 0) || (b < 0 && r > 0)) r += b;
-                # This is exactly what np.mod does by default.
-                # However, we must handle the case where b is near zero as 0.0 to match CUDA's safe_mod.
-                return torch.where(torch.abs(args[1]) < 1e-9, torch.zeros_like(args[0]), np.mod(args[0], args[1])).numpy() if hasattr(args[1], 'device') else np.where(np.abs(args[1]) < 1e-9, 0.0, np.mod(args[0], args[1]))
+                # Strict: Return NaN if divisor is zero
+                return np.where(np.abs(args[1]) < 1e-9, np.nan, np.mod(args[0], args[1]))
             if val == 'sin': return np.sin(args[0])
             if val == 'cos': return np.cos(args[0])
             if val == 'tan': return np.tan(args[0])
             
             if val == 'asin' or val == 'S': 
-                # Match safe_asin: clip to [-1, 1] then asin, no extra epsilon
-                return np.arcsin(np.clip(args[0], -1.0, 1.0))
+                return np.arcsin(args[0])
             if val == 'acos' or val == 'C': 
-                # Match safe_acos: clip to [-1, 1] then acos, no extra epsilon
-                return np.arccos(np.clip(args[0], -1.0, 1.0))
+                return np.arccos(args[0])
             if val == 'atan' or val == 'T': return np.arctan(args[0])
             
             if val == 'exp' or val == 'e': 
-                # CUDA safe_exp clamps at [-80, 80]
-                return np.exp(np.clip(args[0], -80.0, 80.0))
+                # Match CUDA safe_exp: return 0 if very negative, else let it overflow to Inf
+                return np.where(args[0] < -100.0, 0.0, np.exp(args[0]))
             if val == 'log': 
                 # CUDA safe_log returns NaN if <= 0
                 return np.log(args[0])
@@ -430,22 +425,22 @@ class ExpressionTree:
                 return np.ceil(args[0])
             
             if val == '!':
-                # CUDA safe_fact uses tgamma(arg + 1) with overflow check
+                # CUDA safe_fact uses tgamma(arg + 1)
                 arg = args[0] + 1.0
-                clipped = np.clip(arg, -30.0, 30.0) # match safe_tgamma clamp
-                res = scipy_gamma(clipped)
-                # If original was > 30, return 1e30 to match GPU
-                return np.where(np.abs(arg) > 30.0, 1e30, res)
+                return np.where(arg <= 0.0, np.nan, scipy_gamma(arg))
                 
             if val == 'gamma':
-                # CUDA safe_tgamma: clamp at 30
-                clipped = np.clip(args[0], -30.0, 30.0)
-                res = scipy_gamma(clipped)
-                return np.where(np.abs(args[0]) > 30.0, 1e30, res)
+                # CUDA safe_tgamma: return NaN for poles (0 and negative integers)
+                res = scipy_gamma(args[0])
+                # poles are where gamma goes to Inf/NaN. scipy_gamma handles this but we want to be explicit.
+                is_pole = (args[0] <= 0.0) & (np.floor(args[0]) == args[0])
+                return np.where(is_pole, np.nan, res)
 
             if val == 'lgamma' or val == 'g':
-                # CUDA safe_lgamma: standard lgamma
-                return gammaln(args[0])
+                # CUDA safe_lgamma: return NaN for poles
+                # poles are 0 and negative integers
+                is_pole = (args[0] <= 0.0) & (np.floor(args[0]) == args[0])
+                return np.where(is_pole, np.nan, gammaln(args[0]))
             if val == 'neg':
                 return -args[0]
             if val == 'sign':

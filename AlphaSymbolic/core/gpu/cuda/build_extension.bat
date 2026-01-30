@@ -12,3 +12,4 @@ python setup.py build_ext --inplace
 popd
 
 copy "%BUILD_DIR%\*.pyd" .
+copy "%BUILD_DIR%\*.pyd" ..

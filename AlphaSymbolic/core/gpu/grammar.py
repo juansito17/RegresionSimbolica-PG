@@ -46,10 +46,8 @@ class GPUGrammar:
             if GpuGlobals.USE_OP_DIV:   self.operators.append('/')
             if GpuGlobals.USE_OP_POW:   
                 self.operators.append('pow')
-                self.operators.append('^')
             if GpuGlobals.USE_OP_MOD:   
                 self.operators.append('%')
-                self.operators.append('mod')
             if GpuGlobals.USE_OP_SIN:   self.operators.append('sin')
             if GpuGlobals.USE_OP_COS:   self.operators.append('cos')
             if GpuGlobals.USE_OP_LOG:   self.operators.append('log')
@@ -156,6 +154,13 @@ class GPUGrammar:
         for op in self.operators:
             tid = self.token_to_id[op]
             self.token_arity[op] = OPERATORS.get(op, 1) # Default 1 if missing in OPERATORS dict?
+
+    @property
+    def vocab_hash(self) -> str:
+        import hashlib
+        # Join all tokens in the exact order they were assigned IDs
+        vocab_str = ",".join(self.id_to_token[i] for i in range(self.next_id))
+        return hashlib.md5(vocab_str.encode()).hexdigest()[:8]
 
     def get_subtree_span(self, rpn_ids: List[int], root_idx: int) -> Tuple[int, int]:
         """

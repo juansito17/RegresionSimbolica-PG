@@ -27,7 +27,7 @@ __device__ __forceinline__ T safe_div(T a, T b) {
 
 template <typename T>
 __device__ __forceinline__ T safe_mod(T a, T b) {
-    if (abs(b) < 1e-9) return (T)0.0; // Avoid NaN, return 0.0 safely
+    if (abs(b) < 1e-9) return nan(""); // Enforce NaN on modulo by zero
     // Python-style Modulo: Result has sign of divisor (b)
     T r = fmod(a, b);
     if ((b > 0 && r < 0) || (b < 0 && r > 0)) {
@@ -48,10 +48,8 @@ __device__ __forceinline__ T safe_log(T a) {
 
 template <typename T>
 __device__ __forceinline__ T safe_exp(T a) {
-    if (a > 80.0) return (T)1e30; // Overflow clamp is arguably okay, but let's allow Inf? 
-    // Let's keep overflow clamp for now to avoid accidental Inf fitness, but NaN is preferred for invalid.
-    if (a < -80.0) return (T)0.0;
-    return exp(a);
+    if (a < -100.0) return (T)0.0;
+    return exp(a); // Let overflow result in Inf/NaN
 }
 
 template <typename T>
@@ -71,37 +69,36 @@ __device__ __forceinline__ T safe_pow(T a, T b) {
 
 template <typename T>
 __device__ __forceinline__ T safe_asin(T a) {
-    if (a > 1.0) a = 1.0;
-    if (a < -1.0) a = -1.0;
     return asin(a);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_acos(T a) {
-    if (a > 1.0) a = 1.0;
-    if (a < -1.0) a = -1.0;
     return acos(a);
 }
 
 
 template <typename T>
 __device__ __forceinline__ T safe_tgamma(T a) {
-    if (abs(a) > 30.0) return (T)1e30; // Overflow protection for tgamma
+    // poles: negative integers or 0
+    if (a <= 0.0 && floor(a) == a) return nan(""); 
     return tgamma(a);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_lgamma(T a) {
-    // Standard lgamma(x)
+    // poles: negative integers or 0
+    if (a <= 0.0 && floor(a) == a) return nan(""); 
     return lgamma(a); 
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_fact(T a) {
     // Standard Factorial: x! = gamma(x + 1)
-    if (a < 0) return (T)1e30; // Factorial defined for >= 0 usually, or complex.
-    if (a > 30.0) return (T)1e30; 
-    return tgamma(a + 1.0); 
+    // Poles at x = -1, -2, ... => a + 1 <= 0 integer
+    T arg = a + 1.0;
+    if (arg <= 0.0 && floor(arg) == arg) return nan(""); 
+    return tgamma(arg); 
 }
 
 // TEMPLATED KERNEL
@@ -143,7 +140,7 @@ __global__ void rpn_eval_kernel(
     int c_idx = 0; // Constants pointer
 
     const int64_t* my_prog = &population[b_idx * L];
-    const scalar_t ERROR_VAL = (scalar_t)1e30; // Safe-ish large value for float/double
+    const scalar_t ERROR_VAL = (scalar_t)1e300; // Match Python INF_VAL for float64
 
     for (int pc = 0; pc < L; ++pc) {
         int64_t token = my_prog[pc];

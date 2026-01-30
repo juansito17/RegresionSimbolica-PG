@@ -99,9 +99,11 @@ class GPUEvaluator:
             
             current_B = sub_pop.shape[0]
             
-            # Process Validity within chunk
-            # f_preds is flattened [current_B * N]
-            is_valid = (sp == 1) & (~err)
+            # Process Validity within chunk: (Stack OK) AND (No Kernel Error)
+            is_valid = (sp == 1) & (err == 0)
+            
+            # Penalize: Replace invalid, NaNs or Infs with INF_VAL
+            # This must be done BEFORE calculating diff to avoid INF/NaN leakage
             f_preds = torch.where(is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds), 
                                   f_preds, 
                                   torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
@@ -174,10 +176,13 @@ class GPUEvaluator:
         
         # _run_vm expects [Vars, Samples]
         final_preds, sp, has_error = self._run_vm(population, x, constants)
-        is_valid = (sp == 1) & (~has_error)
+        
+        # Robust Validity: (Stack OK) AND (No Kernel Error) AND (No NaNs) AND (No Infs)
+        # We check per sample first
+        sample_valid = (sp == 1) & (has_error == 0) & (~torch.isnan(final_preds)) & (~torch.isinf(final_preds))
         
         # Reshape to [B, N_samples]
-        valid_matrix = is_valid.view(population.shape[0], N_samples)
+        valid_matrix = sample_valid.view(population.shape[0], N_samples)
         preds = final_preds.view(population.shape[0], N_samples)
         target = y_target.flatten().unsqueeze(0).expand_as(preds)
         
@@ -189,13 +194,10 @@ class GPUEvaluator:
             diff = log_pred - log_target
             sq_err = diff**2
             
-            # Masking: Use high penalty for invalid keys instead of 0.0
-            # This prevents invalid individuals from having "perfect" 0.0 fitness
-            PENALTY = 1e10
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(PENALTY, device=self.device, dtype=self.dtype))
+            # Masking: Use high penalty for invalid cases
+            # PENALTY must be significantly larger than any possible real target error
+            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
-            # Clip loss to avoid huge gradients if we ever diff through valid path? 
-            # (Penalty is constant so grad is 0, safe)
             return loss, preds
             
         else:
@@ -203,13 +205,9 @@ class GPUEvaluator:
             sq_err = (preds - target)**2
             sq_err = torch.clamp(sq_err, max=1e10)
             
-            # Masking: Use high penalty (same as max clamp)
-            # 0.0 caused "Invalid" formulas to appear as Perfect.
-            PENALTY = 1e10 
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(PENALTY, device=self.device, dtype=self.dtype))
+            # Masking: Use INF_VAL penalty
+            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
             loss = masked_sq_err.mean(dim=1)
-            # Return preds for visualization/boosting
-            # preds is [B, N_samples]. We return it.
             return loss, preds
     
     def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
@@ -252,8 +250,11 @@ class GPUEvaluator:
             
             # Run VM
             final_preds, sp, has_error = self._run_vm(sub_pop, x_for_vm, sub_c)
-            is_valid = (sp == 1) & (~has_error)
+
+            # Validity: (Stack OK) AND (No Kernel Error)
+            is_valid = (sp == 1) & (has_error == 0)
             
+            # Penalize
             final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
                                       final_preds, 
                                       torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))

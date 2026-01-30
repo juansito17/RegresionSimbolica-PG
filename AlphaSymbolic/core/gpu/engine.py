@@ -755,7 +755,7 @@ class TensorGeneticEngine:
             # Best Tracking
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
             
-            if min_rmse.item() < best_rmse:
+            if not torch.isnan(min_rmse) and min_rmse.item() < best_rmse:
                 best_rmse = min_rmse.item()
                 best_rpn = population[min_idx].clone()
                 best_consts_vec = pop_constants[min_idx].clone()
@@ -776,8 +776,10 @@ class TensorGeneticEngine:
                 rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
                 
                 if callback and (is_first or rel_improvement > 0.001):
-                    last_reported_fitness = best_rmse
-                    callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
+                    # Only report to user if fitness is within a reasonable range (not a penalty value)
+                    if best_rmse < 1e100:
+                        last_reported_fitness = best_rmse
+                        callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             else:
                 stagnation += 1
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")

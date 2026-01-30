@@ -125,7 +125,10 @@ class GPUOperators:
             new_stack = stack.unsqueeze(1) + token_deltas.unsqueeze(0)
             
             # Constraints
-            valid_mask = (new_stack >= 0) & \
+            # We need new_stack >= 1 to ensure we had enough operands
+            # (Stack 0 -> Term(+1) -> 1. Stack 1 -> Op1(0) -> 1. Stack 2 -> Op2(-1) -> 1)
+            # Exception: None? All ops produce stack >= 1 if valid.
+            valid_mask = (new_stack >= 1) & \
                          (new_stack <= 1 + remaining) & \
                          (new_stack >= 1 - remaining)
             

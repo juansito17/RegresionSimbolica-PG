@@ -63,17 +63,17 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 1_000_000
+    POP_SIZE = 4_000_000
     GENERATIONS = 500  
-    NUM_ISLANDS = 50 # 1M / 50 = 100k pop per island
+    NUM_ISLANDS = 40 # 4M / 40 = 100k pop per island
     MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
     # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = False
+    USE_INITIAL_FORMULA = True
     #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = ""
+    INITIAL_FORMULA_STRING = "((atan(fact(sin(log((3 + x0))))) ^ (3.09679056 % sqrt(x0))) + (lgamma((atan(((x0 - atan(gamma(cos(x0)))) - (x0 % ceil(pi)))) + x0)) - x0))"
 
     # ----------------------------------------
     # Parámetros del Modelo de Islas
@@ -91,7 +91,7 @@ class GpuGlobals:
     CONSTANT_INT_MIN_VALUE = -10
     CONSTANT_INT_MAX_VALUE = 10
     USE_HARD_DEPTH_LIMIT = True
-    MAX_TREE_DEPTH_HARD_LIMIT = 30  # MÁXIMO - expresiones muy complejas
+    MAX_TREE_DEPTH_HARD_LIMIT = 60  # Increased to 60 to allow more complex formulas
     MAX_CONSTANTS = 50 # Increased to 50 to guarantee ANY generated formula (size < 30) fits as a seed without truncation.
 
     # ----------------------------------------
@@ -155,7 +155,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
-    COMPLEXITY_PENALTY = 0.001 # Reduced to allow growth
+    COMPLEXITY_PENALTY = 0.01 # Increased to force simpler, more elegant formulas
     LOSS_FUNCTION = 'RMSE' # Changed from RMSLE because USE_LOG_TRANSFORMATION=True. 
                            # RMSE on Log(y) == RMSLE on y. Avoids double log.
     USE_RMSE_FITNESS = True
