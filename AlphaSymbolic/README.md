@@ -22,7 +22,7 @@ AlphaSymbolic es una inteligencia artificial autónoma capaz de **descubrir fór
 - **Benchmarks Científicos**: Validado con el dataset de Feynman (Física) para redescubrir leyes fundamentales.
 
 ### ☁️ Listo para la Nube
-- **Google Colab**: Incluye un script generador (`AlphaSymbolic_Colab.ipynb`) para correr todo el proyecto gratis en la nube de Google con un solo click.
+- **Google Colab**: Incluye un script generador (`Code/notebooks/GoogleColab_Project.ipynb`) para correr todo el proyecto gratis en la nube de Google con un solo click.
 
 ---
 
