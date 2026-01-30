@@ -114,26 +114,13 @@ cmake --build . -j$(nproc)
 
 ```
 Code/
-├── src/
-│   ├── main.cpp              # Punto de entrada
-│   ├── GeneticAlgorithm.cpp  # Algoritmo genético principal
-│   ├── GeneticAlgorithm.h
-│   ├── GeneticOperators.cpp  # Operadores: selección, cruce, mutación
-│   ├── GeneticOperators.h
-│   ├── ExpressionTree.cpp    # Representación de árboles
-│   ├── ExpressionTree.h
-│   ├── Fitness.cpp           # Evaluación de fitness (CPU)
-│   ├── Fitness.h
-│   ├── FitnessGPU.cu         # Evaluación de fitness (GPU/CUDA)
-│   ├── FitnessGPU.cuh
-│   ├── AdvancedFeatures.cpp  # Pareto, patrones, simplificación
-│   ├── AdvancedFeatures.h
-│   └── Globals.h             # ⚙️ Parámetros configurables
-├── tests/                    # Tests unitarios
-├── build/                    # Archivos de compilación (generado)
-├── CMakeLists.txt            # Configuración de CMake
-├── run.bat                   # Script de ejecución automática
-└── README.md                 # Este archivo
+├── src/                      # Source files (main logic)
+├── notebooks/                # Jupyter Notebooks (Google Colab)
+├── scripts/                  # Auxiliary scripts (Generation, Tests)
+├── build/                    # Build artifacts (ignored)
+├── CMakeLists.txt            # CMake configuration
+├── run.bat                   # Main entry point (Windows)
+└── README.md                 # This file
 ```
 
 ---

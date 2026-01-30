@@ -264,29 +264,14 @@ Best Formula Size: 7
 
 ```
 Algoritmo-Genetico-de-Formulas/
-├── Code/
-│   ├── src/
-│   │   ├── main.cpp              # Punto de entrada
-│   │   ├── GeneticAlgorithm.cpp  # Lógica principal del AG
-│   │   ├── GeneticAlgorithm.h
-│   │   ├── GeneticOperators.cpp  # Selección, cruce, mutación
-│   │   ├── GeneticOperators.h
-│   │   ├── ExpressionTree.cpp    # Árbol de expresiones
-│   │   ├── ExpressionTree.h
-│   │   ├── Fitness.cpp           # Evaluación de fitness (CPU)
-│   │   ├── Fitness.h
-│   │   ├── FitnessGPU.cu         # Evaluación de fitness (GPU)
-│   │   ├── FitnessGPU.cuh
-│   │   ├── AdvancedFeatures.cpp  # Pareto, patrones, simplificación
-│   │   ├── AdvancedFeatures.h
-│   │   └── Globals.h             # Parámetros globales
-│   ├── tests/                    # Tests unitarios
-│   ├── build/                    # Directorio de compilación
-│   ├── CMakeLists.txt            # Configuración de CMake
-│   ├── run.bat                   # Script de ejecución (Windows)
-│   └── README.md                 # Documentación específica
-├── LICENSE                       # Apache 2.0
-└── README.md                     # Este archivo
+├── AlphaSymbolic/            # Unified Neuro-Symbolic implementation
+├── Code/                     # Core C++ (GP) implementation
+│   ├── src/                  # Source files
+│   ├── notebooks/            # Notebooks (Colab)
+│   ├── scripts/              # Helper scripts
+│   └── ...
+├── LICENSE                   # Apache 2.0
+└── README.md                 # This file
 ```
 
 ---
