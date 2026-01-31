@@ -73,6 +73,7 @@ class TensorGeneticEngine:
         # --- Persistent Cache for Initial Population ---
         self._cached_initial_pop = None
         self._cached_initial_consts = None
+        self.mutation_bank = None
 
     # --- Wrappers for backward compatibility and convenience ---
 
@@ -474,7 +475,7 @@ class TensorGeneticEngine:
     def mutate_population(self, population, rate):
         return self.operators.mutate_population(population, rate)
     
-    def evolve_generation_cuda(self, population, constants, fitness, x_t, y_t, 
+    def evolve_generation_cuda(self, population, constants, fitness, abs_errors, x_t, y_t, mutation_bank,
                                 mutation_rate=0.1, crossover_rate=0.5, 
                                 tournament_size=3, pso_steps=10, pso_particles=20):
         """
@@ -510,16 +511,23 @@ class TensorGeneticEngine:
         # Ensure y is [N]
         y_in = y_t.squeeze() if y_t.ndim > 1 else y_t
         
+        if abs_errors is None:
+            abs_errors = torch.empty(0, device=self.device)
+        if mutation_bank is None:
+            mutation_bank = torch.empty(0, device=self.device)
+
         result = rpn_cuda.evolve_generation(
             population,
             constants.float(),  # Ensure float32
             fitness.float(),
+            abs_errors.float(),
             x_in.float(),
             y_in.float(),
             token_arities,
             arity_0_ids,
             arity_1_ids,
             arity_2_ids,
+            mutation_bank,
             mutation_rate,
             crossover_rate,
             tournament_size,
@@ -1012,11 +1020,13 @@ class TensorGeneticEngine:
                 selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
-                # NOTE: We set pso_steps=0 here because running PSO on the ENTIRE population (1M) 
-                # would OOM (requires ~5GB for particles).
-                # The Top-K PSO optimization is already handled in Python just above.
+                # Refresh Mutation Bank periodically for structural innovation
+                if self.mutation_bank is None or generations % 50 == 0:
+                    # Generate 2000 fresh random subtrees as mutation ingredients
+                    self.mutation_bank = self.operators.generate_random_population(2000)
+
                 next_pop, next_c, next_fit = self.evolve_generation_cuda(
-                    population, pop_constants, selection_metric, x_t, y_t,
+                    population, pop_constants, selection_metric, abs_errors, x_t, y_t, self.mutation_bank,
                     mutation_rate=current_mutation_rate,
                     crossover_rate=GpuGlobals.DEFAULT_CROSSOVER_RATE,
                     tournament_size=GpuGlobals.DEFAULT_TOURNAMENT_SIZE,
@@ -1114,41 +1124,56 @@ class TensorGeneticEngine:
 
             
             # --- SIMPLIFICATION ---
-            # --- SIMPLIFICATION ---
             if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
                  # Simplify only the BEST formulas in each island to save time
-                 # Pattern: Identify top formulas per island
                  k_simplify = GpuGlobals.K_SIMPLIFY
                  
+                 # DEBUG
+                 # if generations % 100 == 0:
+                 #     print(f"[Debug] Gen {generations}: pop={self.pop_size}, islands={self.n_islands}, size={self.island_size}")
+                 
+                 # Which fitness to use? next_fit is fresh for the next population
+                 # If using C++ Orchestrator, next_fit is available.
+                 # If using Python loop, selection_metric is available but it's for OLD pop.
+                 # For simplification of NEW offspring, ideally we evaluate them first, 
+                 # but to save time we can use the parent's fitness as a proxy, 
+                 # OR better, if we have next_fit from C++, use it!
+                 
+                 sim_fitness = next_fit if (GpuGlobals.USE_CUDA_ORCHESTRATOR and next_fit is not None) else selection_metric
+                 
+                 # Ensure sim_fitness size matches next_pop
+                 if sim_fitness.shape[0] != next_pop.shape[0]:
+                      # Fallback to selection_metric if sizes mismatch, but clamp below
+                      sim_fitness = selection_metric[:next_pop.shape[0]]
+
                  # Reshape fitness to islands
-                 island_fitness = selection_metric.view(self.n_islands, self.island_size)
-                 
-                 # Find top K indices within each island
-                 # We want the SMALLEST metrics (RMSE + penalty)
-                 _, top_local_idx = torch.topk(island_fitness, k_simplify, dim=1, largest=False)
-                 
-                 # Convert to global indices
-                 offsets = island_offsets.view(self.n_islands, 1)
-                 top_global_idx = (top_local_idx + offsets).view(-1)
-                 
-                 # Simplify only these individuals
-                 # Next_pop and next_c are already updated for the next generation
-                 # but we can simplify them now before the next loop starts.
-                 sub_pop = next_pop[top_global_idx]
-                 sub_const = next_c[top_global_idx]
-                 
-                  # Pass to optimized symbolic simplifier (vectorized)
                  try:
+                     island_fitness = sim_fitness[:self.pop_size].view(self.n_islands, self.island_size)
+                     
+                     # Find top K indices within each island
+                     _, top_local_idx = torch.topk(island_fitness, k_simplify, dim=1, largest=False)
+                     
+                     # Convert to global indices
+                     offsets = island_offsets.view(self.n_islands, 1)
+                     top_global_idx = (top_local_idx + offsets).view(-1)
+                     
+                     # DEFENSIVE CLAMP: ensure no index exceeds current population size
+                     max_idx = next_pop.shape[0] - 1
+                     if (top_global_idx > max_idx).any() or (top_global_idx < 0).any():
+                         top_global_idx = top_global_idx.clamp(0, max_idx)
+                     
+                     # Simplify only these individuals
+                     sub_pop = next_pop[top_global_idx]
+                     sub_const = next_c[top_global_idx]
+
+                     # Pass to optimized symbolic simplifier (vectorized)
                      sim_pop, _, n_s = self.gpu_simplifier.simplify_batch(sub_pop, sub_const)
+                     
+                     # Write back
+                     next_pop[top_global_idx] = sim_pop
                  except Exception as e:
-                     print(f"CRASH IN SIMPLIFIER: {e}")
-                     # Fallback: do not simplify
-                     sim_pop = sub_pop
-                 
-                 # Note: gpu_symbolic_simplifier.simplify_batch only returns population (constants are handled via PADs)
-                 
-                 # Write back
-                 next_pop[top_global_idx] = sim_pop
+                     print(f"WARN: Simplification failed (Gen {generations}): {e}")
+                     # Non-fatal, just skip simplification for this batch
                  # next_c[top_global_idx] = ... (constants preserved if not PADed)
             
             # Swap Buffers

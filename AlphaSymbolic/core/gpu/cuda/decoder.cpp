@@ -59,16 +59,16 @@ std::vector<std::string> decode_rpn(
         for (int64_t j = 0; j < L; ++j) {
             int64_t token_id = pop_ptr[i * L + j];
             
-            if (token_id == PAD_ID) continue;
+            if (token_id == PAD_ID) break;
             
             // Safety check
-            if (token_id < 0 || token_id >= vocab.size()) {
+            if (token_id < 0 || token_id >= (int64_t)vocab.size()) {
                 stack.push_back("?");
                 continue;
             }
             
-            std::string token = vocab[token_id];
-            int arity = (token_id < arities.size()) ? arities[token_id] : 0;
+            std::string token = vocab[(size_t)token_id];
+            int arity = (token_id < (int64_t)arities.size()) ? arities[(size_t)token_id] : 0;
             
             // Logic mimicking engine.py
             if (token == "C") {
@@ -132,6 +132,7 @@ std::vector<std::string> decode_rpn(
         if (error || stack.size() != 1) {
             results.push_back("Invalid");
         } else {
+            // Take the top of the stack (last item pushed) as the result
             results.push_back(stack.back());
         }
     }

@@ -189,8 +189,8 @@ class GpuGlobals:
     LOCAL_SEARCH_ATTEMPTS = 30
     
     USE_SIMPLIFICATION = True
-    K_SIMPLIFY = 20                # Number of top formulas to simplify per island
-    SIMPLIFICATION_INTERVAL = 20    # Simplify every N generations
+    K_SIMPLIFY = 10                # Reduced for stability with 1M
+    SIMPLIFICATION_INTERVAL = 50   # Longer interval for stability
     USE_ISLAND_CATACLYSM = True
     USE_LEXICASE_SELECTION = True
     USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems

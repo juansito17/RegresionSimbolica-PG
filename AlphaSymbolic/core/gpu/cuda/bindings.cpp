@@ -106,7 +106,9 @@ void launch_crossover_splicing(
 // --- Phase 3 Forward Declarations ---
 void launch_tournament_selection(
     const torch::Tensor& fitness,
+    const torch::Tensor& errors,
     const torch::Tensor& rand_idx,
+    const torch::Tensor& rand_cases,
     torch::Tensor& selected_idx
 );
 
@@ -133,12 +135,14 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor population,      // [B, L]
     torch::Tensor constants,       // [B, K]
     torch::Tensor fitness,         // [B]
+    torch::Tensor abs_errors,     // [B, N_data] or Empty
     torch::Tensor X,               // [Vars, N_data]
     torch::Tensor Y_target,        // [N_data]
     torch::Tensor token_arities,   // [VocabSize] int32
     torch::Tensor arity_0_ids,     // [n0] int64
     torch::Tensor arity_1_ids,     // [n1] int64
     torch::Tensor arity_2_ids,     // [n2] int64
+    torch::Tensor mutation_bank,   // [BankSize, L] or Empty
     float mutation_rate,
     float crossover_rate,
     int tournament_size,

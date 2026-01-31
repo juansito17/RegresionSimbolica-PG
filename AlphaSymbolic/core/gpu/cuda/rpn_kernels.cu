@@ -145,7 +145,7 @@ __global__ void rpn_eval_kernel(
     for (int pc = 0; pc < L; ++pc) {
         int64_t token = my_prog[pc];
         
-        if (token == PAD_ID) continue;
+        if (token == PAD_ID) break;
 
         scalar_t val = (scalar_t)0.0;
         bool is_push = true;
@@ -590,28 +590,38 @@ void launch_crossover_splicing(
 
 __global__ void tournament_selection_kernel(
     const float* __restrict__ fitness,      // [PopSize]
+    const float* __restrict__ errors,       // [PopSize, N_data] or nullptr
     const int64_t* __restrict__ rand_idx,   // [PopSize, TourSize]
+    const int* __restrict__ rand_cases,     // [PopSize] or nullptr
     int64_t* __restrict__ selected_idx,     // [PopSize]
-    int pop_size, int tour_size
+    int pop_size, int tour_size, int n_data
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= pop_size) return;
     
-    // My tournament candidates
-    // Access rand_idx[idx, 0..k]
-    // We assume rand_idx is flattened [PopSize * TourSize]
-    
     const int64_t* my_candidates = &rand_idx[idx * tour_size];
+    int case_idx = (rand_cases != nullptr) ? rand_cases[idx] : -1;
     
     int64_t best_idx = my_candidates[0];
-    float best_fit = fitness[best_idx];
+    float best_val;
+    
+    if (case_idx >= 0 && errors != nullptr) {
+        best_val = errors[best_idx * n_data + case_idx];
+    } else {
+        best_val = fitness[best_idx];
+    }
     
     for (int k = 1; k < tour_size; ++k) {
         int64_t candidate = my_candidates[k];
-        float fit = fitness[candidate];
-        // Smaller RMSE is better
-        if (fit < best_fit) {
-            best_fit = fit;
+        float val;
+        if (case_idx >= 0 && errors != nullptr) {
+            val = errors[candidate * n_data + case_idx];
+        } else {
+            val = fitness[candidate];
+        }
+        
+        if (val < best_val) {
+            best_val = val;
             best_idx = candidate;
         }
     }
@@ -621,7 +631,9 @@ __global__ void tournament_selection_kernel(
 
 void launch_tournament_selection(
     const torch::Tensor& fitness,
+    const torch::Tensor& errors,
     const torch::Tensor& rand_idx,
+    const torch::Tensor& rand_cases,
     torch::Tensor& selected_idx
 ) {
     // fitness: [B]
@@ -631,21 +643,26 @@ void launch_tournament_selection(
     CHECK_INPUT(fitness);
     CHECK_INPUT(rand_idx);
     CHECK_INPUT(selected_idx);
+    if (errors.numel() > 0) CHECK_INPUT(errors);
+    if (rand_cases.numel() > 0) CHECK_INPUT(rand_cases);
     
     int B = fitness.size(0);
     int K = rand_idx.size(1);
+    int n_data = (errors.numel() > 0) ? errors.size(1) : 0;
     
     int threads = 256;
     int blocks = (B + threads - 1) / threads;
     
-    // Dispatch based on fitness type? Assuming float32 fitness for now based on Plan
-    // If double, need template. Implementation assumes float.
-    
+    const float* errors_ptr = (errors.numel() > 0) ? errors.data_ptr<float>() : nullptr;
+    const int* cases_ptr = (rand_cases.numel() > 0) ? rand_cases.data_ptr<int>() : nullptr;
+
     tournament_selection_kernel<<<blocks, threads>>>(
         fitness.data_ptr<float>(),
+        errors_ptr,
         rand_idx.data_ptr<int64_t>(),
+        cases_ptr,
         selected_idx.data_ptr<int64_t>(),
-        B, K
+        B, K, n_data
     );
      
     cudaError_t err = cudaGetLastError();
@@ -705,12 +722,14 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor population,      // [B, L]
     torch::Tensor constants,       // [B, K]
     torch::Tensor fitness,         // [B]
+    torch::Tensor abs_errors,     // [B, N_data] or Empty
     torch::Tensor X,               // [Vars, N_data] (Transposed for RPN kernel)
     torch::Tensor Y_target,        // [N_data]
     torch::Tensor token_arities,   // [VocabSize] int32
     torch::Tensor arity_0_ids,     // [n0] int64
     torch::Tensor arity_1_ids,     // [n1] int64
     torch::Tensor arity_2_ids,     // [n2] int64
+    torch::Tensor mutation_bank,   // [BankSize, L] or Empty
     float mutation_rate,
     float crossover_rate,
     int tournament_size,
@@ -736,18 +755,33 @@ std::vector<torch::Tensor> evolve_generation(
     int B = population.size(0);
     int L = population.size(1);
     int K = constants.size(1);
+    int N_data = X.size(1);
     auto device = population.device();
     auto float_opt = torch::TensorOptions().dtype(torch::kFloat32).device(device);
     auto long_opt = torch::TensorOptions().dtype(torch::kInt64).device(device);
     auto int_opt = torch::TensorOptions().dtype(torch::kInt32).device(device);
     auto byte_opt = torch::TensorOptions().dtype(torch::kUInt8).device(device);
     
-    // 1. Selection (Tournament)
+    // 1. Selection (Tournament / Lexicase-Approx)
     auto rand_idx = torch::randint(0, B, {B, tournament_size}, long_opt);
     auto winner_idx = torch::empty({B}, long_opt);
     
+    // Lexicase Approximation: If abs_errors provided, each tournament picks a random test case.
+    torch::Tensor rand_cases;
+    if (abs_errors.numel() > 0) {
+        rand_cases = torch::randint(0, N_data, {B}, int_opt);
+    } else {
+        rand_cases = torch::empty({0}, int_opt);
+    }
+    
     auto fit_f32 = fitness.to(torch::kFloat32);
-    launch_tournament_selection(fit_f32, rand_idx, winner_idx);
+    auto err_f32 = abs_errors.numel() > 0 ? abs_errors.to(torch::kFloat32) : torch::empty({0}, float_opt);
+    
+    launch_tournament_selection(fit_f32, err_f32, rand_idx, rand_cases, winner_idx);
+    
+    // --- Elitism: Preserve the best individual at index 0 ---
+    auto best_idx = torch::argmin(fit_f32);
+    winner_idx.index_put_({0}, best_idx);
     
     auto parents = population.index_select(0, winner_idx);
     auto parent_consts = constants.index_select(0, winner_idx);
@@ -789,26 +823,82 @@ std::vector<torch::Tensor> evolve_generation(
     auto final_c2 = torch::where(cx_mask, child2, parents2);
     
     auto offspring = torch::cat({final_c1, final_c2}, 0);
-    
     auto consts1 = parent_consts.slice(0, 0, 2*n_pairs, 2);
     auto consts2 = parent_consts.slice(0, 1, 2*n_pairs, 2);
     auto offspring_consts = torch::cat({consts1, consts2}, 0);
     
-    // Handle odd population
-    if (B % 2 != 0) {
+    // Elitism Check: Ensure first row of offspring is the global best from previous generation
+    offspring.index_put_({0}, parents.index({0}));
+    offspring_consts.index_put_({0}, parent_consts.index({0}));
+    
+    if (offspring.size(0) < B) {
         auto last_p = parents.slice(0, B-1, B);
         auto last_c = parent_consts.slice(0, B-1, B);
         offspring = torch::cat({offspring, last_p}, 0);
         offspring_consts = torch::cat({offspring_consts, last_c}, 0);
     }
+    // Trim if somehow larger
+    if (offspring.size(0) > B) {
+        offspring = offspring.slice(0, 0, B);
+        offspring_consts = offspring_consts.slice(0, 0, B);
+    }
     
-    // 3. Mutation
-    auto rand_floats = torch::rand({B, L}, float_opt);
-    auto rand_ints = torch::randint(0, 100, {B, L}, long_opt);
+    // 3. Mutation (50% Point, 50% Structural)
+    auto mut_type = torch::rand({B}, float_opt);
+    auto point_mask = (mut_type >= 0.5) | (mutation_bank.numel() == 0);
+    auto struct_mask = (mut_type < 0.5) & (mutation_bank.numel() > 0);
     
-    launch_mutation_kernel(offspring, rand_floats, rand_ints, token_arities,
-                    arity_0_ids, arity_1_ids, arity_2_ids,
-                    mutation_rate, PAD_ID);
+    // Point Mutation Path
+    if (point_mask.any().item<bool>()) {
+        auto point_pop = offspring.index_select(0, torch::nonzero(point_mask).squeeze(1));
+        auto r_floats = torch::rand({point_pop.size(0), L}, float_opt);
+        auto r_ints = torch::randint(0, 1000000, {point_pop.size(0), L}, long_opt);
+        
+        launch_mutation_kernel(point_pop, r_floats, r_ints, token_arities,
+                        arity_0_ids, arity_1_ids, arity_2_ids,
+                        mutation_rate, PAD_ID);
+        
+        offspring.index_copy_(0, torch::nonzero(point_mask).squeeze(1), point_pop);
+    }
+    
+    // Structural Mutation Path (Grafting from Bank)
+    if (struct_mask.any().item<bool>()) {
+        int n_struct = struct_mask.sum().item<int>();
+        auto struct_idx = torch::nonzero(struct_mask).squeeze(1);
+        auto struct_pop = offspring.index_select(0, struct_idx);
+        
+        // Pick random from bank
+        int bank_size = mutation_bank.size(0);
+        auto bank_indices = torch::randint(0, bank_size, {n_struct}, long_opt);
+        auto bank_trees = mutation_bank.index_select(0, bank_indices);
+        
+        // Find ranges
+        auto starts_pop = torch::zeros({n_struct, L}, long_opt);
+        auto starts_bank = torch::zeros({n_struct, L}, long_opt);
+        launch_find_subtree_ranges(struct_pop, token_arities, starts_pop, PAD_ID);
+        launch_find_subtree_ranges(bank_trees, token_arities, starts_bank, PAD_ID);
+        
+        // Pick random splice points
+        auto len_pop = (struct_pop != PAD_ID).sum(1).to(torch::kLong);
+        auto len_bank = (bank_trees != PAD_ID).sum(1).to(torch::kLong);
+        
+        auto e_pop = (torch::rand({n_struct}, float_opt) * len_pop.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
+        auto e_bank = (torch::rand({n_struct}, float_opt) * len_bank.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
+        
+        auto s_pop = starts_pop.gather(1, e_pop.unsqueeze(1)).squeeze(1);
+        auto s_bank = starts_bank.gather(1, e_bank.unsqueeze(1)).squeeze(1);
+        
+        auto child = torch::full_like(struct_pop, PAD_ID);
+        auto dummy_child = torch::full_like(struct_pop, PAD_ID); // Same size as struct_pop
+        
+        launch_crossover_splicing(struct_pop, bank_trees, s_pop, e_pop, s_bank, e_bank, child, dummy_child, PAD_ID);
+        
+        // Apply only if mutated (use mutation_rate as individual prob for structural)
+        auto m_mask = (torch::rand({n_struct}, float_opt) < mutation_rate);
+        auto final_struct = torch::where(m_mask.unsqueeze(1), child, struct_pop);
+        
+        offspring.index_copy_(0, struct_idx, final_struct);
+    }
     
     // 4. NanoPSO (Constant Optimization)
     auto gbest_pos = offspring_consts.clone();
