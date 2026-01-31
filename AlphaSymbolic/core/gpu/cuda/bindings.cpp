@@ -129,6 +129,37 @@ void launch_pso_update_bests(
     torch::Tensor& gbest_pos
 );
 
+std::vector<torch::Tensor> evolve_generation(
+    torch::Tensor population,      // [B, L]
+    torch::Tensor constants,       // [B, K]
+    torch::Tensor fitness,         // [B]
+    torch::Tensor X,               // [Vars, N_data]
+    torch::Tensor Y_target,        // [N_data]
+    torch::Tensor token_arities,   // [VocabSize] int32
+    torch::Tensor arity_0_ids,     // [n0] int64
+    torch::Tensor arity_1_ids,     // [n1] int64
+    torch::Tensor arity_2_ids,     // [n2] int64
+    float mutation_rate,
+    float crossover_rate,
+    int tournament_size,
+    int pso_steps,
+    int pso_particles,
+    float pso_w, float pso_c1, float pso_c2,
+    int PAD_ID,
+    // OpCodes
+    int id_x_start, 
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)");
@@ -142,6 +173,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)");
     m.def("pso_update", &launch_pso_update, "PSO Update (CUDA)");
     m.def("pso_update_bests", &launch_pso_update_bests, "PSO Update Bests (CUDA)");
+
+    // Phase 4
+    m.def("evolve_generation", &evolve_generation, "Full Evolution Generation (C++)");
 }
 
 

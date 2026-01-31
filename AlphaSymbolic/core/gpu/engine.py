@@ -473,6 +473,83 @@ class TensorGeneticEngine:
 
     def mutate_population(self, population, rate):
         return self.operators.mutate_population(population, rate)
+    
+    def evolve_generation_cuda(self, population, constants, fitness, x_t, y_t, 
+                                mutation_rate=0.1, crossover_rate=0.5, 
+                                tournament_size=3, pso_steps=10, pso_particles=20):
+        """
+        Full C++ CUDA Orchestrator: Selection + Crossover + Mutation + PSO.
+        Calls the native rpn_cuda_native.evolve_generation function.
+        
+        Returns: (new_population, new_constants, new_fitness)
+        """
+        try:
+            import rpn_cuda_native as rpn_cuda
+            from .cuda_vm import CudaRPNVM
+        except ImportError:
+            print("[Engine] WARNING: CUDA orchestrator not available, falling back to Python")
+            return None, None, None
+        
+        # Get VM for OpCode IDs
+        vm = CudaRPNVM(self.grammar, self.device)
+        
+        # Get arity tensors
+        token_arities = self.grammar.get_arity_tensor(self.device)
+        arity_0_ids = self.grammar.get_arity_ids(0, self.device)
+        arity_1_ids = self.grammar.get_arity_ids(1, self.device)
+        arity_2_ids = self.grammar.get_arity_ids(2, self.device)
+        
+        # Ensure X is [Vars, N] for RPN kernel
+        if x_t.ndim == 1:
+            x_in = x_t.unsqueeze(0)  # [1, N]
+        elif x_t.ndim == 2 and x_t.shape[1] != population.shape[0]:  # [N, Vars] -> [Vars, N]
+            x_in = x_t.T.contiguous()
+        else:
+            x_in = x_t
+        
+        # Ensure y is [N]
+        y_in = y_t.squeeze() if y_t.ndim > 1 else y_t
+        
+        result = rpn_cuda.evolve_generation(
+            population,
+            constants.float(),  # Ensure float32
+            fitness.float(),
+            x_in.float(),
+            y_in.float(),
+            token_arities,
+            arity_0_ids,
+            arity_1_ids,
+            arity_2_ids,
+            mutation_rate,
+            crossover_rate,
+            tournament_size,
+            pso_steps,
+            pso_particles,
+            0.5, 1.5, 1.5,  # pso_w, pso_c1, pso_c2
+            vm.PAD_ID,
+            # OpCodes
+            vm.id_x_start,
+            vm.id_C, vm.id_pi, vm.id_e,
+            vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_5, vm.id_10,
+            vm.op_add, vm.op_sub, vm.op_mul, vm.op_div, vm.op_pow, vm.op_mod,
+            vm.op_sin, vm.op_cos, vm.op_tan,
+            vm.op_log, vm.op_exp,
+            vm.op_sqrt, vm.op_abs, vm.op_neg,
+            vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
+            vm.op_gamma, vm.op_lgamma,
+            vm.op_asin, vm.op_acos, vm.op_atan,
+            3.14159265359, 2.718281828
+        )
+        
+        new_pop, new_consts, new_fit = result[0], result[1], result[2]
+        
+        # Convert constants back to engine dtype if needed
+        if self.dtype != torch.float32:
+            new_consts = new_consts.to(self.dtype)
+            new_fit = new_fit.to(self.dtype)
+        
+        return new_pop, new_consts, new_fit
+
 
     def deterministic_crowding(self, parents, offspring, parent_fitness, off_fitness):
         """
@@ -919,7 +996,8 @@ class TensorGeneticEngine:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
                 
             # Evolution Step (Vectorized Island Model + Double Buffering)
-            
+            island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
+
             # Determine Buffers based on generation parity
             # If gen % 2 == 0: Read A, Write B (Logic: Gen started with A, so Next is B)
             # Logic Check:
@@ -927,124 +1005,113 @@ class TensorGeneticEngine:
             # End of loop: population = B.
             # Gen 2 (Even): Start in B. Write to A.
             
-            if population is self.pop_buffer_A:
-                next_pop = self.pop_buffer_B
-                next_c = self.const_buffer_B
+            # --- EVOLUTION STEP (Reproduction) ---
+            if GpuGlobals.USE_CUDA_ORCHESTRATOR:
+                # 1. Selection Metric with Complexity Penalty
+                lengths = (population != PAD_ID).sum(dim=1).float()
+                selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
+                
+                # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
+                # NOTE: We set pso_steps=0 here because running PSO on the ENTIRE population (1M) 
+                # would OOM (requires ~5GB for particles).
+                # The Top-K PSO optimization is already handled in Python just above.
+                next_pop, next_c, next_fit = self.evolve_generation_cuda(
+                    population, pop_constants, selection_metric, x_t, y_t,
+                    mutation_rate=current_mutation_rate,
+                    crossover_rate=GpuGlobals.DEFAULT_CROSSOVER_RATE,
+                    tournament_size=GpuGlobals.DEFAULT_TOURNAMENT_SIZE,
+                    pso_steps=0, # Disable global PSO to avoid OOM
+                    pso_particles=20
+                )
+                
+                if next_pop is not None:
+                    # Update local refs for next generation
+                    next_pop = next_pop[:self.pop_size]
+                    next_c = next_c[:self.pop_size]
+                else:
+                    # Rare failure (ImportError), proceed to fallback if needed or return
+                    print("[Engine] CUDA Orchestrator failed, please restart without USE_CUDA_ORCHESTRATOR")
+                    break
             else:
-                next_pop = self.pop_buffer_A
-                next_c = self.const_buffer_A
-                
-            # pointers
-            p_ptr = 0
-            
-            # 1. Vectorized Elitism
-            # View fitness as [Islands, IslandSize] to select best per island
-            fit_view = fitness_rmse.view(self.n_islands, self.island_size)
-            k_elite_per_island = max(1, int(self.island_size * GpuGlobals.BASE_ELITE_PERCENTAGE))
-            total_elites = k_elite_per_island * self.n_islands
-            
-            # topk per row (island)
-            _, elite_local_idx = torch.topk(fit_view, k_elite_per_island, dim=1, largest=False) # [n_islands, k_elite]
-            
-            # Convert to global indices
-            island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
-            elite_global_idx = (elite_local_idx + island_offsets).view(-1) # Flatten [All Elites]
-            
-            # Copy Elites
-            next_pop[0 : total_elites] = population[elite_global_idx]
-            next_c[0 : total_elites] = pop_constants[elite_global_idx]
-            p_ptr += total_elites
-            
-            # 2. Vectorized Selection Setup
-            remaining_per_island = self.island_size - k_elite_per_island
-            n_cross_per_island = int(remaining_per_island * GpuGlobals.DEFAULT_CROSSOVER_RATE)
-            n_mut_per_island = remaining_per_island - n_cross_per_island
-            
-            total_cross = n_cross_per_island * self.n_islands
-            total_mut = n_mut_per_island * self.n_islands
-            
-            # Selection Metric (Vectorized)
-            selection_metric = None
-            # Calculate metric if Tournament is used OR if Lexicase is used (as fallback for now)
-            lengths = (population != PAD_ID).sum(dim=1).float()
-            selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
-            
-            # --- Vectorized Tournament Selection Helper ---
-            def get_island_parents(n_needed_per_island):
-                # Returns flattened global indices of parents selected locally within each island
-                # 1. Random local indices [Islands, Needed, Tour]
-                rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
-                
-                # 2. Convert to global for gathering metric
-                # Offset shape: [Islands, 1, 1]
-                offsets = island_offsets.view(self.n_islands, 1, 1)
-                rand_global = rand_local + offsets
-                
-                # 3. Gather Metric [Islands, Needed, Tour]
-                # We can gather from flattened metric using flattened indices, then reshape
-                flat_rand = rand_global.view(-1)
-                flat_metric = selection_metric[flat_rand]
-                view_metric = flat_metric.view(self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE)
-                
-                # 4. Intra-Island Tournament
-                best_tour_idx = torch.argmin(view_metric, dim=2) # [Islands, Needed] (Values 0..Tour-1)
-                
-                # 5. Select Winners
-                # We need to gather the winner Global Index from 'rand_global'
-                # Gather requires index to be same dim.
-                winner_global_idx = rand_global.gather(2, best_tour_idx.unsqueeze(2)).squeeze(2) # [Islands, Needed]
-                
-                return winner_global_idx.view(-1) # Flatten to [Total Needed]
-
-            # --- CROSSOVER (Global Batch) ---
-            chunk_size = 50000
-            
-            if total_cross > 0:
-                parents_idx = get_island_parents(n_cross_per_island)
-
-                # Process in chunks to save memory
-                c_ptr = 0
-                while c_ptr < total_cross:
-                    curr = min(chunk_size, total_cross - c_ptr)
-                    sub_idx = parents_idx[c_ptr : c_ptr + curr]
-                    parents = population[sub_idx]
+                # --- LEGACY PYTHON EVOLUTION LOOP ---
+                # Determine Buffers based on generation parity
+                if population is self.pop_buffer_A:
+                    next_pop = self.pop_buffer_B
+                    next_c = self.const_buffer_B
+                else:
+                    next_pop = self.pop_buffer_A
+                    next_c = self.const_buffer_A
                     
-                    offspring = self.operators.crossover_population(parents, 1.0)
-                    
-                    next_pop[p_ptr : p_ptr + curr] = offspring
-                    next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
-                    
-                    p_ptr += curr
-                    c_ptr += curr
-                    del parents, offspring
+                p_ptr = 0
+                
+                # 1. Vectorized Elitism
+                fit_view = fitness_rmse.view(self.n_islands, self.island_size)
+                k_elite_per_island = max(1, int(self.island_size * GpuGlobals.BASE_ELITE_PERCENTAGE))
+                total_elites = k_elite_per_island * self.n_islands
+                
+                _, elite_local_idx = torch.topk(fit_view, k_elite_per_island, dim=1, largest=False)
+                elite_global_idx = (elite_local_idx + island_offsets).view(-1)
+                
+                next_pop[0 : total_elites] = population[elite_global_idx]
+                next_c[0 : total_elites] = pop_constants[elite_global_idx]
+                p_ptr += total_elites
+                
+                # 2. Vectorized Selection Setup
+                remaining_per_island = self.island_size - k_elite_per_island
+                n_cross_per_island = int(remaining_per_island * GpuGlobals.DEFAULT_CROSSOVER_RATE)
+                n_mut_per_island = remaining_per_island - n_cross_per_island
+                total_cross = n_cross_per_island * self.n_islands
+                total_mut = n_mut_per_island * self.n_islands
+                
+                lengths = (population != PAD_ID).sum(dim=1).float()
+                selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
+                
+                def get_island_parents(n_needed_per_island):
+                    rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
+                    offsets = island_offsets.view(self.n_islands, 1, 1)
+                    rand_global = rand_local + offsets
+                    flat_rand = rand_global.view(-1)
+                    flat_metric = selection_metric[flat_rand]
+                    view_metric = flat_metric.view(self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE)
+                    best_tour_idx = torch.argmin(view_metric, dim=2)
+                    winner_global_idx = rand_global.gather(2, best_tour_idx.unsqueeze(2)).squeeze(2)
+                    return winner_global_idx.view(-1)
 
-            # --- MUTATION (Global Batch) ---
-            if total_mut > 0:
-                parents_idx = get_island_parents(n_mut_per_island)
-                     
-                m_ptr = 0
+                # --- CROSSOVER ---
                 chunk_size = 50000
-                while m_ptr < total_mut:
-                    curr = min(chunk_size, total_mut - m_ptr)
-                    sub_idx = parents_idx[m_ptr : m_ptr + curr]
-                    parents = population[sub_idx]
-                    offspring = parents.clone()
-                    
-                    # Split types
-                    n_p = curr // 2
-                    n_s = curr - n_p
-                    
-                    if n_p > 0:
-                        offspring[:n_p] = self.operators.mutate_population(offspring[:n_p], current_mutation_rate)
-                    if n_s > 0:
-                        offspring[n_p:] = self.operators.subtree_mutation(offspring[n_p:], 1.0)
-                        
-                    next_pop[p_ptr : p_ptr + curr] = offspring
-                    next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
-                    
-                    p_ptr += curr
-                    m_ptr += curr
-                    del parents, offspring
+                if total_cross > 0:
+                    parents_idx = get_island_parents(n_cross_per_island)
+                    c_ptr = 0
+                    while c_ptr < total_cross:
+                        curr = min(chunk_size, total_cross - c_ptr)
+                        sub_idx = parents_idx[c_ptr : c_ptr + curr]
+                        parents = population[sub_idx]
+                        offspring = self.operators.crossover_population(parents, 1.0)
+                        next_pop[p_ptr : p_ptr + curr] = offspring
+                        next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                        p_ptr += curr
+                        c_ptr += curr
+
+                # --- MUTATION ---
+                if total_mut > 0:
+                    parents_idx = get_island_parents(n_mut_per_island)
+                    m_ptr = 0
+                    while m_ptr < total_mut:
+                        curr = min(chunk_size, total_mut - m_ptr)
+                        sub_idx = parents_idx[m_ptr : m_ptr + curr]
+                        parents = population[sub_idx]
+                        offspring = parents.clone()
+                        n_p = curr // 2
+                        n_s = curr - n_p
+                        if n_p > 0:
+                            offspring[:n_p] = self.operators.mutate_population(offspring[:n_p], current_mutation_rate)
+                        if n_s > 0:
+                            offspring[n_p:] = self.operators.subtree_mutation(offspring[n_p:], 1.0)
+                        next_pop[p_ptr : p_ptr + curr] = offspring
+                        next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                        p_ptr += curr
+                        m_ptr += curr
+
             
             # --- SIMPLIFICATION ---
             # --- SIMPLIFICATION ---

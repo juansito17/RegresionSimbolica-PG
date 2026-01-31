@@ -58,10 +58,15 @@ class GPUSymbolicSimplifier:
         
     def _build_arity_table(self):
         from core.grammar import OPERATORS
+        # Ensure table is large enough for both vocab and PAD_ID
         max_id = max(self.grammar.id_to_token.keys()) + 1
+        max_id = max(max_id, PAD_ID + 1)
+        
         self.arity_table = torch.zeros(max_id, dtype=torch.long, device=self.device)
         for token, tid in self.grammar.token_to_id.items():
             self.arity_table[tid] = OPERATORS.get(token, 0)
+        
+        # arity_table[PAD_ID] remains 0, which is safe for subtree logic
                 
     def _is_zero(self, token_ids: torch.Tensor) -> torch.Tensor:
         if self.zero_ids.numel() == 0: return torch.zeros_like(token_ids, dtype=torch.bool)
@@ -133,6 +138,8 @@ class GPUSymbolicSimplifier:
             is_o1 = (s1 == s2-1) & self._is_one(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & valid_s1
             
             to_skip_arg1 = (is_plus & is_z1) | (is_mult & is_o1)
+            # Ensure s1 and s2 are valid for indexing
+            to_skip_arg1 &= (s2 > 0) & (s2 < L)
             if to_skip_arg1.any():
                 rows = torch.where(to_skip_arg1)[0]
                 pop[rows, (s2-1)[rows]] = PAD_ID
@@ -141,6 +148,8 @@ class GPUSymbolicSimplifier:
             
             # Special Constant Result Rules: x^0 -> 1, 1^x -> 1
             match_const_1 = is_pow & (is_z2 | is_o1)
+            # Safety: s1 must be valid
+            match_const_1 &= (s1 >= 0) & (s1 < L)
             if match_const_1.any() and o_id != -1:
                 rows = torch.where(match_const_1)[0]
                 start = s1[match_const_1]
@@ -221,11 +230,13 @@ class GPUSymbolicSimplifier:
                     vals_1 = nodes_1[mask]
                     vals_2 = nodes_2[mask]
                     
-                    # Write
-                    pop[rows_simple, cols_s1] = vals_2
-                    pop[rows_simple, cols_s2] = vals_1
-                    
-                    n_swapped += mask.sum().item()
+                    # Write only if both indices are valid
+                    valid_swap = (cols_s1 >= 0) & (cols_s1 < L) & (cols_s2 >= 0) & (cols_s2 < L)
+                    if valid_swap.any():
+                        rows_v = rows_simple[valid_swap]
+                        pop[rows_v, cols_s1[valid_swap]] = vals_2[valid_swap]
+                        pop[rows_v, cols_s2[valid_swap]] = vals_1[valid_swap]
+                        n_swapped += valid_swap.sum().item()
                     
                     # Remove simple swaps from remaining potential swaps to avoid double handling
                     should_swap &= ~is_simple_swap
@@ -260,6 +271,8 @@ class GPUSymbolicSimplifier:
             is_z1 = (s1 == s2-1) & self._is_zero(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & (s2 > 0)
             
             match = is_mult & (is_z1 | is_z2)
+            # Safety: start must be valid
+            match &= (s1 >= 0) & (s1 < L)
             if match.any():
                 rows = torch.where(match)[0]
                 start_to_wipe = s1[match]
@@ -267,17 +280,12 @@ class GPUSymbolicSimplifier:
                 # Create sub-population of matching rows (Copy)
                 sub_pop = pop[rows]
                 
-                # Set Z_ID at start
-                # sub_pop has N_match rows. start_to_wipe has N_match indices.
-                # We need column indices for each row.
-                # sub_pop[range(N_match), start_to_wipe] = z_id
                 cols = torch.arange(len(rows), device=self.device)
                 sub_pop[cols, start_to_wipe] = z_id
                 
                 # Set PADs
                 pos = torch.arange(L, device=self.device).reshape(1, L)
                 s_wipe = start_to_wipe.unsqueeze(1)
-                # Mask shape: (N_match, L)
                 pad_mask = (pos > s_wipe) & (pos <= j)
                 sub_pop[pad_mask] = PAD_ID
                 
@@ -673,12 +681,21 @@ class GPUSymbolicSimplifier:
         B, L = population.shape
         pop = population.clone()
         n_folded = 0
-        val_table = torch.empty(self.arity_table.shape[0], device=self.device, dtype=self.dtype).fill_(float('nan'))
+        # Prepare value table for terminal IDs
+        max_id = self.arity_table.size(0)
+        val_table = torch.empty(max_id, device=self.device, dtype=self.dtype).fill_(float('nan'))
         for t, tid in self.grammar.token_to_id.items():
             if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()): val_table[tid] = float(t)
+        
         for j in range(2, L):
             op, a1, a2 = pop[:, j], pop[:, j-2], pop[:, j-1]
-            v1, v2 = val_table[a1], val_table[a2]
+            # Defensive indexing against corrupted IDs or PAD_ID
+            a1_c = a1.clamp(0, max_id - 1)
+            a2_c = a2.clamp(0, max_id - 1)
+            v1, v2 = val_table[a1_c], val_table[a2_c]
+            # If original ID was out of bounds, treat as non-constant
+            v1[a1 >= max_id] = float('nan')
+            v2[a2 >= max_id] = float('nan')
             mask = (~v1.isnan()) & (~v2.isnan())
             if not mask.any(): continue
             res = torch.empty(B, device=self.device, dtype=self.dtype).fill_(float('nan'))
@@ -713,7 +730,12 @@ class GPUSymbolicSimplifier:
 
     def _get_subtree_starts(self, population: torch.Tensor, end_indices) -> torch.Tensor:
         B, L = population.shape
-        arities = self.arity_table[population.clamp(0)]
+        # Defensive indexing
+        max_id = self.arity_table.size(0)
+        pop_c = population.clamp(0, max_id - 1)
+        arities = self.arity_table[pop_c]
+        # Treat OOB tokens as terminals (arity 0) to avoid infinite loops or crashes
+        arities[population >= max_id] = 0
         if isinstance(end_indices, int):
             end_t = torch.empty(B, device=self.device, dtype=torch.long).fill_(end_indices)
             max_e = end_indices

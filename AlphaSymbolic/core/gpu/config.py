@@ -209,6 +209,9 @@ class GpuGlobals:
     PROGRESS_REPORT_INTERVAL = 100
     FORCE_INTEGER_CONSTANTS = False
     
+    # --- C++ CUDA Orchestration ---
+    USE_CUDA_ORCHESTRATOR = True  # Enable for maximum performance (Phases 3 & 4)
+    
     # Control de Duplicados
     PREVENT_DUPLICATES = True
     DUPLICATE_RETRIES = 10

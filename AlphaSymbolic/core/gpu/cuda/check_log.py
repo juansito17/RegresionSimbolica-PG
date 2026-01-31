@@ -1,10 +1,9 @@
 
-with open("compile_errors_no_ninja.log", "r", errors="ignore") as f:
+with open("build_phase4.log", "r", errors="ignore") as f:
     lines = f.readlines()
     for i, line in enumerate(lines):
-        if ": error" in line.lower() or " error " in line.lower():
+        if "unresolved external symbol" in line.lower():
             print(f"Line {i}: {line.strip()}")
-            # Print minimal context
-            for j in range(max(0, i-1), min(len(lines), i+2)):
-                if j != i: print(f"    {lines[j].strip()}")
-            print("-" * 20)
+            # The symbol is usually in the same line or next line depending on format
+            # LNK2001: unresolved external symbol "void __cdecl foo(...)" 
+

@@ -184,3 +184,46 @@ class GPUGrammar:
             current_idx = start - 1
             
         return (current_idx + 1, root_idx)
+
+    def get_arity_tensor(self, device=None) -> torch.Tensor:
+        """
+        Returns a tensor of arities for all tokens in vocab.
+        token_arities[id] = arity of token with that ID.
+        Terminals have arity 0. Operators have arity 1 or 2.
+        """
+        arities = torch.zeros(self.vocab_size, dtype=torch.int32, device=device)
+        # Terminals have arity 0 (default)
+        # Operators have arity 1 or 2
+        for op in self.operators:
+            tid = self.token_to_id.get(op, -1)
+            if tid >= 0 and tid < self.vocab_size:
+                arities[tid] = self.token_arity.get(op, 1)
+        return arities
+    
+    def get_arity_ids(self, arity: int, device=None) -> torch.Tensor:
+        """
+        Returns tensor of token IDs that have the specified arity.
+        arity=0: terminals (x, C, 0, 1, etc.)
+        arity=1: unary operators (sin, cos, sqrt, neg, etc.)
+        arity=2: binary operators (+, -, *, /, pow, etc.)
+        """
+        ids = []
+        
+        if arity == 0:
+            # All terminals have arity 0
+            for term in self.terminals:
+                tid = self.token_to_id.get(term, -1)
+                if tid > 0:  # Exclude PAD
+                    ids.append(tid)
+        else:
+            # Operators with matching arity
+            for op in self.operators:
+                if self.token_arity.get(op, 1) == arity:
+                    tid = self.token_to_id.get(op, -1)
+                    if tid > 0:
+                        ids.append(tid)
+        
+        if len(ids) == 0:
+            return torch.zeros(1, dtype=torch.int64, device=device)  # Return dummy
+        return torch.tensor(ids, dtype=torch.int64, device=device)
+

@@ -653,3 +653,229 @@ void launch_tournament_selection(
         printf("CUDA Error in tournament_selection: %s\n", cudaGetErrorString(err));
     }
 }
+
+// --- Phase 4: C++ Orchestrator (evolve_generation) ---
+
+// External PSO Launchers (from pso_kernels.cu)
+void launch_pso_update(
+    torch::Tensor& pos,
+    torch::Tensor& vel,
+    const torch::Tensor& pbest,
+    const torch::Tensor& gbest,
+    const torch::Tensor& r1,
+    const torch::Tensor& r2,
+    float w, float c1, float c2
+);
+
+void launch_pso_update_bests(
+    const torch::Tensor& current_err,
+    torch::Tensor& pbest_err,
+    torch::Tensor& pbest_pos,
+    const torch::Tensor& current_pos,
+    torch::Tensor& gbest_err,
+    torch::Tensor& gbest_pos
+);
+
+// RPN Eval (Forward Decl) - We use launch_rpn_kernel directly now
+void launch_rpn_kernel(
+    const torch::Tensor& population,
+    const torch::Tensor& x,
+    const torch::Tensor& constants,
+    torch::Tensor& out_preds,
+    torch::Tensor& out_sp,
+    torch::Tensor& out_error,
+    int PAD_ID, 
+    int id_x_start, 
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val
+);
+
+// NOTE: launch_find_subtree_ranges and launch_crossover_splicing are defined above
+
+
+std::vector<torch::Tensor> evolve_generation(
+    torch::Tensor population,      // [B, L]
+    torch::Tensor constants,       // [B, K]
+    torch::Tensor fitness,         // [B]
+    torch::Tensor X,               // [Vars, N_data] (Transposed for RPN kernel)
+    torch::Tensor Y_target,        // [N_data]
+    torch::Tensor token_arities,   // [VocabSize] int32
+    torch::Tensor arity_0_ids,     // [n0] int64
+    torch::Tensor arity_1_ids,     // [n1] int64
+    torch::Tensor arity_2_ids,     // [n2] int64
+    float mutation_rate,
+    float crossover_rate,
+    int tournament_size,
+    int pso_steps,
+    int pso_particles,
+    float pso_w, float pso_c1, float pso_c2,
+    int PAD_ID,
+    // OpCodes
+    int id_x_start, 
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val
+) {
+    // Full Orchestrator: Selection + Crossover + Mutation + PSO
+    
+    int B = population.size(0);
+    int L = population.size(1);
+    int K = constants.size(1);
+    auto device = population.device();
+    auto float_opt = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+    auto long_opt = torch::TensorOptions().dtype(torch::kInt64).device(device);
+    auto int_opt = torch::TensorOptions().dtype(torch::kInt32).device(device);
+    auto byte_opt = torch::TensorOptions().dtype(torch::kUInt8).device(device);
+    
+    // 1. Selection (Tournament)
+    auto rand_idx = torch::randint(0, B, {B, tournament_size}, long_opt);
+    auto winner_idx = torch::empty({B}, long_opt);
+    
+    auto fit_f32 = fitness.to(torch::kFloat32);
+    launch_tournament_selection(fit_f32, rand_idx, winner_idx);
+    
+    auto parents = population.index_select(0, winner_idx);
+    auto parent_consts = constants.index_select(0, winner_idx);
+    
+    // 2. Crossover (Proper Subtree Crossover)
+    int n_pairs = B / 2;
+    auto parents1 = parents.slice(0, 0, 2*n_pairs, 2).contiguous();
+    auto parents2 = parents.slice(0, 1, 2*n_pairs, 2).contiguous();
+    
+    // Find Subtree Starts using kernel [N, L]
+    auto all_starts1 = torch::zeros({n_pairs, L}, long_opt);
+    auto all_starts2 = torch::zeros({n_pairs, L}, long_opt);
+    
+    launch_find_subtree_ranges(parents1, token_arities, all_starts1, PAD_ID);
+    launch_find_subtree_ranges(parents2, token_arities, all_starts2, PAD_ID);
+    
+    // Pick random crossover points (ends) that are NOT PAD
+    auto lengths1 = (parents1 != PAD_ID).sum(1).to(torch::kLong);
+    auto lengths2 = (parents2 != PAD_ID).sum(1).to(torch::kLong);
+    
+    // Safe rand index: avoid choosing 0-length if possible
+    auto e1 = (torch::rand({n_pairs}, float_opt) * lengths1.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
+    auto e2 = (torch::rand({n_pairs}, float_opt) * lengths2.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
+    
+    // Get corresponding starts
+    auto s1 = all_starts1.gather(1, e1.unsqueeze(1)).squeeze(1);
+    auto s2 = all_starts2.gather(1, e2.unsqueeze(1)).squeeze(1);
+    
+    // Create children
+    auto child1 = torch::full_like(parents1, PAD_ID);
+    auto child2 = torch::full_like(parents2, PAD_ID);
+    
+    // Splice!
+    launch_crossover_splicing(parents1, parents2, s1, e1, s2, e2, child1, child2, PAD_ID);
+    
+    // Apply crossover rate mask
+    auto cx_mask = (torch::rand({n_pairs, 1}, float_opt) < crossover_rate);
+    auto final_c1 = torch::where(cx_mask, child1, parents1);
+    auto final_c2 = torch::where(cx_mask, child2, parents2);
+    
+    auto offspring = torch::cat({final_c1, final_c2}, 0);
+    
+    auto consts1 = parent_consts.slice(0, 0, 2*n_pairs, 2);
+    auto consts2 = parent_consts.slice(0, 1, 2*n_pairs, 2);
+    auto offspring_consts = torch::cat({consts1, consts2}, 0);
+    
+    // Handle odd population
+    if (B % 2 != 0) {
+        auto last_p = parents.slice(0, B-1, B);
+        auto last_c = parent_consts.slice(0, B-1, B);
+        offspring = torch::cat({offspring, last_p}, 0);
+        offspring_consts = torch::cat({offspring_consts, last_c}, 0);
+    }
+    
+    // 3. Mutation
+    auto rand_floats = torch::rand({B, L}, float_opt);
+    auto rand_ints = torch::randint(0, 100, {B, L}, long_opt);
+    
+    launch_mutation_kernel(offspring, rand_floats, rand_ints, token_arities,
+                    arity_0_ids, arity_1_ids, arity_2_ids,
+                    mutation_rate, PAD_ID);
+    
+    // 4. NanoPSO (Constant Optimization)
+    auto gbest_pos = offspring_consts.clone();
+    auto gbest_err = torch::full({B}, std::numeric_limits<float>::infinity(), float_opt);
+
+    if (pso_steps > 0) {
+        auto pop_expanded = offspring.repeat_interleave(pso_particles, 0); // [B*P, L]
+        
+        int total_particles = B * pso_particles;
+        int N_data = X.size(1); // X is [Vars, N]
+        
+        // Initial Particles
+        auto pos = offspring_consts.unsqueeze(1).repeat({1, pso_particles, 1}); // [B, P, K]
+        auto jitter = torch::randn({B, pso_particles-1, K}, float_opt) * 1.0;
+        
+        using namespace torch::indexing;
+        pos.index_put_({Slice(), Slice(1, None), Slice()}, pos.index({Slice(), Slice(1, None), Slice()}) + jitter);
+        
+        auto vel = torch::randn_like(pos) * 0.1;
+        
+        auto pbest_pos = pos.clone();
+        auto pbest_err = torch::full({B, pso_particles}, std::numeric_limits<float>::infinity(), float_opt);
+        
+        // Pre-allocate eval outputs
+        auto preds = torch::empty({total_particles, N_data}, float_opt);
+        auto sp = torch::empty({total_particles, STACK_SIZE}, int_opt);
+        auto error_flags = torch::empty({total_particles}, byte_opt);
+        
+        for(int step=0; step<pso_steps; ++step) {
+            auto flat_pos = pos.view({-1, K}); 
+            
+            // Evaluate
+            launch_rpn_kernel(
+                pop_expanded, X, flat_pos, 
+                preds, sp, error_flags,
+                PAD_ID, id_x_start, 
+                id_C, id_pi, id_e,
+                id_0, id_1, id_2, id_3, id_5, id_10,
+                op_add, op_sub, op_mul, op_div, op_pow, op_mod,
+                op_sin, op_cos, op_tan,
+                op_log, op_exp,
+                op_sqrt, op_abs, op_neg,
+                op_fact, op_floor, op_ceil, op_sign,
+                op_gamma, op_lgamma,
+                op_asin, op_acos, op_atan,
+                pi_val, e_val
+            );
+            
+            // RMSE Logic
+            auto diff = preds - Y_target.unsqueeze(0);
+            auto mse = torch::mean(diff*diff, 1); // [B*P]
+            auto rmse = torch::sqrt(mse);
+            rmse = torch::where(torch::isnan(rmse), torch::full_like(rmse, std::numeric_limits<float>::infinity()), rmse);
+            
+            auto curr_err = rmse.view({B, pso_particles});
+            
+            launch_pso_update_bests(curr_err, pbest_err, pbest_pos, pos, gbest_err, gbest_pos);
+            
+            auto r1 = torch::rand({B, pso_particles, K}, float_opt);
+            auto r2 = torch::rand({B, pso_particles, K}, float_opt);
+            
+            launch_pso_update(pos, vel, pbest_pos, gbest_pos, r1, r2, pso_w, pso_c1, pso_c2);
+        }
+    }
+
+    
+    // Return: [NewPop, NewConsts, NewFitness]
+    return {offspring, gbest_pos, gbest_err};
+}
+
