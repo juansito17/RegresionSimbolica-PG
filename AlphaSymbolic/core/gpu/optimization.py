@@ -29,15 +29,12 @@ class GPUOptimizer:
             # Use differentiable evaluation (returns (Loss, Preds))
             loss_per_ind, _ = self.evaluator.evaluate_differentiable(population, optimized_consts, x, y_target)
             
-            # Track best
+            # Track best (unconditional update — no GPU sync)
             current_mse = loss_per_ind.detach()
-            # Handle potential NaNs in output
             valid = ~torch.isnan(current_mse)
-            
             improved = (current_mse < best_mse) & valid
-            if improved.any():
-                best_mse[improved] = current_mse[improved]
-                best_consts[improved] = optimized_consts[improved].detach()
+            best_mse = torch.where(improved, current_mse, best_mse)
+            best_consts = torch.where(improved.unsqueeze(1), optimized_consts.detach(), best_consts)
                 
             loss = loss_per_ind[valid].sum()
             

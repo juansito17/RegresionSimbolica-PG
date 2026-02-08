@@ -895,19 +895,21 @@ class TensorGeneticEngine:
             pop_constants[top_idx] = refined_consts
             fitness_rmse[top_idx] = refined_mse
             
-            # Best Tracking
+            # Best Tracking (single GPU->CPU sync for both values)
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+            min_rmse_val = min_rmse.item()  # Single sync — min_idx now also CPU-cached
             
-            if not torch.isnan(min_rmse) and min_rmse.item() < best_rmse:
-                best_rmse = min_rmse.item()
-                best_rpn = population[min_idx].clone()
-                best_consts_vec = pop_constants[min_idx].clone()
+            if min_rmse_val == min_rmse_val and min_rmse_val < best_rmse:  # NaN check via !=
+                best_rmse = min_rmse_val
+                min_idx_val = min_idx.item()  # Free — already synced
+                best_rpn = population[min_idx_val].clone()
+                best_consts_vec = pop_constants[min_idx_val].clone()
                 self.best_global_rmse = best_rmse
                 self.best_global_rpn = best_rpn
                 self.best_global_consts = best_consts_vec
                 
                 # Identify Island
-                island_idx = (min_idx.item() // self.island_size) if self.n_islands > 1 else 0
+                island_idx = (min_idx_val // self.island_size) if self.n_islands > 1 else 0
 
                 stagnation = 0
                 
