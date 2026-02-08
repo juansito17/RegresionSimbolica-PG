@@ -164,6 +164,30 @@ std::vector<torch::Tensor> evolve_generation(
     double pi_val, double e_val
 );
 
+// --- Phase 6 Forward Declaration: Fused PSO ---
+void launch_fused_pso(
+    const torch::Tensor& population,
+    const torch::Tensor& init_consts,
+    const torch::Tensor& x,
+    const torch::Tensor& y_target,
+    torch::Tensor& out_gbest_pos,
+    torch::Tensor& out_gbest_err,
+    int num_particles, int num_steps,
+    float w, float c1, float c2,
+    float const_min, float const_max,
+    int PAD_ID, int id_x_start,
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val
+);
+
 // --- Phase 5 Forward Declarations (Simplifier + Generator Kernels) ---
 void launch_simplify_batch(
     torch::Tensor& population,
@@ -217,6 +241,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("simplify_batch", &launch_simplify_batch, "Batch Simplification (CUDA)");
     m.def("precompute_subtree_starts", &launch_precompute_subtree_starts, "Precompute Subtree Starts (CUDA)");
     m.def("generate_random_rpn", &launch_generate_random_rpn, "Random RPN Generation (CUDA)");
+
+    // Phase 6: Fused PSO
+    m.def("fused_pso", &launch_fused_pso, "Fused PSO (Eval+PSO in single kernel)");
 }
 
 

@@ -16,6 +16,7 @@ setup(
                 'bindings.cpp',
                 'rpn_kernels.cu',
                 'pso_kernels.cu',
+                'fused_pso_kernels.cu',
                 'decoder.cpp',
                 'simplify_kernels.cu',
                 'genrand_kernels.cu'
