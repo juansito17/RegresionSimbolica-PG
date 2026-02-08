@@ -1,6 +1,5 @@
 
 import torch
-import numpy as np
 from typing import Tuple
 from core.grammar import ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
@@ -75,8 +74,8 @@ class GPUEvaluator:
         # 200,000 individuals * 25 samples * 8 bytes ~ 40MB per buffer
         max_chunk_inds = 1000000
         
-        # Output buffer for RMSE only
-        all_rmse = []
+        # Pre-allocate output buffer (avoid torch.cat at the end)
+        final_rmse = torch.full((B_pop,), self.INF_VAL, device=self.device, dtype=self.dtype)
         
         # Pre-process Target
         y_target_chunk = y_target.flatten().unsqueeze(0) # [1, N]
@@ -137,14 +136,13 @@ class GPUEvaluator:
                                               torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
                                               mse))
                                           
-            all_rmse.append(metric_score)
+            # Write directly to pre-allocated buffer
+            final_rmse[i:end_i] = metric_score
              
             # Cleanup
             del sub_pop, sub_c, f_preds, sp, err, preds_mat, diff, sq_diff, mse, metric_score
             # torch.cuda.empty_cache() 
             
-        final_rmse = torch.cat(all_rmse)
-        
         return final_rmse
 
     def evaluate_differentiable(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor) -> torch.Tensor:
@@ -236,7 +234,8 @@ class GPUEvaluator:
         # Logic mirrors evaluate_batch but returns full [B, D] errors
         max_chunk_inds = 100000 # Smaller chunk size for full matrix (D=25 -> 2.5M elems per chunk)
         
-        all_abs_errors = []
+        # Pre-allocate output buffer (avoid torch.cat at the end)
+        all_abs_errors = torch.full((B, D), self.INF_VAL, device=self.device, dtype=self.dtype)
         
         # Pre-process Target [1, D]
         target_matrix_chunk = y_target.flatten().unsqueeze(0) 
@@ -270,9 +269,10 @@ class GPUEvaluator:
                                   torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
                                   abs_err)
             
-            all_abs_errors.append(abs_err)
+            # Write directly to pre-allocated buffer
+            all_abs_errors[i:end_i] = abs_err
             
             del sub_pop, sub_c, final_preds, sp, has_error, preds_matrix, abs_err
             # torch.cuda.empty_cache() # Optional speed vs memory trade-off
 
-        return torch.cat(all_abs_errors, dim=0)
+        return all_abs_errors

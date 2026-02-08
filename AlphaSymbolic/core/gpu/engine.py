@@ -1,6 +1,5 @@
 
 import torch
-import numpy as np
 import time
 from typing import List, Tuple, Optional
 from core.grammar import ExpressionTree
@@ -895,25 +894,6 @@ class TensorGeneticEngine:
                  refined_consts, refined_mse = self.optimizer.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=10)
             pop_constants[top_idx] = refined_consts
             fitness_rmse[top_idx] = refined_mse
-            
-            # GPU Simplification (every N generations)
-            if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
-                try:
-                    k_simp = min(self.pop_size, GpuGlobals.K_SIMPLIFY)
-                    _, simp_idx = torch.topk(fitness_rmse, k_simp, largest=False)
-                    simp_pop = population[simp_idx].clone()
-                    simp_consts = pop_constants[simp_idx].clone()
-                    
-                    simplified_pop, simplified_consts, n_simplified = self.gpu_simplifier.simplify_batch(simp_pop, simp_consts)
-                    
-                    if n_simplified > 0:
-                        population[simp_idx] = simplified_pop
-                        pop_constants[simp_idx] = simplified_consts
-                        # Re-evaluate simplified formulas
-                        new_fitness = self.evaluator.evaluate_batch(simplified_pop, x_t, y_t, simplified_consts)
-                        fitness_rmse[simp_idx] = new_fitness
-                except Exception as e:
-                    print(f"WARN: Simplification failed (Gen {generations}): {e}")
             
             # Best Tracking
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)

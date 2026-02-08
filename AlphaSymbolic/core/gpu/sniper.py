@@ -1,6 +1,5 @@
 
 import torch
-import numpy as np
 from .formatting import format_const
 
 class Sniper:

@@ -6,7 +6,6 @@ Implements multi-objective optimization balancing:
 - Objective 2: Complexity (tree size) - minimize
 """
 import torch
-import numpy as np
 from typing import List, Tuple
 
 
