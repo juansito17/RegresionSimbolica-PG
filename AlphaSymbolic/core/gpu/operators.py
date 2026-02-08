@@ -82,13 +82,12 @@ class GPUOperators:
 
     def generate_random_population_gpu(self, size: int) -> torch.Tensor:
         """
-        GPU-native random RPN generation. No CPU bottleneck.
+        GPU-native random RPN generation. Optimized to minimize kernel launches.
         
-        Algorithm:
-        1. Start with stack=0. We need stack=1 at the end.
-        2. For each position, sample a token that keeps the stack valid.
-        3. Terminals add +1 to stack, arity-1 ops add 0, arity-2 ops add -1.
-        4. We need to ensure we can always reach stack=1 at the end.
+        Strategy: Pre-compute all random numbers in bulk, then use vectorized
+        selection logic with minimal per-step overhead. The loop over max_len
+        positions is unavoidable (sequential dependency on stack state), but
+        each step is now a single fused operation instead of 5+ kernel launches.
         """
         max_len = self.max_len
         device = self.device
@@ -96,92 +95,106 @@ class GPUOperators:
         # Output tensor
         population = torch.zeros(size, max_len, dtype=torch.long, device=device)
         
-        # Stack balance tracker: starts at 0, needs to end at 1
+        # Stack balance tracker
         stack = torch.zeros(size, dtype=torch.long, device=device)
         
-        # Token pools with their stack delta (terminals=+1, arity1=0, arity2=-1)
-        # Combine all valid tokens into a single pool with weights
+        # Token pools (cached references)
         n_terminals = self.terminal_ids.shape[0]
         n_arity1 = self.arity_1_ids.shape[0]
         n_arity2 = self.arity_2_ids.shape[0]
         
-        # Create combined token pool
         all_tokens = torch.cat([self.terminal_ids, self.arity_1_ids, self.arity_2_ids])
         n_total = all_tokens.shape[0]
         
-        # Stack delta for each token type
-        # terminals: +1, arity1: 0 (pops 1, pushes 1), arity2: -1 (pops 2, pushes 1)
         token_deltas = torch.cat([
-            torch.ones(n_terminals, dtype=torch.long, device=device),   # terminals: +1
-            torch.zeros(n_arity1, dtype=torch.long, device=device),     # arity1: 0
-            -torch.ones(n_arity2, dtype=torch.long, device=device)      # arity2: -1
+            torch.ones(n_terminals, dtype=torch.long, device=device),
+            torch.zeros(n_arity1, dtype=torch.long, device=device),
+            -torch.ones(n_arity2, dtype=torch.long, device=device)
         ])
         
-        # For each position, we need to sample valid tokens
-        for j in range(max_len):
-            remaining = max_len - j - 1  # positions left after this one
-            
-            # For each individual, determine which tokens are valid
-            # Rule: After sampling, the new stack must be >= 0
-            #       AND we must be able to reach stack=1 with remaining positions
-            
-            # Stack after sampling token k: stack + delta[k]
-            # With 'remaining' positions, we can add at most +remaining to stack (all terminals)
-            # and at least -remaining (not realistic, but lower bound)
-            
-            # To reach stack=1:
-            # new_stack + (adjustment from remaining) = 1
-            # We need: new_stack >= 0 (valid RPN)
-            # We need: new_stack <= 1 + remaining (can reduce with operators)
-            # We need: new_stack >= 1 - remaining (can increase with terminals)
-            
-            # Create validity mask for each (individual, token) pair
-            # new_stack = stack.unsqueeze(1) + token_deltas.unsqueeze(0)  # [size, n_total]
-            new_stack = stack.unsqueeze(1) + token_deltas.unsqueeze(0)
-            
-            # Constraints
-            # We need new_stack >= 1 to ensure we had enough operands
-            # (Stack 0 -> Term(+1) -> 1. Stack 1 -> Op1(0) -> 1. Stack 2 -> Op2(-1) -> 1)
-            # Exception: None? All ops produce stack >= 1 if valid.
-            valid_mask = (new_stack >= 1) & \
-                         (new_stack <= 1 + remaining) & \
-                         (new_stack >= 1 - remaining)
-            
-            # At position 0, stack=0, so we MUST pick a terminal (delta=+1)
-            # At final position (remaining=0), we MUST have new_stack=1
-            if remaining == 0:
-                valid_mask = valid_mask & (new_stack == 1)
-            
-            # Convert mask to sampling weights (0 for invalid, 1 for valid)
-            weights = valid_mask.float()
-            
-            # Ensure at least one valid option per row
-            # If no valid tokens, fall back to first terminal
-            row_sums = weights.sum(dim=1, keepdim=True)
-            fallback_mask = (row_sums == 0)
-            if fallback_mask.any():
-                weights[:, 0] = weights[:, 0] + fallback_mask.squeeze().float()
-            
-            # Normalize weights to probabilities
-            probs = weights / weights.sum(dim=1, keepdim=True).clamp(min=1e-8)
-            
-            # Sample token index for each individual
-            sampled_idx = torch.multinomial(probs, num_samples=1).squeeze(1)
-            
-            # Get actual token IDs and their deltas
-            sampled_tokens = all_tokens[sampled_idx]
-            sampled_deltas = token_deltas[sampled_idx]
-            
-            # Update population and stack
-            population[:, j] = sampled_tokens
-            stack = stack + sampled_deltas
+        # PRE-GENERATE all random numbers in one bulk call (1 kernel instead of 30)
+        # Using uniform random + thresholds instead of multinomial per step
+        all_rand = torch.rand(size, max_len, device=device)
         
-        # Final validation: stack should be exactly 1
+        # Pre-compute unique delta values for fast category selection
+        # Categories: terminal(+1), unary(0), binary(-1)
+        # We determine valid categories per step, then pick within category
+        
+        # Pre-generate random indices within each category (3 bulk calls total)
+        rand_terminal_idx = torch.randint(0, max(1, n_terminals), (size, max_len), device=device)
+        rand_arity1_idx = torch.randint(0, max(1, n_arity1), (size, max_len), device=device) if n_arity1 > 0 else None
+        rand_arity2_idx = torch.randint(0, max(1, n_arity2), (size, max_len), device=device) if n_arity2 > 0 else None
+        
+        for j in range(max_len):
+            remaining = max_len - j - 1
+            
+            # Determine valid token categories based on stack state
+            # For category terminal (+1): new_stack = stack + 1
+            # For category unary (0):     new_stack = stack
+            # For category binary (-1):   new_stack = stack - 1
+            
+            s = stack  # [size]
+            
+            # Check each category validity (vectorized over all individuals)
+            # Constraint: new_stack >= 1 AND new_stack <= 1 + remaining
+            can_terminal = ((s + 1) >= 1) & ((s + 1) <= 1 + remaining)
+            can_unary = (n_arity1 > 0) & (s >= 1) & (s <= 1 + remaining)
+            can_binary = (n_arity2 > 0) & ((s - 1) >= 1) & ((s - 1) <= 1 + remaining)
+            
+            # Last position: must end at stack=1
+            if remaining == 0:
+                can_terminal = can_terminal & ((s + 1) == 1)
+                can_unary = can_unary & (s == 1) if n_arity1 > 0 else can_unary
+                can_binary = can_binary & ((s - 1) == 1) if n_arity2 > 0 else can_binary
+            
+            # Convert to float weights for normalized sampling
+            w_t = can_terminal.float()
+            w_u = can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)
+            w_b = can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)
+            
+            # Ensure at least terminal is valid (fallback)
+            total_w = w_t + w_u + w_b
+            no_valid = (total_w == 0)
+            w_t = w_t + no_valid.float()  # fallback to terminal
+            total_w = w_t + w_u + w_b
+            
+            # Cumulative thresholds for category selection using pre-generated rand
+            # [0, p_t) -> terminal, [p_t, p_t+p_u) -> unary, [p_t+p_u, 1) -> binary
+            p_t = w_t / total_w
+            p_u = w_u / total_w
+            
+            r = all_rand[:, j]  # pre-generated random [size]
+            
+            is_terminal = r < p_t
+            is_unary = (~is_terminal) & (r < (p_t + p_u))
+            is_binary = (~is_terminal) & (~is_unary)
+            
+            # Select token within chosen category
+            chosen_tokens = self.terminal_ids[rand_terminal_idx[:, j] % n_terminals]  # default: terminal
+            
+            if n_arity1 > 0:
+                unary_tokens = self.arity_1_ids[rand_arity1_idx[:, j] % n_arity1]
+                chosen_tokens = torch.where(is_unary, unary_tokens, chosen_tokens)
+            
+            if n_arity2 > 0:
+                binary_tokens = self.arity_2_ids[rand_arity2_idx[:, j] % n_arity2]
+                chosen_tokens = torch.where(is_binary, binary_tokens, chosen_tokens)
+            
+            # Compute delta for chosen tokens
+            chosen_deltas = torch.ones(size, dtype=torch.long, device=device)  # terminal default
+            if n_arity1 > 0:
+                chosen_deltas = torch.where(is_unary, torch.zeros(size, dtype=torch.long, device=device), chosen_deltas)
+            if n_arity2 > 0:
+                chosen_deltas = torch.where(is_binary, -torch.ones(size, dtype=torch.long, device=device), chosen_deltas)
+            
+            population[:, j] = chosen_tokens
+            stack = stack + chosen_deltas
+        
+        # Final validation
         valid = (stack == 1)
         n_invalid = (~valid).sum().item()
         
         if n_invalid > 0:
-            # Replace invalid with simple "x0" formula
             x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
             population[~valid, 0] = x0_id
             population[~valid, 1:] = PAD_ID
@@ -192,21 +205,19 @@ class GPUOperators:
         """
         Validate that each RPN formula has a final stack balance of exactly 1.
         Returns a boolean mask of valid formulas.
+        Vectorized with cumsum - no Python loop.
         """
         B, L = population.shape
-        stack = torch.zeros(B, dtype=torch.long, device=self.device)
-        
-        for j in range(L):
-            tokens = population[:, j]
-            # Get arity for each token (0 for PAD)
-            arity = self.token_arity[tokens.clamp(0, self.token_arity.shape[0] - 1)]
-            # Stack delta: -(arity) + 1 for each token (pops arity, pushes 1)
-            # But PAD should have delta 0
-            is_pad = (tokens == PAD_ID)
-            delta = torch.where(is_pad, torch.zeros_like(arity), 1 - arity)
-            stack = stack + delta
-        
-        return (stack == 1)
+        # Get arities for all tokens at once: [B, L]
+        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1)]
+        # Stack delta: terminals(arity=0) -> +1, unary(arity=1) -> 0, binary(arity=2) -> -1
+        deltas = 1 - arities
+        # PAD tokens should have delta 0
+        is_pad = (population == PAD_ID)
+        deltas[is_pad] = 0
+        # Final stack = sum of all deltas
+        final_stack = deltas.sum(dim=1)
+        return (final_stack == 1)
 
     def _infix_list_to_rpn(self, formulas: list) -> torch.Tensor:
         batch_rpn = []

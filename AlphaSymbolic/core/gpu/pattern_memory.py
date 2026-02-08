@@ -130,17 +130,15 @@ class PatternMemory:
         extracted_patterns = torch.zeros(N_valid, self.max_pattern_len, 
                                          dtype=torch.long, device=self.device)
         
-        # Vectorized extraction using gather
-        for i in range(self.max_pattern_len):
-            # For each position i, extract from (start_idx + i) if i < length
-            src_idx = start_indices + i
-            in_range = (i < pattern_lengths) & (src_idx < L)
-            # Clamp to valid range
-            src_idx = src_idx.clamp(0, L - 1)
-            # Gather values
-            values = good_pop[row_indices, src_idx]
-            # Only keep if in range
-            extracted_patterns[:, i] = torch.where(in_range, values, torch.zeros_like(values))
+        # Fully vectorized extraction using advanced indexing (no Python loop)
+        # Build a [N_valid, max_pattern_len] index matrix
+        offsets = torch.arange(self.max_pattern_len, device=self.device).unsqueeze(0)  # [1, MPL]
+        src_indices = start_indices.unsqueeze(1) + offsets  # [N_valid, MPL]
+        in_range_mask = (offsets < pattern_lengths.unsqueeze(1)) & (src_indices < L)  # [N_valid, MPL]
+        src_indices_clamped = src_indices.clamp(0, L - 1)
+        # Gather all values at once
+        all_values = good_pop[row_indices.unsqueeze(1).expand_as(src_indices_clamped), src_indices_clamped]
+        extracted_patterns = torch.where(in_range_mask, all_values, torch.zeros_like(all_values))
         
         # 5. Compute hashes for extracted patterns
         pattern_hashes = self._compute_pattern_hash(extracted_patterns)

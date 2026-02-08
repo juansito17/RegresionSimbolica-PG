@@ -277,17 +277,22 @@ class TensorGeneticEngine:
     def initialize_population(self) -> torch.Tensor:
         return self.operators.generate_random_population(self.pop_size)
 
-    def detect_patterns(self, targets: List[float]) -> List[str]:
-        if len(targets) < 3: return []
+    def detect_patterns(self, targets) -> List[str]:
+        """Detect simple patterns (linear, geometric, constant). Accepts torch.Tensor or array."""
+        if isinstance(targets, torch.Tensor):
+            t = targets.flatten().to(self.device)
+        else:
+            t = torch.tensor(targets, dtype=self.dtype, device=self.device).flatten()
+        if t.shape[0] < 3: return []
         seeds = []
-        diffs = np.diff(targets)
-        if np.allclose(diffs, diffs[0], atol=1e-5):
+        diffs = t[1:] - t[:-1]
+        if torch.allclose(diffs, diffs[0].expand_as(diffs), atol=1e-5):
             seeds.append("(C + (C * x0))") 
-        if not np.any(np.abs(targets) < 1e-9):
-            ratios = targets[1:] / targets[:-1]
-            if np.allclose(ratios, ratios[0], atol=1e-5):
+        if not torch.any(torch.abs(t) < 1e-9):
+            ratios = t[1:] / t[:-1]
+            if torch.allclose(ratios, ratios[0].expand_as(ratios), atol=1e-5):
                 seeds.append("(C * (C ^ x0))")
-        if np.allclose(targets, targets[0], atol=1e-5):
+        if torch.allclose(t, t[0].expand_as(t), atol=1e-5):
              seeds.append("C")
         return seeds
 
@@ -392,13 +397,11 @@ class TensorGeneticEngine:
         shifted_migrants_pop = torch.roll(migrants_pop, shifts=1, dims=0).view(-1, self.max_len)
         shifted_migrants_const = torch.roll(migrants_const, shifts=1, dims=0).view(-1, self.max_constants)
         
-        # 6. Apply to next buffers (In-place on current clone)
-        pop_out = population.clone()
-        const_out = constants.clone()
-        pop_out[worst_global_idx] = shifted_migrants_pop
-        const_out[worst_global_idx] = shifted_migrants_const
+        # 6. Apply in-place (no full clone needed - only ~200 individuals change)
+        population[worst_global_idx] = shifted_migrants_pop
+        constants[worst_global_idx] = shifted_migrants_const
         
-        return pop_out, const_out
+        return population, constants
 
     def tournament_selection_island(self, population, fitness, n_islands, tournament_size=3):
         """
@@ -518,11 +521,11 @@ class TensorGeneticEngine:
 
         result = rpn_cuda.evolve_generation(
             population,
-            constants.float(),  # Ensure float32
-            fitness.float(),
-            abs_errors.float(),
-            x_in.float(),
-            y_in.float(),
+            constants if constants.dtype == torch.float32 else constants.float(),
+            fitness if fitness.dtype == torch.float32 else fitness.float(),
+            abs_errors if abs_errors.dtype == torch.float32 else abs_errors.float(),
+            x_in if x_in.dtype == torch.float32 else x_in.float(),
+            y_in if y_in.dtype == torch.float32 else y_in.float(),
             token_arities,
             arity_0_ids,
             arity_1_ids,
@@ -629,23 +632,17 @@ class TensorGeneticEngine:
         
         # 4. Standard Lexicase Logic (Batched)
         
-        # Epsilon (approximate using batch median to avoid full pop calc)
-        epsilon = torch.zeros(N_cases, device=self.device, dtype=torch.float32)
-        # Optional: Calculate real epsilon from a sample of population if needed, 
-        # but 0 is fine for standard Lexicase.
-        
         # Shuffle Cases
         perm = torch.randperm(N_cases, device=self.device)
         candidates_err_shuffled = candidates_err[:, :, perm]
         
-        # Elimination Loop
+        # Elimination Loop (with early exit when all have 1 candidate)
         active_mask = torch.ones((n_parents, tour_size), dtype=torch.bool, device=self.device)
         
         for i in range(N_cases):
-            # Check active
-            active_counts = active_mask.sum(dim=1)
             # Optimization: If all rows have 1 candidate left, stop early
-            if (active_counts == 1).all():
+            active_counts = active_mask.sum(dim=1)
+            if (active_counts <= 1).all():
                 break
                 
             curr_case_err = candidates_err_shuffled[:, :, i]
@@ -698,8 +695,8 @@ class TensorGeneticEngine:
         # --- 1.5 The Sniper (Intelligence Check) ---
         # Before doing heavy lifting, check for simple patterns (Linear, Geometric)
         if GpuGlobals.USE_SNIPER:
-            # Use CPU numpy for sniper
-            sniper_formula = self.sniper.run(x_t.cpu().numpy(), y_t.cpu().numpy())
+            # Pass GPU tensors directly - Sniper already works with torch internally
+            sniper_formula = self.sniper.run(x_t, y_t)
             if sniper_formula:
                 print(f"[Engine] The Sniper found a candidate solution: {sniper_formula}")
                 if seeds is None: seeds = []
@@ -792,8 +789,8 @@ class TensorGeneticEngine:
             else:
                 print("[DEBUG] CRITICAL: Seed loading returned None!")
                 
-        # Patterns
-        pats = self.detect_patterns(y_t.cpu().numpy().flatten())
+        # Patterns (GPU-native, no CPU transfer)
+        pats = self.detect_patterns(y_t)
         if pats:
             pat_pop, pat_consts = self.load_population_from_strings(pats)
             if pat_pop is not None:

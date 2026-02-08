@@ -164,13 +164,14 @@ class GPUSimplifier:
         pop_out = population.clone()
         const_out = constants.clone()
         
+        # Batch transfer hashes to CPU in ONE call instead of K individual .item() calls
+        hashes_cpu = hashes.tolist()  # Single GPU->CPU transfer
+        
         process_indices = []
         process_hashes = []
         
-        # Process only cache hits on GPU, defer SymPy to rare cases
-        # Convert hashes to Python only for cache lookup (minimal CPU touch)
         for i in range(min(top_k, population.shape[0])):
-            h = hashes[i].item()  # Single scalar transfer, not full array
+            h = hashes_cpu[i]  # Pure Python access, no GPU sync
             if h in self.cache:
                 # Cache Hit
                 cached_rpn, cached_consts = self.cache[h]
