@@ -191,6 +191,7 @@ class GPUOptimizer:
                  vel = w * vel + c1 * r1 * (pbest_pos - flat_pos) + c2 * r2 * (gbest_expanded - flat_pos)
                  flat_pos += vel
             
-             # Handle Bounds? (Optional)
-            
+            # Handle Bounds
+            flat_pos.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+
         return gbest_pos, gbest_err

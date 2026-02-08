@@ -86,10 +86,10 @@ class GpuGlobals:
     # ----------------------------------------
     MAX_TREE_DEPTH_INITIAL = 8
     TERMINAL_VS_VARIABLE_PROB = 0.75
-    CONSTANT_MIN_VALUE = -10.0
-    CONSTANT_MAX_VALUE = 10.0
-    CONSTANT_INT_MIN_VALUE = -10
-    CONSTANT_INT_MAX_VALUE = 10
+    CONSTANT_MIN_VALUE = -100.0
+    CONSTANT_MAX_VALUE = 100.0
+    CONSTANT_INT_MIN_VALUE = -100
+    CONSTANT_INT_MAX_VALUE = 100
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60  # Increased to 60 to allow more complex formulas
     MAX_CONSTANTS = 50 # Increased to 50 to guarantee ANY generated formula (size < 30) fits as a seed without truncation.
@@ -103,21 +103,21 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    USE_OP_SIN      = True
-    USE_OP_COS      = True
-    USE_OP_TAN      = True
+    USE_OP_SIN      = False
+    USE_OP_COS      = False
+    USE_OP_TAN      = False
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = True
     USE_OP_FLOOR    = False
     USE_OP_GAMMA    = True
-    USE_OP_ASIN     = True
-    USE_OP_ACOS     = True
-    USE_OP_ATAN     = True
+    USE_OP_ASIN     = False
+    USE_OP_ACOS     = False
+    USE_OP_ATAN     = False
     USE_OP_CEIL     = False
     USE_OP_SIGN     = False
     USE_OP_SQRT     = True
-    USE_OP_ABS      = True
+    USE_OP_ABS      = False
 
     # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
     OPERATOR_WEIGHTS = [
@@ -154,9 +154,9 @@ class GpuGlobals:
     MAX_TREE_DEPTH_MUTATION = 12
     MUTATE_INSERT_CONST_PROB = 0.5
     MUTATE_INSERT_CONST_INT_MIN = 1
-    MUTATE_INSERT_CONST_INT_MAX = 5
-    MUTATE_INSERT_CONST_FLOAT_MIN = 0.5
-    MUTATE_INSERT_CONST_FLOAT_MAX = 5.0
+    MUTATE_INSERT_CONST_INT_MAX = 20
+    MUTATE_INSERT_CONST_FLOAT_MIN = 0.1
+    MUTATE_INSERT_CONST_FLOAT_MAX = 20.0
 
     # ----------------------------------------
     # Parámetros de Fitness y Evaluación

@@ -511,9 +511,9 @@ class GPUOperators:
         
         # Constants for replacements?
         # If constants are [B, K]. 
-        # fresh_pop needs fresh constants.
+        # fresh_pop needs fresh constants within configured range.
         K = constants.shape[1]
-        fresh_consts = torch.randn(n_dups, K, device=self.device, dtype=self.dtype)
+        fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
         
         pop_out[dup_indices] = fresh_pop
         const_out[dup_indices] = fresh_consts

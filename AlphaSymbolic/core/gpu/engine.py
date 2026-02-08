@@ -719,7 +719,7 @@ class TensorGeneticEngine:
         ops_sig = "_".join(sorted(self.grammar.operators))
         ops_hash = hashlib.md5(ops_sig.encode()).hexdigest()[:8]
         
-        cache_file = os.path.join(cache_dir, f"initial_pop_v2_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}_{ops_hash}.pt")
+        cache_file = os.path.join(cache_dir, f"initial_pop_v3_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}_{ops_hash}.pt")
         
         loaded_from_cache = False
         
@@ -756,7 +756,8 @@ class TensorGeneticEngine:
         if not loaded_from_cache:
              print(f"[GPU Engine] Generating {self.pop_size:,} random formulas (First time, please wait)...")
              temp_pop = self.operators.generate_random_population(self.pop_size)
-             temp_c = torch.randn(self.pop_size, self.max_constants, device=self.device, dtype=self.dtype)
+             # Use uniform distribution within configured range instead of rando normal
+             temp_c = torch.empty(self.pop_size, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
              
              self.pop_buffer_A[:] = temp_pop
              self.const_buffer_A[:] = temp_c

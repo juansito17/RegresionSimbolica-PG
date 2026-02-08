@@ -20,15 +20,14 @@
 
 // Device functions for unary/binary ops (Templated)
 template <typename T>
-__device__ __forceinline__ T safe_div(T a, T b) {
-    if (abs(b) < 1e-9) return nan(""); // Enforce NaN on division by zero
+__device__ __forceinline__ T safe_div(T a, T b, bool &error) {
+    if (abs(b) < 1e-9) { error = true; return (T)0.0; }
     return a / b;
 }
 
 template <typename T>
-__device__ __forceinline__ T safe_mod(T a, T b) {
-    if (abs(b) < 1e-9) return nan(""); // Enforce NaN on modulo by zero
-    // Python-style Modulo: Result has sign of divisor (b)
+__device__ __forceinline__ T safe_mod(T a, T b, bool &error) {
+    if (abs(b) < 1e-9) { error = true; return (T)0.0; }
     T r = fmod(a, b);
     if ((b > 0 && r < 0) || (b < 0 && r > 0)) {
         r += b;
@@ -36,71 +35,61 @@ __device__ __forceinline__ T safe_mod(T a, T b) {
     return r;
 }
 
-
-
 template <typename T>
-__device__ __forceinline__ T safe_log(T a) {
-    if (a <= 0.0) return nan(""); 
+__device__ __forceinline__ T safe_log(T a, bool &error) {
+    if (a <= 0.0) { error = true; return (T)0.0; }
     return log(a);
 }
 
-
-
 template <typename T>
-__device__ __forceinline__ T safe_exp(T a) {
+__device__ __forceinline__ T safe_exp(T a, bool &error) {
     if (a < -100.0) return (T)0.0;
-    return exp(a); // Let overflow result in Inf/NaN
+    if (a > 100.0) { error = true; return (T)1e30; } // Prevent overflow to Inf
+    return exp(a);
 }
 
 template <typename T>
-__device__ __forceinline__ T safe_sqrt(T a) {
-    if (a < 0) return nan(""); // Enforce NaN
+__device__ __forceinline__ T safe_sqrt(T a, bool &error) {
+    if (a < 0.0) { error = true; return (T)0.0; }
     return sqrt(a);
 }
 
 template <typename T>
-__device__ __forceinline__ T safe_pow(T a, T b) {
-    // Strict NaN propagation: Closing the pow(1, NaN) == 1 loophole
-    if (a != a || b != b) return nan(""); 
-    
-    // pow(neg, float) -> NaN usually.
+__device__ __forceinline__ T safe_pow(T a, T b, bool &error) {
+    if (a != a || b != b) { error = true; return (T)0.0; }
+    // Negative base with non-integer exponent is complex
+    if (a < 0.0 && floor(b) != b) { error = true; return (T)0.0; }
     T res = pow(a, b);
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
     return res;
 }
 
-
 template <typename T>
-__device__ __forceinline__ T safe_asin(T a) {
+__device__ __forceinline__ T safe_asin(T a, bool &error) {
+    if (a < -1.0 || a > 1.0) { error = true; return (T)0.0; }
     return asin(a);
 }
 
 template <typename T>
-__device__ __forceinline__ T safe_acos(T a) {
+__device__ __forceinline__ T safe_acos(T a, bool &error) {
+    if (a < -1.0 || a > 1.0) { error = true; return (T)0.0; }
     return acos(a);
 }
 
-
 template <typename T>
-__device__ __forceinline__ T safe_tgamma(T a) {
-    // poles: negative integers or 0
-    if (a <= 0.0 && floor(a) == a) return nan(""); 
-    return tgamma(a);
+__device__ __forceinline__ T safe_tgamma(T a, bool &error) {
+    if (a <= 0.0 && floor(a) == a) { error = true; return (T)0.0; }
+    T res = tgamma(a);
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    return res;
 }
 
 template <typename T>
-__device__ __forceinline__ T safe_lgamma(T a) {
-    // poles: negative integers or 0
-    if (a <= 0.0 && floor(a) == a) return nan(""); 
-    return lgamma(a); 
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_fact(T a) {
-    // Standard Factorial: x! = gamma(x + 1)
-    // Poles at x = -1, -2, ... => a + 1 <= 0 integer
-    T arg = a + 1.0;
-    if (arg <= 0.0 && floor(arg) == arg) return nan(""); 
-    return tgamma(arg); 
+__device__ __forceinline__ T safe_lgamma(T a, bool &error) {
+    if (a <= 0.0 && floor(a) == a) { error = true; return (T)0.0; }
+    T res = lgamma(a);
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    return res;
 }
 
 // TEMPLATED KERNEL
@@ -197,10 +186,12 @@ __global__ void rpn_eval_kernel(
             if (token == op_add) res = op1 + op2;
             else if (token == op_sub) res = op1 - op2;
             else if (token == op_mul) res = op1 * op2;
-            else if (token == op_div) res = safe_div(op1, op2);
-            else if (token == op_pow) res = safe_pow(op1, op2);
-            else if (token == op_mod) res = safe_mod(op1, op2);
+            else if (token == op_div) res = safe_div(op1, op2, error);
+            else if (token == op_pow) res = safe_pow(op1, op2, error);
+            else if (token == op_mod) res = safe_mod(op1, op2, error);
             
+            if (error) break;
+
             stack[sp++] = res;
             continue;
         }
@@ -215,19 +206,20 @@ __global__ void rpn_eval_kernel(
         else if (token == op_tan) res = tan(op1);
         else if (token == op_abs) res = abs(op1);
         else if (token == op_neg) res = -op1;
-        else if (token == op_sqrt) res = safe_sqrt(op1);
-        else if (token == op_log) res = safe_log(op1);
-        else if (token == op_exp) res = safe_exp(op1);
+        else if (token == op_sqrt) res = safe_sqrt(op1, error);
+        else if (token == op_log) res = safe_log(op1, error);
+        else if (token == op_exp) res = safe_exp(op1, error);
         else if (token == op_floor) res = floor(op1);
         else if (token == op_ceil) res = ceil(op1);
         else if (token == op_sign) res = (op1 > 0) ? (scalar_t)1.0 : ((op1 < 0) ? (scalar_t)-1.0 : (scalar_t)0.0);
-        else if (token == op_asin) res = safe_asin(op1);
-        else if (token == op_acos) res = safe_acos(op1);
+        else if (token == op_asin) res = safe_asin(op1, error);
+        else if (token == op_acos) res = safe_acos(op1, error);
         else if (token == op_atan) res = atan(op1);
-        else if (token == op_fact) res = safe_tgamma(op1 + (scalar_t)1.0);
-        else if (token == op_gamma) res = safe_tgamma(op1);
-        else if (token == op_lgamma) res = safe_lgamma(op1);
+        else if (token == op_fact) res = safe_tgamma(op1 + (scalar_t)1.0, error);
+        else if (token == op_gamma) res = safe_tgamma(op1, error);
+        else if (token == op_lgamma) res = safe_lgamma(op1, error);
         
+        if (error) break;
         stack[sp++] = res;
     }
 
