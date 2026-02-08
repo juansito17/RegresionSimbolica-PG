@@ -164,6 +164,38 @@ std::vector<torch::Tensor> evolve_generation(
     double pi_val, double e_val
 );
 
+// --- Phase 5 Forward Declarations (Simplifier + Generator Kernels) ---
+void launch_simplify_batch(
+    torch::Tensor& population,
+    const torch::Tensor& arities,
+    const torch::Tensor& val_table,
+    const torch::Tensor& literal_ids,
+    const torch::Tensor& literal_vals,
+    int max_passes,
+    int op_plus, int op_minus, int op_mult, int op_div,
+    int op_neg, int op_mod, int op_pow,
+    int op_sin, int op_cos, int op_tan,
+    int op_asin, int op_acos, int op_atan,
+    int op_log, int op_exp, int op_sqrt, int op_abs,
+    int op_gamma, int op_lgamma,
+    int op_floor, int op_ceil, int op_sign,
+    int id_0, int id_1, int id_2
+);
+
+void launch_precompute_subtree_starts(
+    const torch::Tensor& population,
+    const torch::Tensor& arities,
+    torch::Tensor& out_starts
+);
+
+void launch_generate_random_rpn(
+    torch::Tensor& population,
+    const torch::Tensor& terminal_ids,
+    const torch::Tensor& unary_ids,
+    const torch::Tensor& binary_ids,
+    uint64_t seed
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)");
@@ -180,6 +212,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     // Phase 4
     m.def("evolve_generation", &evolve_generation, "Full Evolution Generation (C++)");
+
+    // Phase 5: Simplifier + Generator Kernels
+    m.def("simplify_batch", &launch_simplify_batch, "Batch Simplification (CUDA)");
+    m.def("precompute_subtree_starts", &launch_precompute_subtree_starts, "Precompute Subtree Starts (CUDA)");
+    m.def("generate_random_rpn", &launch_generate_random_rpn, "Random RPN Generation (CUDA)");
 }
 
 

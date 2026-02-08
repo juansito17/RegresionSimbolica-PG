@@ -84,13 +84,39 @@ class GPUOperators:
         """
         GPU-native random RPN generation. Optimized to minimize kernel launches.
         
-        Strategy: Pre-compute all random numbers in bulk, then use vectorized
-        selection logic with minimal per-step overhead. The loop over max_len
-        positions is unavoidable (sequential dependency on stack state), but
-        each step is now a single fused operation instead of 5+ kernel launches.
+        Strategy: Try CUDA kernel first (single launch), fall back to PyTorch loop.
         """
         max_len = self.max_len
         device = self.device
+        
+        # ============ CUDA FAST PATH ============
+        if RPN_CUDA_AVAILABLE:
+            try:
+                population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+                seed = torch.randint(0, 2**62, (1,), device='cpu').item()
+                
+                # Ensure contiguous int64 tensors
+                t_ids = self.terminal_ids.contiguous()
+                u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
+                b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
+                
+                rpn_cuda_native.generate_random_rpn(
+                    population, t_ids, u_ids, b_ids, seed
+                )
+                
+                # Quick validation
+                valid = self._validate_rpn_batch(population)
+                n_invalid = (~valid).sum().item()
+                if n_invalid > 0:
+                    x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
+                    population[~valid, 0] = x0_id
+                    population[~valid, 1:] = PAD_ID
+                
+                return population
+            except Exception:
+                pass  # Fall through to PyTorch implementation
+        
+        # ============ PyTorch FALLBACK ============
         
         # Output tensor
         population = torch.zeros(size, max_len, dtype=torch.long, device=device)

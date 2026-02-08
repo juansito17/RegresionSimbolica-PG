@@ -16,7 +16,9 @@ setup(
                 'bindings.cpp',
                 'rpn_kernels.cu',
                 'pso_kernels.cu',
-                'decoder.cpp'
+                'decoder.cpp',
+                'simplify_kernels.cu',
+                'genrand_kernels.cu'
             ],
             extra_compile_args={
                 'cxx': ['/O2', '/std:c++17'],

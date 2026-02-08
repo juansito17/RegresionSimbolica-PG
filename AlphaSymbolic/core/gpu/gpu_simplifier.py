@@ -9,6 +9,16 @@ import torch
 from typing import Tuple, List
 from .grammar import PAD_ID, GPUGrammar
 
+try:
+    from sys import path as sys_path
+    from os import path as os_path
+    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
+    if cuda_path not in sys_path: sys_path.append(cuda_path)
+    import rpn_cuda_native
+    SIMPLIFY_CUDA_AVAILABLE = True
+except ImportError:
+    SIMPLIFY_CUDA_AVAILABLE = False
+
 def is_op_in(op, op_ids):
     """Helper to check if op is in a list of IDs (vectorized broadcast)"""
     if op_ids.numel() == 0:
@@ -205,6 +215,57 @@ class GPUSymbolicSimplifier:
     def simplify_batch(self, population: torch.Tensor, constants: torch.Tensor = None, max_passes: int = 3) -> Tuple[torch.Tensor, torch.Tensor, int]:
         B, L = population.shape
         pop = population.clone()
+        
+        # ============ CUDA FAST PATH ============
+        if SIMPLIFY_CUDA_AVAILABLE and L <= 64:
+            try:
+                # Build int32 arity table for kernel
+                max_id = self.arity_table.size(0)
+                arities_int = self.arity_table.to(dtype=torch.int32).contiguous()
+                
+                # Build val_table (float32): maps token_id -> numerical value (NaN if not literal)
+                if not hasattr(self, '_cuda_val_table'):
+                    vt = torch.empty(max_id, device=self.device, dtype=torch.float32).fill_(float('nan'))
+                    for t, tid in self.grammar.token_to_id.items():
+                        if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()):
+                            vt[tid] = float(t)
+                    self._cuda_val_table = vt.contiguous()
+                    # Build literal_ids (int64) and literal_vals (float32) for nearest-literal mapping
+                    self._cuda_literal_ids = self.literal_ids.contiguous()
+                    self._cuda_literal_vals = torch.tensor(
+                        [float(self.grammar.id_to_token[lid.item()]) for lid in self.literal_ids],
+                        device=self.device, dtype=torch.float32
+                    ).contiguous() if self.literal_ids.numel() > 0 else torch.empty(0, device=self.device, dtype=torch.float32)
+                
+                # Get scalar opcode IDs (use first element or -1 if absent)
+                def _first_or(ids_tensor, default=-1):
+                    return ids_tensor[0].item() if ids_tensor.numel() > 0 else default
+                
+                rpn_cuda_native.simplify_batch(
+                    pop, arities_int,
+                    self._cuda_val_table, self._cuda_literal_ids, self._cuda_literal_vals,
+                    max_passes,
+                    self.OP_PLUS, self.OP_MINUS, self.OP_MULT, self.OP_DIV,
+                    _first_or(self.OP_NEG_IDS), self.grammar.token_to_id.get('%', self.grammar.token_to_id.get('mod', -1)), _first_or(self.OP_POW_IDS),
+                    self.OP_SIN, self.OP_COS, self.OP_TAN,
+                    self.OP_ASIN, self.OP_ACOS, self.OP_ATAN,
+                    _first_or(self.OP_LOG_IDS), _first_or(self.OP_EXP_IDS), _first_or(self.OP_SQRT_IDS), _first_or(self.OP_ABS_IDS),
+                    _first_or(self.OP_GAMMA_IDS), _first_or(self.OP_LGAMMA_IDS),
+                    self.OP_FLOOR, self.OP_CEIL, self.OP_SIGN,
+                    self.ID_0, self.ID_1, self.ID_2
+                )
+                
+                # Validate after CUDA simplification
+                is_valid = self._validate_batch_stack(pop)
+                if not is_valid.all():
+                    invalid_indices = torch.where(~is_valid)[0]
+                    pop[invalid_indices] = population[invalid_indices]
+                
+                return pop, constants, 0  # CUDA kernel doesn't report count
+            except Exception:
+                pass  # Fall through to Python implementation
+        
+        # ============ PyTorch FALLBACK ============
         total_simplified = 0
         for _ in range(max_passes):
             n_pass = 0
