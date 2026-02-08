@@ -1,6 +1,8 @@
 import gradio as gr
 import torch
 import numpy as np
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 import time
 import html
 from typing import List, Optional
@@ -40,6 +42,32 @@ def get_gpu_live_tab():
                 max_const = gr.Slider(1, 50, value=10, step=1, label="Máx Constantes")
                 timeout = gr.Slider(0, 300, value=60, step=5, label="Timeout (s)", info="0 para infinito")
                 use_log = gr.Checkbox(label="Use Log Transform", value=False, info="Fit to log(Y) (Recommended for exponential data)")
+            
+            # Operator toggles
+            with gr.Accordion("🔧 Operadores Disponibles", open=False):
+                gr.Markdown("*Desactiva operadores para simplificar las fórmulas generadas*")
+                with gr.Row():
+                    op_sin = gr.Checkbox(label="sin", value=True)
+                    op_cos = gr.Checkbox(label="cos", value=True)
+                    op_tan = gr.Checkbox(label="tan", value=False)
+                    op_log = gr.Checkbox(label="log", value=True)
+                    op_exp = gr.Checkbox(label="exp", value=True)
+                with gr.Row():
+                    op_asin = gr.Checkbox(label="asin", value=False)
+                    op_acos = gr.Checkbox(label="acos", value=False)
+                    op_atan = gr.Checkbox(label="atan", value=False)
+                with gr.Row():
+                    op_sqrt = gr.Checkbox(label="sqrt", value=True)
+                    op_abs = gr.Checkbox(label="abs", value=True)
+                    op_floor = gr.Checkbox(label="floor", value=False)
+                    op_ceil = gr.Checkbox(label="ceil", value=False)
+                    op_sign = gr.Checkbox(label="sign", value=False)
+                with gr.Row():
+                    op_gamma = gr.Checkbox(label="gamma", value=True)
+                    op_lgamma = gr.Checkbox(label="lgamma", value=True)
+                    op_fact = gr.Checkbox(label="fact!", value=True)
+                    op_mod = gr.Checkbox(label="%", value=False, info="Modulo (slow)")
+                    op_pow = gr.Checkbox(label="^", value=True, info="Power")
 
             with gr.Row():
                 stop_btn = gr.Button("🛑 DETENER", variant="stop")
@@ -95,12 +123,16 @@ def get_gpu_live_tab():
 
     start_btn.click(
         run_live_gpu_evolution,
-        inputs=[x_input, y_input, pop_size, islands, max_const, timeout, use_log],
+        inputs=[x_input, y_input, pop_size, islands, max_const, timeout, use_log,
+                op_sin, op_cos, op_tan, op_log, op_exp, op_sqrt, op_abs, op_floor, op_ceil, op_sign,
+                op_gamma, op_lgamma, op_fact, op_mod, op_pow, op_asin, op_acos, op_atan],
         outputs=[status_html, current_best_formula, stats_display, live_plot]
     )
     stop_btn.click(stop_evolution, outputs=[status_html])
 
-def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, timeout_sec, use_log_transform):
+def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, timeout_sec, use_log_transform,
+                           op_sin, op_cos, op_tan, op_log, op_exp, op_sqrt, op_abs, op_floor, op_ceil, op_sign,
+                           op_gamma, op_lgamma, op_fact, op_mod, op_pow, op_asin, op_acos, op_atan):
     """Generator that runs the GPU engine and yields updates to the UI."""
     global LIVE_ENGINE
     
@@ -113,15 +145,57 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     device = get_device()
     num_vars = 1 if x.ndim == 1 else x.shape[1]
     
-    # 2. Initialize Engine
-    yield f'<div style="color: #22d3ee;">Inicializando Motor GPU ({pop_size:,} individuos)...</div>', "", "", None
-    
-    # Clean up previous engine if any (VRAM safety)
+    # 2. Clean up previous engine if any (VRAM safety)
     if LIVE_ENGINE:
         del LIVE_ENGINE
         import gc
         gc.collect()
         torch.cuda.empty_cache()
+    
+    # --- IMPORTANT: Configure GpuGlobals BEFORE creating Engine ---
+    # (Engine's Grammar reads these at construction time)
+    
+    # Log Transform -> Loss Function & Explicit Data Transform flag
+    GpuGlobals.USE_LOG_TRANSFORMATION = use_log_transform
+    if use_log_transform:
+        GpuGlobals.LOSS_FUNCTION = 'RMSLE'
+    else:
+        GpuGlobals.LOSS_FUNCTION = 'RMSE'
+        
+    # Disable Neural features for this tab (Pure GPU mode)
+    GpuGlobals.USE_NEURAL_FLASH = False
+    GpuGlobals.USE_ALPHA_MCTS = False
+    
+    # Population config
+    GpuGlobals.POP_SIZE = int(pop_size)
+    GpuGlobals.NUM_ISLANDS = int(n_islands)
+    GpuGlobals.GENERATIONS = 1_000_000_000 # Effectively infinite for live mode
+    
+    # Operator toggles from UI - MUST be set before Engine init
+    GpuGlobals.USE_OP_SIN = op_sin
+    GpuGlobals.USE_OP_COS = op_cos
+    GpuGlobals.USE_OP_TAN = op_tan
+    GpuGlobals.USE_OP_ASIN = op_asin
+    GpuGlobals.USE_OP_ACOS = op_acos
+    GpuGlobals.USE_OP_ATAN = op_atan
+    GpuGlobals.USE_OP_LOG = op_log
+    GpuGlobals.USE_OP_EXP = op_exp
+    GpuGlobals.USE_OP_SQRT = op_sqrt
+    GpuGlobals.USE_OP_ABS = op_abs
+    GpuGlobals.USE_OP_FLOOR = op_floor
+    GpuGlobals.USE_OP_CEIL = op_ceil
+    GpuGlobals.USE_OP_SIGN = op_sign
+    GpuGlobals.USE_OP_GAMMA = op_gamma
+    GpuGlobals.USE_OP_LGAMMA = op_lgamma
+    GpuGlobals.USE_OP_FACT = op_fact
+    GpuGlobals.USE_OP_MOD = op_mod
+    GpuGlobals.USE_OP_POW = op_pow
+    
+    # Disable Sniper temporarily to debug crash
+    GpuGlobals.USE_SNIPER = False
+    
+    # 3. Initialize Engine (NOW it will read the correct operator flags)
+    yield f'<div style="color: #22d3ee;">Inicializando Motor GPU ({pop_size:,} individuos)...</div>', "", "", None
     
     LIVE_ENGINE = TensorGeneticEngine(
         device=device,
@@ -129,12 +203,8 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
         n_islands=int(n_islands),
         num_variables=num_vars,
         max_constants=int(max_constants),
-        model=None, # Explicitly no model for Pure GPU mode
-        use_log=use_log_transform
+        model=None # Explicitly no model for Pure GPU mode
     )
-    # Explicitly disable any neural features for this tab
-    GpuGlobals.USE_NEURAL_FLASH = False
-    GpuGlobals.USE_ALPHA_MCTS = False
     
     LIVE_ENGINE.stop_flag = False
     
@@ -177,15 +247,53 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     
     def wrapped_callback(gen, best_rmse, best_rpn, best_consts, is_new_best, island_idx):
         if is_new_best or gen % 10 == 0:
-            formula = LIVE_ENGINE.rpn_to_infix(best_rpn, best_consts)
+            # Simplify before displaying
+            try:
+                rpn_batch = best_rpn.unsqueeze(0)  # [1, L]
+                consts_batch = best_consts.unsqueeze(0)  # [1, K]
+                simp_pop, simp_consts, _ = LIVE_ENGINE.gpu_simplifier.simplify_batch(rpn_batch, consts_batch)
+                best_rpn_simp = simp_pop[0]
+                best_consts_simp = simp_consts[0] if simp_consts is not None else best_consts
+            except:
+                best_rpn_simp = best_rpn
+                best_consts_simp = best_consts
+            
+            # Initial assumption: Simplified is best
+            final_rpn = best_rpn_simp
+            final_consts = best_consts_simp
+            formula = LIVE_ENGINE.rpn_to_infix(final_rpn, final_consts)
+            
+            # FALLBACK: If simplified is invalid, revert to original
+            if formula == "Invalid":
+                print(f"[DEBUG UI] Simplified Invalid! Reverting to original for plot/display...")
+                
+                # Debug Tokens
+                try:
+                    toks = [LIVE_ENGINE.grammar.id_to_token.get(t.item(), str(t.item())) for t in best_rpn_simp if t.item() in LIVE_ENGINE.grammar.id_to_token]
+                    print(f"Bad Simp Tokens: {toks}")
+                except: pass
+
+                # REVERT to Original
+                final_rpn = best_rpn
+                final_consts = best_consts
+                formula = LIVE_ENGINE.rpn_to_infix(final_rpn, final_consts)
+                
+                # If still invalid, print original tokens
+                if formula == "Invalid":
+                    print(f"[DEBUG UI] Original ALSO Invalid!")
+                    try:
+                        toks_orig = [LIVE_ENGINE.grammar.id_to_token.get(t.item(), str(t.item())) for t in best_rpn if t.item() in LIVE_ENGINE.grammar.id_to_token]
+                        print(f"Bad Orig Tokens: {toks_orig}")
+                    except: pass
+            
             update_queue.put({
                 "gen": gen,
                 "rmse": best_rmse,
-                "formula": formula,
+                "formula": formula, # Now matches final_rpn
                 "new_best": is_new_best,
                 "island": island_idx,
-                "rpn": best_rpn.clone(),
-                "consts": best_consts.clone()
+                "rpn": final_rpn.clone(),       # CORRECTED: Use valid RPN
+                "consts": final_consts.clone()  # CORRECTED: Use valid Consts
             })
 
     # Prepare inputs for engine

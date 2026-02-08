@@ -713,7 +713,13 @@ class TensorGeneticEngine:
         os.makedirs(cache_dir, exist_ok=True)
         # Use dtype in filename to separate caches
         prec_str = "fp32" if self.dtype == torch.float32 else "fp64"
-        cache_file = os.path.join(cache_dir, f"initial_pop_v2_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}.pt")
+        
+        # Hash operators to avoid loading incompatible cache
+        import hashlib
+        ops_sig = "_".join(sorted(self.grammar.operators))
+        ops_hash = hashlib.md5(ops_sig.encode()).hexdigest()[:8]
+        
+        cache_file = os.path.join(cache_dir, f"initial_pop_v2_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}_{ops_hash}.pt")
         
         loaded_from_cache = False
         
@@ -892,6 +898,25 @@ class TensorGeneticEngine:
             pop_constants[top_idx] = refined_consts
             fitness_rmse[top_idx] = refined_mse
             
+            # GPU Simplification (every N generations)
+            if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
+                try:
+                    k_simp = min(self.pop_size, GpuGlobals.K_SIMPLIFY)
+                    _, simp_idx = torch.topk(fitness_rmse, k_simp, largest=False)
+                    simp_pop = population[simp_idx].clone()
+                    simp_consts = pop_constants[simp_idx].clone()
+                    
+                    simplified_pop, simplified_consts, n_simplified = self.gpu_simplifier.simplify_batch(simp_pop, simp_consts)
+                    
+                    if n_simplified > 0:
+                        population[simp_idx] = simplified_pop
+                        pop_constants[simp_idx] = simplified_consts
+                        # Re-evaluate simplified formulas
+                        new_fitness = self.evaluator.evaluate_batch(simplified_pop, x_t, y_t, simplified_consts)
+                        fitness_rmse[simp_idx] = new_fitness
+                except Exception as e:
+                    print(f"WARN: Simplification failed (Gen {generations}): {e}")
+            
             # Best Tracking
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
             
@@ -907,6 +932,21 @@ class TensorGeneticEngine:
                 island_idx = (min_idx.item() // self.island_size) if self.n_islands > 1 else 0
 
                 stagnation = 0
+                
+                # Check for exact solution
+                if best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD:
+                    print(f"\n[Engine] Exact solution found! RMSE: {best_rmse:.9e}")
+                    if callback:
+                        callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
+                    self.stop_flag = True
+                    
+                    # Convert to string to match expected return type
+                    formula = self.rpn_to_infix(best_rpn, best_consts_vec)
+                    # Handle Log Transform Inverse if needed
+                    if GpuGlobals.USE_LOG_TRANSFORMATION:
+                        formula = f"exp({formula})"
+                        
+                    return formula
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
 
                 # Only report to user if improvement is significant (> 0.1%)

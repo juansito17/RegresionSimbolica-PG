@@ -64,7 +64,7 @@ class GpuGlobals:
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
     POP_SIZE = 1_000_000
-    GENERATIONS = 500  
+    GENERATIONS = 1_000_000  
     NUM_ISLANDS = 40 # 1M / 40 = 25k pop per island
     MIN_POP_PER_ISLAND = 20
 
@@ -105,16 +105,19 @@ class GpuGlobals:
     USE_OP_MOD      = False
     USE_OP_SIN      = True
     USE_OP_COS      = True
+    USE_OP_TAN      = True
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = True
-    USE_OP_FLOOR    = True
+    USE_OP_FLOOR    = False
     USE_OP_GAMMA    = True
     USE_OP_ASIN     = True
     USE_OP_ACOS     = True
     USE_OP_ATAN     = True
-    USE_OP_CEIL     = True
-    USE_OP_SIGN     = True
+    USE_OP_CEIL     = False
+    USE_OP_SIGN     = False
+    USE_OP_SQRT     = True
+    USE_OP_ABS      = True
 
     # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
     OPERATOR_WEIGHTS = [
@@ -126,6 +129,7 @@ class GpuGlobals:
         0.02 * (1.0 if USE_OP_MOD else 0.0),
         0.10 * (1.0 if USE_OP_SIN else 0.0),
         0.10 * (1.0 if USE_OP_COS else 0.0),
+        0.10 * (1.0 if USE_OP_TAN else 0.0),
         0.05 * (1.0 if USE_OP_LOG else 0.0),
         0.05 * (1.0 if USE_OP_EXP else 0.0),
         0.01 * (1.0 if USE_OP_FACT else 0.0),
@@ -135,7 +139,9 @@ class GpuGlobals:
         0.01 * (1.0 if USE_OP_ACOS else 0.0),
         0.01 * (1.0 if USE_OP_ATAN else 0.0),
         0.005 * (1.0 if USE_OP_CEIL else 0.0),
-        0.005 * (1.0 if USE_OP_SIGN else 0.0)
+        0.005 * (1.0 if USE_OP_SIGN else 0.0),
+        0.10 * (1.0 if USE_OP_SQRT else 0.0),
+        0.05 * (1.0 if USE_OP_ABS else 0.0)
     ]
 
     # ----------------------------------------
@@ -189,6 +195,7 @@ class GpuGlobals:
     LOCAL_SEARCH_ATTEMPTS = 30
     
     USE_SIMPLIFICATION = True
+    USE_SYMPY = False              # Disabled - use GPUSymbolicSimplifier instead
     K_SIMPLIFY = 10                # Reduced for stability with 1M
     SIMPLIFICATION_INTERVAL = 50   # Longer interval for stability
     USE_ISLAND_CATACLYSM = True

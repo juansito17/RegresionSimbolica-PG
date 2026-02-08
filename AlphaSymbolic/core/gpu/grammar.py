@@ -17,7 +17,7 @@ class GPUGrammar:
         if num_variables > 1:
             self.active_variables = [f'x{i}' for i in range(num_variables)]
         elif num_variables == 1:
-            self.active_variables = ['x', 'x0'] 
+            self.active_variables = ['x0'] 
 
         self.terminals = self.active_variables + ['C', '0', '1', '2', '3', '5', '10', 'pi'] # Sync with core.grammar.CONSTANTS
         for t in self.terminals:
@@ -50,9 +50,10 @@ class GPUGrammar:
                 self.operators.append('%')
             if GpuGlobals.USE_OP_SIN:   self.operators.append('sin')
             if GpuGlobals.USE_OP_COS:   self.operators.append('cos')
+            if GpuGlobals.USE_OP_TAN:   self.operators.append('tan')
             if GpuGlobals.USE_OP_LOG:   self.operators.append('log')
             if GpuGlobals.USE_OP_EXP:   self.operators.append('exp')
-            if GpuGlobals.USE_OP_FACT:  self.operators.append('fact') 
+            if GpuGlobals.USE_OP_FACT:  self.operators.append('!') 
             if GpuGlobals.USE_OP_GAMMA: 
                 self.operators.append('gamma')
                 self.operators.append('lgamma')
@@ -66,13 +67,12 @@ class GPUGrammar:
             # Fallback set
             self.operators = ['+', '-', '*', '/', 'pow', 'sin', 'cos', 'log', 'exp']
 
-        # Always active standard ops
-        self.operators.append('sqrt')
-        self.operators.append('abs')
-        self.operators.append('neg')
-        if 'floor' not in self.operators: self.operators.append('floor')
-        if 'mod' not in self.operators: self.operators.append('mod')
-        if 'pow' not in self.operators: self.operators.append('pow')
+        # Always active basic ops (sqrt, abs, neg are essential)
+        if GpuGlobals and GpuGlobals.USE_OP_SQRT:
+            self.operators.append('sqrt')
+        if GpuGlobals and GpuGlobals.USE_OP_ABS:
+            self.operators.append('abs')
+        self.operators.append('neg') # neg is always available (unary minus)
 
         for op in self.operators:
             # check uniqueness (C vs cos collision? 'C' is const, 'C' op is Acos?)

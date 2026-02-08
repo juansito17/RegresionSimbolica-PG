@@ -161,8 +161,16 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
                  # But GP output is fully instantiated.
                  # So we just evaluate.
                  
-                 y_pred_check = tree.evaluate(x)
+                 # Use clamped input for safety during RMSE check
+                 x_safe = np.clip(x, -100, 100)
+                 y_pred_check = tree.evaluate(x_safe)
+                 
+                 # Handle NaNs in RMSE check
+                 if np.any(np.isnan(y_pred_check)):
+                     y_pred_check = np.nan_to_num(y_pred_check, nan=0.0)
+                     
                  rmse_check = np.sqrt(np.mean((y_pred_check - y)**2))
+                 if np.isnan(rmse_check): rmse_check = 1e6 # High but finite fallack
                  
                  results = [{
                      'tokens': tree.tokens,
@@ -232,12 +240,26 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
     except:
         pass
     
-    y_pred = tree.evaluate(x, constants=best.constants)
+    eval_warning = ""
+    # Safe Evaluation for Plotting
+    try:
+        # STABILITY FIX: Clamp x for plotting to avoid overflow/nans
+        x_safe = np.clip(x, -100, 100)
+        y_pred = tree.evaluate(x_safe, constants=best.constants)
+        
+        # Handle NaNs
+        if np.any(np.isnan(y_pred)) or np.any(np.isinf(y_pred)):
+             y_pred = np.nan_to_num(y_pred, nan=0.0, posinf=1e9, neginf=-1e9)
+    except Exception as e:
+        print(f"Plot Eval Error: {e}")
+        y_pred = np.zeros_like(y)
+        eval_warning = f"<div style='color: #ef4444; font-weight: bold; margin-bottom: 10px;'>Plot Error: {str(e)}</div>"
     
     fig = create_fit_plot(x, y, y_pred, display_formula)
     
     # Format results
     result_html = f"""
+    {eval_warning}
     <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 15px; border: 2px solid #00d4ff;">
         <h2 style="color: #00d4ff; margin: 0; font-size: 24px;">Formula Encontrada</h2>
         <div style="background: #0f0f23; padding: 15px; border-radius: 10px; margin: 15px 0; border-left: 4px solid #ff6b6b;">

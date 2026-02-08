@@ -60,9 +60,11 @@ __device__ __forceinline__ T safe_sqrt(T a) {
 
 template <typename T>
 __device__ __forceinline__ T safe_pow(T a, T b) {
+    // Strict NaN propagation: Closing the pow(1, NaN) == 1 loophole
+    if (a != a || b != b) return nan(""); 
+    
     // pow(neg, float) -> NaN usually.
     T res = pow(a, b);
-    // If we want to be strict, built-in pow is usually strictly NaN for negative base with fractional exp.
     return res;
 }
 

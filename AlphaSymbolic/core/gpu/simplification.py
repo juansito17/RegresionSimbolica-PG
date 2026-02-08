@@ -361,4 +361,5 @@ class GPUSimplifier:
         if len(stack) == 1:
             return stack[0]
         else:
+            print(f"[Decoder] Invalid Stack Size: {len(stack)}. Stack: {stack}")
             return "Invalid"

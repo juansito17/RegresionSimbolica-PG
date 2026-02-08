@@ -9,6 +9,16 @@ import torch
 from typing import Tuple, List
 from .grammar import PAD_ID, GPUGrammar
 
+def is_op_in(op, op_ids):
+    """Helper to check if op is in a list of IDs (vectorized)"""
+    if op_ids.numel() == 0:
+        return torch.zeros_like(op, dtype=torch.bool)
+    # Check against all ids
+    mask = torch.zeros_like(op, dtype=torch.bool)
+    for i in op_ids:
+        mask |= (op == i)
+    return mask
+
 class GPUSymbolicSimplifier:
     def __init__(self, grammar: GPUGrammar, device, dtype=torch.float64):
         self.grammar = grammar
@@ -41,6 +51,14 @@ class GPUSymbolicSimplifier:
         # Rescued Advanced Operators
         self.OP_GAMMA_IDS = get_ids(['gamma', '!'])
         self.OP_LGAMMA_IDS = get_ids(['lgamma', 'lg', 'g'])
+        
+        self.OP_ASIN = g.token_to_id.get('asin', -1)
+        self.OP_ACOS = g.token_to_id.get('acos', -1)
+        self.OP_ATAN = g.token_to_id.get('atan', -1)
+        
+        self.OP_FLOOR = g.token_to_id.get('floor', g.token_to_id.get('_', -1))
+        self.OP_CEIL = g.token_to_id.get('ceil', -1)
+        self.OP_SIGN = g.token_to_id.get('sign', -1)
         
         terminals = list(g.terminals)
         self.zero_ids = torch.tensor([g.token_to_id[t] for t in terminals if t in ['0', '0.0']], device=self.device, dtype=torch.long)
@@ -107,7 +125,82 @@ class GPUSymbolicSimplifier:
             pop, n = self._compact_formulas(pop); n_pass += n
             if n_pass == 0: break
             total_simplified += n_pass
+        
+        # Validation Step: Revert rows that became invalid (unbalanced)
+        is_valid = self._validate_batch_stack(pop)
+        if not is_valid.all():
+            invalid_indices = torch.where(~is_valid)[0]
+            # print(f"DEBUG: Reverting {len(invalid_indices)} invalid simplified formulas.")
+            pop[invalid_indices] = population[invalid_indices]
+            
         return pop, constants, total_simplified
+    
+    def _validate_batch_stack(self, population: torch.Tensor) -> torch.Tensor:
+        """
+        Vectorized RPN validity check.
+        Returns boolean tensor of shape (B,) where True means valid.
+        Valid means:
+        1. Final stack size == 1
+        2. Stack never underflows (< 1) during evaluation (assuming >0 tokens)
+        """
+        B, L = population.shape
+        # Get arities
+        max_id = self.arity_table.size(0)
+        pop_c = population.clamp(0, max_id - 1)
+        arities = self.arity_table[pop_c]
+        
+        # PADs have arity 0 in table, but they shouldn't contribute +1 to stack like operands.
+        # They should effectively be 0 change.
+        # Operands (arity 0) -> delta +1
+        # BinOps (arity 2) -> delta -1
+        # UnOp (arity 1) -> delta 0
+        
+        deltas = 1 - arities
+        
+        # Mask PADs
+        is_pad = (population == PAD_ID)
+        deltas[is_pad] = 0
+        
+        # Cumsum
+        stack_depth = torch.cumsum(deltas, dim=1)
+        
+        # Check 1: Final depth (ignoring PADs) should be 1
+        # Since pads are at the end (compacted) or 0-delta, the last element of cumsum is the final depth
+        final_depth = stack_depth[:, -1]
+        cond_final = (final_depth == 1)
+        
+        # Check 2: No underflow. Stack should be >= 1 at all valid steps.
+        # But wait, initially stack is 0. 
+        # Token 1 (operand) -> stack 1. 
+        # So min_value should be >= 1.
+        # However, if we have [PAD, PAD...], stack is 0.
+        # Valid formula must have at least 1 token.
+        has_tokens = (~is_pad).any(dim=1)
+        
+        # Filter cumsum where not pad
+        # We need to check that stack never drops below 1 for active tokens.
+        # But for PAD positions, the value is just carried over.
+        # So checking the whole cumsum >= 1 is valid, AS LONG AS initial part isn't PAD.
+        # If we have leading PADs (impossible in our setup, PADs are at end), they would be 0.
+        # Assuming PADs are always at the end:
+        # The active region is where stack depth changes or stays same > 0.
+        
+        # Simpler check: Min value of stack_depth must be >= 1.
+        # However, if formula is empty [PAD, ...], stack_depth is all 0.
+        # 'has_tokens' handles the empty case.
+        # For non-empty formulas, the first token (operand) makes stack 1.
+        # Subsequent ops keep it >= 1.
+        # If it drops to 0 or -1, it's invalid.
+        
+        # Optimization: We only care about ensuring no underflow.
+        # If stack_depth.min() < 1, then at some point it hit 0 or negative.
+        # Note: Since PADs don't change depth, if valid formula ends at 1, 
+        # the trailing PADs will all be 1.
+        # So min() check covers everything perfectly (assuming no leading PADs).
+        
+        cond_no_underflow = (stack_depth.min(dim=1)[0] >= 1)
+        
+        return cond_final & has_tokens & cond_no_underflow
     
     def _apply_identity_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
         B, L = population.shape
@@ -361,6 +454,30 @@ class GPUSymbolicSimplifier:
                 if match_le.any():
                     pop[match_le, j], pop[match_le, j-1] = PAD_ID, PAD_ID
                     n_simplified += match_le.sum().item()
+                    
+                # acos(cos(x)) -> x
+                is_acos = (tokens == self.OP_ACOS)
+                is_cos_prev = (pop[:, j-1] == self.OP_COS)
+                match_ac = is_acos & is_cos_prev
+                if match_ac.any():
+                    pop[match_ac, j], pop[match_ac, j-1] = PAD_ID, PAD_ID
+                    n_simplified += match_ac.sum().item()
+                    
+                # asin(sin(x)) -> x
+                is_asin = (tokens == self.OP_ASIN)
+                is_sin_prev = (pop[:, j-1] == self.OP_SIN)
+                match_as = is_asin & is_sin_prev
+                if match_as.any():
+                    pop[match_as, j], pop[match_as, j-1] = PAD_ID, PAD_ID
+                    n_simplified += match_as.sum().item()
+                    
+                # atan(tan(x)) -> x
+                is_atan = (tokens == self.OP_ATAN)
+                is_tan_prev = (pop[:, j-1] == self.OP_TAN)
+                match_at = is_atan & is_tan_prev
+                if match_at.any():
+                    pop[match_at, j], pop[match_at, j-1] = PAD_ID, PAD_ID
+                    n_simplified += match_at.sum().item()
 
             # --- SOTA / Better than basic Sympy ---
             # sqrt(x^2) -> abs(x)
@@ -687,38 +804,114 @@ class GPUSymbolicSimplifier:
         for t, tid in self.grammar.token_to_id.items():
             if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()): val_table[tid] = float(t)
         
-        for j in range(2, L):
-            op, a1, a2 = pop[:, j], pop[:, j-2], pop[:, j-1]
-            # Defensive indexing against corrupted IDs or PAD_ID
-            a1_c = a1.clamp(0, max_id - 1)
-            a2_c = a2.clamp(0, max_id - 1)
-            v1, v2 = val_table[a1_c], val_table[a2_c]
-            # If original ID was out of bounds, treat as non-constant
-            v1[a1 >= max_id] = float('nan')
-            v2[a2 >= max_id] = float('nan')
-            mask = (~v1.isnan()) & (~v2.isnan())
-            if not mask.any(): continue
-            res = torch.empty(B, device=self.device, dtype=self.dtype).fill_(float('nan'))
-            m = mask & (op==self.OP_PLUS); res[m] = v1[m] + v2[m]
-            m = mask & (op==self.OP_MINUS); res[m] = v1[m] - v2[m]
-            m = mask & (op==self.OP_MULT); res[m] = v1[m] * v2[m]
-            m = mask & (op==self.OP_DIV) & (v2!=0); res[m] = v1[m] / v2[m]
-            is_pow = (op.unsqueeze(-1) == self.OP_POW_IDS).any(-1) if self.OP_POW_IDS.numel() > 0 else torch.zeros_like(op, dtype=torch.bool)
-            m = mask & is_pow & (v1>0); res[m] = v1[m].pow(v2[m])
+        for j in range(1, L):
+            op = pop[:, j]
+            # Defensive indexing against corrupted IDs
+            op_idx = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_idx]
+            # Handle out-of-bounds operators as arity 0 (terminals/ignored)
+            arity[op >= max_id] = 0
             
-            # Map results to terminal IDs if they exist
-            match_any = ~res.isnan()
-            if match_any.any():
-                # We need a reverse mapping: value -> tid
-                # Since we are in a vectorized loop, we can't easily dict lookup for each row.
-                # However, we can check for the most common terminals.
-                for tid in self.literal_ids:
-                    val = val_table[tid]
-                    match = match_any & (res == val)
-                    if match.any():
-                        pop[match, j-2], pop[match, j-1], pop[match, j] = tid, PAD_ID, PAD_ID
-                        n_folded += match.sum().item()
-                        match_any[match] = False # Avoid redundant assignments
+            # --- Unary Folding (arity 1) ---
+            is_unary = (arity == 1)
+            if is_unary.any():
+                arg = pop[:, j-1]
+                arg_c = arg.clamp(0, max_id - 1)
+                val = val_table[arg_c]
+                val[arg >= max_id] = float('nan')
+                
+                mask = is_unary & (~val.isnan())
+                
+                if mask.any():
+                    res = torch.empty(B, device=self.device, dtype=self.dtype).fill_(float('nan'))
+                    v = val[mask]
+                    
+                    # Apply operations everywhere (let NaNs happen)
+                    m = mask & (op==self.OP_SIN); res[m] = torch.sin(v[m[mask]])
+                    m = mask & (op==self.OP_COS); res[m] = torch.cos(v[m[mask]])
+                    m = mask & (op==self.OP_TAN); res[m] = torch.tan(v[m[mask]])
+                    m = mask & is_op_in(op, self.OP_LOG_IDS); res[m] = torch.log(v[m[mask]])
+                    m = mask & is_op_in(op, self.OP_EXP_IDS); res[m] = torch.exp(v[m[mask]])
+                    m = mask & is_op_in(op, self.OP_SQRT_IDS); res[m] = torch.sqrt(v[m[mask]])
+                    m = mask & is_op_in(op, self.OP_ABS_IDS); res[m] = torch.abs(v[m[mask]])
+                    m = mask & (op==self.OP_FLOOR); res[m] = torch.floor(v[m[mask]])
+                    m = mask & (op==self.OP_CEIL); res[m] = torch.ceil(v[m[mask]])
+                    m = mask & (op==self.OP_SIGN); res[m] = torch.sign(v[m[mask]])
+                    
+                    m = mask & (op==self.OP_ASIN); res[m] = torch.asin(v[m[mask]])
+                    m = mask & (op==self.OP_ACOS); res[m] = torch.acos(v[m[mask]])
+                    m = mask & (op==self.OP_ATAN); res[m] = torch.atan(v[m[mask]])
+                    
+                    # Gamma/LGamma
+                    m_g = mask & is_op_in(op, self.OP_GAMMA_IDS)
+                    if m_g.any(): res[m_g] = torch.exp(torch.lgamma(v[m_g[mask]])) 
+                    
+                    m_lg = mask & is_op_in(op, self.OP_LGAMMA_IDS)
+                    if m_lg.any(): res[m_lg] = torch.lgamma(v[m_lg[mask]])
+                    
+                    # Aggressive cleanup: Replace NaN/Inf result with 0.0
+                    # This handles asin(3) -> nan -> 0.0
+                    # This allows the simplifier to eat garbage branches
+                    res[res.isnan() | res.isinf()] = 0.0
+
+                    # Map back
+                    match_any = torch.ones_like(res, dtype=torch.bool) # All valid now (NaNs are 0)
+                    if match_any.any():
+                        for tid in self.literal_ids:
+                             tv = val_table[tid]
+                             diff = (res - tv).abs()
+                             match = match_any & (diff < 1e-5)
+                             if match.any():
+                                 pop[match, j-1] = tid
+                                 pop[match, j] = PAD_ID
+                                 n_folded += match.sum().item()
+                                 match_any[match] = False
+
+            # --- Binary Folding (arity 2) ---
+            is_binary = (arity == 2)
+            if j >= 2 and is_binary.any():
+                a1, a2 = pop[:, j-2], pop[:, j-1]
+                a1_c, a2_c = a1.clamp(0, max_id - 1), a2.clamp(0, max_id - 1)
+                v1, v2 = val_table[a1_c], val_table[a2_c]
+                v1[a1 >= max_id] = float('nan'); v2[a2 >= max_id] = float('nan')
+                
+                mask = is_binary & (~v1.isnan()) & (~v2.isnan())
+                if mask.any():
+                    res = torch.empty(B, device=self.device, dtype=self.dtype).fill_(float('nan'))
+                    v1_m, v2_m = v1[mask], v2[mask]
+                    
+                    m = mask & (op==self.OP_PLUS); res[m] = v1_m[m[mask]] + v2_m[m[mask]]
+                    m = mask & (op==self.OP_MINUS); res[m] = v1_m[m[mask]] - v2_m[m[mask]]
+                    m = mask & (op==self.OP_MULT); res[m] = v1_m[m[mask]] * v2_m[m[mask]]
+                    m = mask & (op==self.OP_DIV)
+                    if m.any():
+                         # Filter zero division: (v2 != 0) is size N
+                         # We need size B mask.
+                         nz_mask = torch.zeros_like(mask)
+                         nz_mask[mask] = (v2_m != 0)
+                         m = m & nz_mask
+                         if m.any():
+                             res[m] = v1_m[m[mask]] / v2_m[m[mask]]
+                    
+                    is_pow = is_op_in(op, self.OP_POW_IDS)
+                    m = mask & is_pow
+                    if m.any(): res[m] = v1_m[m[mask]].pow(v2_m[m[mask]])
+                    
+                    # Aggressive cleanup: Replace NaN/Inf result with 0.0
+                    res[res.isnan() | res.isinf()] = 0.0
+                    
+                    match_any = torch.ones_like(res, dtype=torch.bool)
+                    if match_any.any():
+                        for tid in self.literal_ids:
+                             tv = val_table[tid]
+                             diff = (res - tv).abs()
+                             match = match_any & (diff < 1e-5)
+                             if match.any():
+                                 pop[match, j-2] = tid
+                                 pop[match, j-1] = PAD_ID
+                                 pop[match, j] = PAD_ID
+                                 n_folded += match.sum().item()
+                                 match_any[match] = False
         return pop, n_folded
 
     def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:

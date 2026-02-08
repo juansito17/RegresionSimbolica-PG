@@ -325,6 +325,16 @@ class MCTS:
         x_tensor = torch.tensor(norm_x, dtype=torch.float32).unsqueeze(0).to(self.device)
         y_tensor = torch.tensor(norm_y, dtype=torch.float32).unsqueeze(0).to(self.device)
         
+        # STABILITY FIX: Match training logic (Clamp + Normalize)
+        x_tensor = torch.clamp(x_tensor, -100, 100)
+        y_tensor = torch.clamp(y_tensor, -100, 100)
+        
+        # Per-sample normalization to [-1, 1]
+        y_min = y_tensor.min(dim=1, keepdim=True)[0]
+        y_max = y_tensor.max(dim=1, keepdim=True)[0]
+        y_range = (y_max - y_min).clamp(min=1e-6)
+        y_tensor = 2 * (y_tensor - y_min) / y_range - 1
+        
         # Repeat X/Y for batch
         batch_size = len(nodes)
         x_batch = x_tensor.repeat(batch_size, 1, 1).squeeze(1) # [batch, points]

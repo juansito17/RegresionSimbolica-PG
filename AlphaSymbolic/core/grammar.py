@@ -393,8 +393,16 @@ class ExpressionTree:
             if val == '/': 
                 return np.divide(args[0], args[1], out=np.full(n_samples, np.nan, dtype=np.float64), where=args[1]!=0)
             if val == 'pow':
-                # Power logic in CUDA is standard pow(a, b)
-                return np.power(args[0], args[1])
+                # STABILITY: Handle negative bases with float (integer-valued) powers
+                # (Numpy power returns NaN for negative^float, but CUDA pow is more permissive)
+                with np.errstate(invalid='ignore'):
+                    res = np.power(args[0], args[1])
+                    if np.any(np.isnan(res)):
+                         # Fallback using complex domain for negative bases
+                         c_res = np.power(args[0].astype(complex), args[1].astype(complex))
+                         # If the imaginary part is negligible, the result is practically real
+                         res = np.where(np.isnan(res), np.where(np.abs(c_res.imag) < 1e-6, c_res.real, np.nan), res)
+                    return res
             if val == 'mod':
                 # Strict: Return NaN if divisor is zero
                 return np.where(np.abs(args[1]) < 1e-9, np.nan, np.mod(args[0], args[1]))
