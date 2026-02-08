@@ -73,6 +73,13 @@ class TensorGeneticEngine:
         self._cached_initial_pop = None
         self._cached_initial_consts = None
         self.mutation_bank = None
+        
+        # --- P0-6: Cache CudaRPNVM and arity tensors for evolve_generation_cuda ---
+        self._cached_vm = None
+        self._cached_token_arities = None
+        self._cached_arity_0_ids = None
+        self._cached_arity_1_ids = None
+        self._cached_arity_2_ids = None
 
     # --- Wrappers for backward compatibility and convenience ---
 
@@ -493,14 +500,19 @@ class TensorGeneticEngine:
             print("[Engine] WARNING: CUDA orchestrator not available, falling back to Python")
             return None, None, None
         
-        # Get VM for OpCode IDs
-        vm = CudaRPNVM(self.grammar, self.device)
+        # P0-6: Reuse cached VM and arity tensors
+        if self._cached_vm is None:
+            self._cached_vm = CudaRPNVM(self.grammar, self.device)
+            self._cached_token_arities = self.grammar.get_arity_tensor(self.device)
+            self._cached_arity_0_ids = self.grammar.get_arity_ids(0, self.device)
+            self._cached_arity_1_ids = self.grammar.get_arity_ids(1, self.device)
+            self._cached_arity_2_ids = self.grammar.get_arity_ids(2, self.device)
         
-        # Get arity tensors
-        token_arities = self.grammar.get_arity_tensor(self.device)
-        arity_0_ids = self.grammar.get_arity_ids(0, self.device)
-        arity_1_ids = self.grammar.get_arity_ids(1, self.device)
-        arity_2_ids = self.grammar.get_arity_ids(2, self.device)
+        vm = self._cached_vm
+        token_arities = self._cached_token_arities
+        arity_0_ids = self._cached_arity_0_ids
+        arity_1_ids = self._cached_arity_1_ids
+        arity_2_ids = self._cached_arity_2_ids
         
         # Ensure X is [Vars, N] for RPN kernel
         if x_t.ndim == 1:
@@ -807,6 +819,10 @@ class TensorGeneticEngine:
         generations = 0
         current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
         COMPLEXITY_PENALTY = GpuGlobals.COMPLEXITY_PENALTY
+        
+        # --- P0-1 Optimization: Reuse fitness from C++ orchestrator ---
+        cached_next_fit = None       # Fitness returned by evolve_generation_cuda
+        modified_indices = None      # Indices modified after evolution (migration/inject)
 
         start_time = time.time()
         while True:
@@ -816,9 +832,14 @@ class TensorGeneticEngine:
             
             generations += 1
 
-            # Migration
+            # Migration (track modified indices for fitness cache invalidation)
+            modified_indices = None
             if self.n_islands > 1 and generations % 10 == 0: # Default interval 10
-                 population, pop_constants = self.migrate_islands(population, pop_constants, fitness_rmse)
+                 population, pop_constants = self.migrate_islands(population, pop_constants, 
+                     fitness_rmse if cached_next_fit is None else cached_next_fit)
+                 # Migration modifies ~MIGRATION_SIZE*n_islands worst individuals
+                 # Mark all as modified to force re-eval (conservative)
+                 modified_indices = torch.arange(0, self.pop_size, device=self.device)  # full re-eval on migration gens
 
             # --- Neural Flash (Intelligence Injection) ---
             if GpuGlobals.USE_NEURAL_FLASH and self.model is not None and generations % 50 == 0:
@@ -851,27 +872,43 @@ class TensorGeneticEngine:
                                self.pop_buffer_B[0] = pop_mcts[0]
                                self.const_buffer_B[0] = const_mcts[0]
 
-            # --- Pattern Memory Injection ---
+            # --- Pattern Memory Injection (in-place, P0-5) ---
             # Inject successful building blocks to accelerate convergence
             if GpuGlobals.USE_PATTERN_MEMORY and generations > 10 and generations % GpuGlobals.PATTERN_INJECT_INTERVAL == 0:
-                 # Inject into current population before evaluation
-                 pop_inj, const_inj, n_injected = self.pattern_memory.inject_into_population(
+                 inject_positions = self.pattern_memory.inject_into_population_inplace(
                      population, pop_constants, self.grammar, 
                      percent=GpuGlobals.PATTERN_INJECT_PERCENT
                  )
-                 if n_injected > 0:
-                     population[:] = pop_inj
-                     pop_constants[:] = const_inj
-                     # print(f"[Generation {generations}] Injected {n_injected} patterns.")
+                 if inject_positions is not None:
+                     # Mark injected positions for re-evaluation
+                     if modified_indices is None:
+                         modified_indices = inject_positions
+                     else:
+                         modified_indices = torch.cat([modified_indices, inject_positions])
 
-            # Eval
-            # If Lexicase, we need FULL errors
-            if GpuGlobals.USE_LEXICASE_SELECTION:
+            # Eval — P0-1: Reuse cached fitness from C++ orchestrator when possible
+            if cached_next_fit is not None and not GpuGlobals.USE_LEXICASE_SELECTION and modified_indices is None:
+                # Fast path: reuse C++ fitness, no evaluation needed
+                fitness_rmse = cached_next_fit
+                abs_errors = None
+            elif cached_next_fit is not None and not GpuGlobals.USE_LEXICASE_SELECTION and modified_indices is not None:
+                # Partial re-eval: only re-evaluate modified individuals
+                fitness_rmse = cached_next_fit
+                abs_errors = None
+                unique_mod = modified_indices.unique()
+                if unique_mod.numel() < self.pop_size:
+                    partial_rmse = self.evaluator.evaluate_batch(
+                        population[unique_mod], x_t, y_t, pop_constants[unique_mod])
+                    fitness_rmse[unique_mod] = partial_rmse
+                else:
+                    fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
+            elif GpuGlobals.USE_LEXICASE_SELECTION:
                 abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants)
                 fitness_rmse = torch.mean(abs_errors**2, dim=1).sqrt() # Approx RMSE for stats
             else:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
                 abs_errors = None
+            cached_next_fit = None  # Consumed
                 
             # --- Pattern Memory Recording ---
             # Record successful subtrees
@@ -881,19 +918,18 @@ class TensorGeneticEngine:
                      min_size=3, max_size=12
                  )
             
-            # Optimize Top K
-            k_opt = min(self.pop_size, 200)
-            _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
-            
-            opt_pop = population[top_idx]
-            opt_consts = pop_constants[top_idx]
-            
-            if GpuGlobals.USE_NANO_PSO:
-                 refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=50)
-            else:
-                 refined_consts, refined_mse = self.optimizer.optimize_constants(opt_pop, opt_consts, x_t, y_t, steps=10)
-            pop_constants[top_idx] = refined_consts
-            fitness_rmse[top_idx] = refined_mse
+            # Optimize Top K — P0-2/3/4: Reduce PSO cost (steps 50→15, k 200→100, every 3 gens)
+            PSO_INTERVAL = 3
+            if GpuGlobals.USE_NANO_PSO and generations % PSO_INTERVAL == 0:
+                k_opt = min(self.pop_size, 100)
+                _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
+                
+                opt_pop = population[top_idx]
+                opt_consts = pop_constants[top_idx]
+                
+                refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=15)
+                pop_constants[top_idx] = refined_consts
+                fitness_rmse[top_idx] = refined_mse
             
             # Best Tracking (single GPU->CPU sync for both values)
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
@@ -1058,6 +1094,8 @@ class TensorGeneticEngine:
                     # Update local refs for next generation
                     next_pop = next_pop[:self.pop_size]
                     next_c = next_c[:self.pop_size]
+                    # P0-1: Cache the fitness from C++ for reuse in next iteration
+                    cached_next_fit = next_fit[:self.pop_size] if next_fit is not None else None
                 else:
                     # Rare failure (ImportError), proceed to fallback if needed or return
                     print("[Engine] CUDA Orchestrator failed, please restart without USE_CUDA_ORCHESTRATOR")

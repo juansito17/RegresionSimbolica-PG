@@ -292,17 +292,25 @@ class PatternMemory:
                                 grammar, percent: float = 0.05) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
         Inject useful patterns into the population. GPU-native.
+        LEGACY: Returns (pop, const, count). Use inject_into_population_inplace instead.
+        """
+        inject_positions = self.inject_into_population_inplace(population, constants, grammar, percent)
+        n_injected = inject_positions.numel() if inject_positions is not None else 0
+        return population, constants, n_injected
+    
+    def inject_into_population_inplace(self, population: torch.Tensor, constants: torch.Tensor,
+                                        grammar, percent: float = 0.05):
+        """
+        Inject useful patterns into the population IN-PLACE. No clones.
+        Returns: inject_positions tensor (or None if nothing injected).
         """
         patterns = self.get_useful_patterns(20)
         if patterns.shape[0] == 0:
-            return population, constants, 0
+            return None
         
         pop_size, max_len = population.shape
         n_inject = max(1, int(pop_size * percent))
         n_inject = min(n_inject, patterns.shape[0] * 2)
-        
-        pop_out = population.clone()
-        const_out = constants.clone()
         
         # Inject at random positions (avoid elites at front)
         inject_start = int(pop_size * 0.1)
@@ -320,12 +328,13 @@ class PatternMemory:
         else:
             selected_patterns = selected_patterns[:, :max_len]
         
-        # Inject
-        pop_out[inject_positions] = selected_patterns
-        const_out[inject_positions] = torch.randn_like(const_out[inject_positions]) * 0.5
+        # Inject in-place (no clone)
+        population[inject_positions] = selected_patterns
+        constants[inject_positions] = torch.randn(n_inject, constants.shape[1],
+                                                   device=self.device, dtype=constants.dtype) * 0.5
         
         self.total_injected += n_inject
-        return pop_out, const_out, n_inject
+        return inject_positions
     
     def get_stats(self) -> dict:
         """Get pattern memory statistics."""

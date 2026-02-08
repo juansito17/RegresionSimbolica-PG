@@ -20,6 +20,7 @@ class CudaRPNVM:
         self.grammar = grammar
         self.device = device
         self._cache_ids()
+        self._output_cache = {}  # P1-2: Pre-allocated output buffers keyed by (B, D, dtype)
         
     def _cache_ids(self):
         # Cache IDs standard
@@ -105,11 +106,15 @@ class CudaRPNVM:
             if constants.dtype != dtype: constants = constants.to(dtype)
             K = constants.shape[1]
             
-        # Prepare Outputs
-        # [B, D] - Implicitly expanded
-        out_preds = torch.empty((B, D), dtype=dtype, device=self.device)
-        out_sp = torch.empty((B, D), dtype=torch.int32, device=self.device)
-        out_error = torch.empty((B, D), dtype=torch.uint8, device=self.device) # unsigned char in C++ map to bool/byte
+        # Prepare Outputs — P1-2: Reuse pre-allocated buffers when sizes match
+        cache_key = (B, D, dtype)
+        if cache_key in self._output_cache:
+            out_preds, out_sp, out_error = self._output_cache[cache_key]
+        else:
+            out_preds = torch.empty((B, D), dtype=dtype, device=self.device)
+            out_sp = torch.empty((B, D), dtype=torch.int32, device=self.device)
+            out_error = torch.empty((B, D), dtype=torch.uint8, device=self.device)
+            self._output_cache[cache_key] = (out_preds, out_sp, out_error)
         
         # Call Kernel
         rpn_cuda.eval_rpn(

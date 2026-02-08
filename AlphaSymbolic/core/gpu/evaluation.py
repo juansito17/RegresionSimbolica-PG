@@ -15,6 +15,9 @@ class GPUEvaluator:
         # Max Float safe value
         self.INF_VAL = 1e30 if dtype == torch.float32 else 1e300
         
+        # P1-4: Pre-create cached scalar tensor to avoid repeated allocations
+        self._inf_tensor = torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype)
+        
         # New Native VM
         from .cuda_vm import CudaRPNVM
         self.vm = CudaRPNVM(grammar, device)
@@ -105,7 +108,7 @@ class GPUEvaluator:
             # This must be done BEFORE calculating diff to avoid INF/NaN leakage
             f_preds = torch.where(is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds), 
                                   f_preds, 
-                                  torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
+                                  self._inf_tensor)
             
             # Reshape to [current_B, N]
             preds_mat = f_preds.view(current_B, N_samples)
@@ -124,7 +127,7 @@ class GPUEvaluator:
                 
                 # RMSE of Log Errors = RMSLE
                 metric_score = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
-                                              torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
+                                              self._inf_tensor, 
                                               mse))
             else:
                 # Standard RMSE
@@ -133,7 +136,7 @@ class GPUEvaluator:
                 mse = torch.mean(sq_diff, dim=1) # [current_B]
                 
                 metric_score = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
-                                              torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
+                                              self._inf_tensor, 
                                               mse))
                                           
             # Write directly to pre-allocated buffer
@@ -194,7 +197,7 @@ class GPUEvaluator:
             
             # Masking: Use high penalty for invalid cases
             # PENALTY must be significantly larger than any possible real target error
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
+            masked_sq_err = torch.where(valid_matrix, sq_err, self._inf_tensor)
             loss = masked_sq_err.mean(dim=1)
             return loss, preds
             
@@ -204,7 +207,7 @@ class GPUEvaluator:
             sq_err = torch.clamp(sq_err, max=1e10)
             
             # Masking: Use INF_VAL penalty
-            masked_sq_err = torch.where(valid_matrix, sq_err, torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
+            masked_sq_err = torch.where(valid_matrix, sq_err, self._inf_tensor)
             loss = masked_sq_err.mean(dim=1)
             return loss, preds
     
@@ -256,7 +259,7 @@ class GPUEvaluator:
             # Penalize
             final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
                                       final_preds, 
-                                      torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype))
+                                      self._inf_tensor)
             
             # Reshape to [current_B, D]
             preds_matrix = final_preds.view(current_B, D)
@@ -266,7 +269,7 @@ class GPUEvaluator:
             abs_err = torch.abs(preds_matrix - target_matrix_chunk)
             
             abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
-                                  torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype), 
+                                  self._inf_tensor, 
                                   abs_err)
             
             # Write directly to pre-allocated buffer

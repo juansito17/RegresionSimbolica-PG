@@ -92,7 +92,7 @@ class GpuGlobals:
     CONSTANT_INT_MAX_VALUE = 100
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60  # Increased to 60 to allow more complex formulas
-    MAX_CONSTANTS = 50 # Increased to 50 to guarantee ANY generated formula (size < 30) fits as a seed without truncation.
+    MAX_CONSTANTS = 15 # Optimized: max_len=30 means at most 15 constants. Saves 140MB VRAM + faster PSO.
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
