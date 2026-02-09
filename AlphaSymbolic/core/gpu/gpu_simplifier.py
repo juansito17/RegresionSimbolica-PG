@@ -32,6 +32,7 @@ class GPUSymbolicSimplifier:
         self.dtype = dtype
         self._cache_operator_ids()
         self._build_arity_table()
+        self._cache_val_table()
         
     def _cache_operator_ids(self):
         g = self.grammar
@@ -91,6 +92,15 @@ class GPUSymbolicSimplifier:
             self.arity_table[tid] = OPERATORS.get(token, 0)
         
         # arity_table[PAD_ID] remains 0, which is safe for subtree logic
+
+    def _cache_val_table(self):
+        """Pre-build val_table once at init — eliminates Python dict iteration per constant_folding call."""
+        max_id = self.arity_table.size(0)
+        self._cached_val_table = torch.empty(max_id, device=self.device, dtype=self.dtype).fill_(float('nan'))
+        for t, tid in self.grammar.token_to_id.items():
+            if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()):
+                self._cached_val_table[tid] = float(t)
+        self._cached_lit_vals = self._cached_val_table[self.literal_ids] if self.literal_ids.numel() > 0 else None
                 
     def _is_zero(self, token_ids: torch.Tensor) -> torch.Tensor:
         if self.zero_ids.numel() == 0: return torch.zeros_like(token_ids, dtype=torch.bool)
@@ -893,12 +903,8 @@ class GPUSymbolicSimplifier:
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
         max_id = self.arity_table.size(0)
-        val_table = torch.empty(max_id, device=self.device, dtype=self.dtype).fill_(float('nan'))
-        for t, tid in self.grammar.token_to_id.items():
-            if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()): val_table[tid] = float(t)
-        
-        # Pre-compute literal values for vectorized mapping (eliminates per-literal loop)
-        lit_vals = val_table[self.literal_ids] if self.literal_ids.numel() > 0 else None
+        val_table = self._cached_val_table
+        lit_vals = self._cached_lit_vals
         
         for j in range(1, L):
             op = pop[:, j]

@@ -51,10 +51,6 @@ class GpuGlobals:
     # ----------------------------------------
     # Configuración General del Algoritmo Genético
     # ----------------------------------------
-
-    # ----------------------------------------
-    # Configuración General del Algoritmo Genético
-    # ----------------------------------------
     FORCE_CPU_MODE = False # Si es True, usa CPU aunque CUDA esté disponible
     
     # Tamaño de población - MÁXIMO para RTX 3050 (4GB VRAM)
@@ -78,21 +74,23 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros del Modelo de Islas
     # ----------------------------------------
-    MIGRATION_INTERVAL = 100
+    MIGRATION_INTERVAL = 10         # Intervalo normal de migración (generaciones)
+    MIGRATION_INTERVAL_STAGNATION = 20  # Intervalo durante estancamiento (mayor = preserva diversidad)
+    MIGRATION_STAGNATION_THRESHOLD = 10 # Gens de estancamiento para cambiar intervalo
     MIGRATION_SIZE = 50
 
     # ----------------------------------------
     # Parámetros de Generación Inicial de Árboles
     # ----------------------------------------
     MAX_TREE_DEPTH_INITIAL = 8
-    TERMINAL_VS_VARIABLE_PROB = 0.75
     CONSTANT_MIN_VALUE = -100.0
     CONSTANT_MAX_VALUE = 100.0
     CONSTANT_INT_MIN_VALUE = -100
     CONSTANT_INT_MAX_VALUE = 100
+    MAX_CONSTANTS = 15
     USE_HARD_DEPTH_LIMIT = True
-    MAX_TREE_DEPTH_HARD_LIMIT = 60  # Increased to 60 to allow more complex formulas
-    MAX_CONSTANTS = 15 # Optimized: max_len=30 means at most 15 constants. Saves 140MB VRAM + faster PSO.
+    MAX_TREE_DEPTH_HARD_LIMIT = 60   # Límite duro de profundidad de arboles
+    MAX_TREE_DEPTH_MUTATION = 6      # Profundidad máxima de subtrees generados en mutación
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
@@ -148,82 +146,115 @@ class GpuGlobals:
     # Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
     # ----------------------------------------
     BASE_MUTATION_RATE = 0.40
+    MUTATION_RATE_CAP = 0.90         # Techo de mutación adaptativa
+    MUTATION_RAMP_PER_GEN = 0.02     # Incremento por gen de estancamiento
+    MUTATION_STAGNATION_TRIGGER = 5  # Gens estancadas para empezar a subir mutación
     BASE_ELITE_PERCENTAGE = 0.10
     DEFAULT_CROSSOVER_RATE = 0.50
-    DEFAULT_TOURNAMENT_SIZE = 8
-    MAX_TREE_DEPTH_MUTATION = 12
-    MUTATE_INSERT_CONST_PROB = 0.5
-    MUTATE_INSERT_CONST_INT_MIN = 1
-    MUTATE_INSERT_CONST_INT_MAX = 20
-    MUTATE_INSERT_CONST_FLOAT_MIN = 0.1
-    MUTATE_INSERT_CONST_FLOAT_MAX = 20.0
+    DEFAULT_TOURNAMENT_SIZE = 7
+    TOURNAMENT_SIZE_FLOOR = 3        # Piso del torneo adaptativo
+    TOURNAMENT_ADAPTIVE_DIVISOR = 8  # Cada N gens estancadas baja 1 el torneo
+    TERMINAL_VS_VARIABLE_PROB = 0.50 # Prob de terminal vs variable en generación aleatoria (0.5 = neutro)
 
     # ----------------------------------------
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
-    COMPLEXITY_PENALTY = 0.01 # Increased to force simpler, more elegant formulas
-    LOSS_FUNCTION = 'RMSE' # Changed from RMSLE because USE_LOG_TRANSFORMATION=True. 
-                           # RMSE on Log(y) == RMSLE on y. Avoids double log.
-    USE_RMSE_FITNESS = True
-    FITNESS_ORIGINAL_POWER = 1.3
-    FITNESS_PRECISION_THRESHOLD = 0.001
-    FITNESS_PRECISION_BONUS = 0.0001
-    FITNESS_EQUALITY_TOLERANCE = 1e-9
+    COMPLEXITY_PENALTY = 0.01
+    LOSS_FUNCTION = 'RMSE'
     EXACT_SOLUTION_THRESHOLD = 1e-8
+    FITNESS_EQUALITY_TOLERANCE = 1e-9  # Tolerancia para considerar dos fitness iguales
+    USE_WEIGHTED_FITNESS = False       # Ponderar casos de fitness por dificultad
+    WEIGHTED_FITNESS_EXPONENT = 0.25   # Exponente para ponderación de fitness
 
     # ----------------------------------------
-    # Fitness Ponderado (Weighted Fitness)
+    # Parámetros de Estancamiento y Cataclismo
     # ----------------------------------------
-    USE_WEIGHTED_FITNESS = False
-    WEIGHTED_FITNESS_EXPONENT = 0.25
-
+    STAGNATION_LIMIT = 25            # Gens sin mejora para disparar cataclismo
+    GLOBAL_STAGNATION_LIMIT = 80      # Gens sin mejora global para reinicio completo
+    CATACLYSM_ELITE_PERCENT = 0.05   # % de élites que sobreviven el cataclismo (menos = más exploración)
+    STAGNATION_RANDOM_INJECT_PERCENT = 0.0  # Desactivado: overhead sin beneficio (peores nunca ganan selección)
+    USE_ISLAND_CATACLYSM = True      # Activar/desactivar cataclismo
+    
     # ----------------------------------------
-    # Parámetros de Características Avanzadas
+    # Parámetros de PSO (Particle Swarm Optimization)
     # ----------------------------------------
-    STAGNATION_LIMIT = 50
-    GLOBAL_STAGNATION_LIMIT = 100
-    STAGNATION_RANDOM_INJECT_PERCENT = 0.1
-    PARAM_MUTATE_INTERVAL = 50
+    USE_NANO_PSO = True
+    PSO_INTERVAL = 3                 # Ejecutar PSO cada N generaciones
+    PSO_K_NORMAL = 100               # Individuos a optimizar normalmente
+    PSO_K_STAGNATION = 200           # Individuos a optimizar durante estancamiento
+    PSO_STEPS_NORMAL = 15            # Pasos de PSO normales
+    PSO_STEPS_STAGNATION = 20        # Pasos de PSO durante estancamiento
+    PSO_STAGNATION_THRESHOLD = 15    # Gens estancadas para usar parámetros agresivos
+    PSO_PARTICLES = 20               # Partículas por individuo
+    
+    # ----------------------------------------
+    # Parámetros de Pattern Memory
+    # ----------------------------------------
+    USE_PATTERN_MEMORY = True
     PATTERN_RECORD_FITNESS_THRESHOLD = 10.0
     PATTERN_MEM_MIN_USES = 3
+    PATTERN_RECORD_INTERVAL = 20     # Cada cuántas gens grabar patrones
     PATTERN_INJECT_INTERVAL = 10
     PATTERN_INJECT_PERCENT = 0.05
-    PARETO_MAX_FRONT_SIZE = 50
+    PATTERN_MIN_SIZE = 3             # Tamaño mínimo de subtree para patrón
+    PATTERN_MAX_SIZE = 12            # Tamaño máximo de subtree para patrón
+    PATTERN_MAX_PATTERNS = 100       # Patrones máximos en memoria
     
-    SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9
-    SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9
-    LOCAL_SEARCH_ATTEMPTS = 30
-    
+    # ----------------------------------------
+    # Parámetros de Simplificación
+    # ----------------------------------------
     USE_SIMPLIFICATION = True
-    USE_SYMPY = False              # Disabled - use GPUSymbolicSimplifier instead
-    K_SIMPLIFY = 10                # Reduced for stability with 1M
-    SIMPLIFICATION_INTERVAL = 50   # Longer interval for stability
-    USE_ISLAND_CATACLYSM = True
-    USE_LEXICASE_SELECTION = True
-    USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems
-    USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
-    USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
+    K_SIMPLIFY = 10
+    SIMPLIFICATION_INTERVAL = 50
+    SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9  # Tolerancia para colapsar valores cercanos a 0
+    SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9   # Tolerancia para colapsar valores cercanos a 1
     
-    USE_SNIPER = True             # Enable Linear/Geometric/Log-Linear detection
-    USE_RESIDUAL_BOOSTING = True  # Enable finding f(x)+g(x) using Sniper on residuals
-    USE_NEURAL_FLASH = False      # Enable Neural Inspiration (Beam Search injection)
-    USE_ALPHA_MCTS = False        # Enable Alpha Mode (MCTS Refinement)
-    USE_PATTERN_MEMORY = True     # Optimized: GPU-Based Pattern Extraction
-
+    # ----------------------------------------
+    # Parámetros de Deduplicación
+    # ----------------------------------------
+    DEDUPLICATION_INTERVAL = 50      # Cada cuántas gens eliminar clones
+    PREVENT_DUPLICATES = True        # Activar/desactivar deduplicación
+    
+    # ----------------------------------------
+    # Parámetros de Selección Pareto
+    # ----------------------------------------
+    USE_PARETO_SELECTION = False      # Pareto liviano: protege fórmulas cortas+buenas como élites
+    PARETO_MAX_FRONT_SIZE = 30       # Tamaño máximo del frente de Pareto
+    
+    # ----------------------------------------
+    # Parámetros de Residual Boosting
+    # ----------------------------------------
+    USE_RESIDUAL_BOOSTING = True
+    RESIDUAL_BOOST_INTERVAL = 20     # Cada cuántas gens de estancamiento intentar boost
+    
+    # ----------------------------------------
+    # Parámetros de Mutation Bank
+    # ----------------------------------------
+    MUTATION_BANK_SIZE = 2000        # Subtrees aleatorios para ingredientes de mutación
+    MUTATION_BANK_REFRESH_INTERVAL = 50  # Cada cuántas gens renovar el banco
+    
+    # ----------------------------------------
+    # Parámetros de Neural Flash y MCTS
+    # ----------------------------------------
+    USE_NEURAL_FLASH = False
+    NEURAL_FLASH_INTERVAL = 50       # Cada cuántas gens inyectar
+    NEURAL_FLASH_INJECT_PERCENT = 0.10  # % de la población a reemplazar
+    USE_ALPHA_MCTS = False
+    ALPHA_MCTS_INTERVAL = 100        # Cada cuántas gens ejecutar MCTS
+    ALPHA_MCTS_N_SIMULATIONS = 50    # Simulaciones por ejecución de MCTS
+    
+    # ----------------------------------------
+    # Parámetros de Selección
+    # ----------------------------------------
+    USE_LEXICASE_SELECTION = True
+    USE_SNIPER = True
+    
     # ----------------------------------------
     # Otros Parámetros
     # ----------------------------------------
     PROGRESS_REPORT_INTERVAL = 100
-    FORCE_INTEGER_CONSTANTS = False
-    
-    # --- C++ CUDA Orchestration ---
-    USE_CUDA_ORCHESTRATOR = True  # Enable for maximum performance (Phases 3 & 4)
-    
-    # Control de Duplicados
-    PREVENT_DUPLICATES = True
-    DUPLICATE_RETRIES = 10
-    
-    # Simplicación CPU (SymPy)
-    USE_SYMPY = False  # Set to False to reduce CPU load and rely on GPU-native simplification
+    USE_CUDA_ORCHESTRATOR = True
+    USE_SYMPY = False
+    FORCE_INTEGER_CONSTANTS = False   # Forzar constantes enteras en PSO/generación
     
     INF = float('inf')

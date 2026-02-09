@@ -1,5 +1,6 @@
 
 import torch
+import random
 import numpy as np
 from typing import List, Tuple
 from core.grammar import OPERATORS, ExpressionTree
@@ -93,7 +94,7 @@ class GPUOperators:
         if RPN_CUDA_AVAILABLE:
             try:
                 population = torch.zeros(size, max_len, dtype=torch.long, device=device)
-                seed = torch.randint(0, 2**62, (1,), device='cpu').item()
+                seed = random.getrandbits(62)
                 
                 # Ensure contiguous int64 tensors
                 t_ids = self.terminal_ids.contiguous()
@@ -106,11 +107,11 @@ class GPUOperators:
                 
                 # Quick validation
                 valid = self._validate_rpn_batch(population)
-                n_invalid = (~valid).sum().item()
-                if n_invalid > 0:
+                invalid = ~valid
+                if invalid.any():
                     x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
-                    population[~valid, 0] = x0_id
-                    population[~valid, 1:] = PAD_ID
+                    population[invalid, 0] = x0_id
+                    population[invalid, 1:] = PAD_ID
                 
                 return population
             except Exception:
@@ -174,9 +175,11 @@ class GPUOperators:
                 can_binary = can_binary & ((s - 1) == 1) if n_arity2 > 0 else can_binary
             
             # Convert to float weights for normalized sampling
-            w_t = can_terminal.float()
-            w_u = can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)
-            w_b = can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)
+            # TERMINAL_VS_VARIABLE_PROB controla sesgo hacia terminales (mayor = más terminales)
+            terminal_bias = GpuGlobals.TERMINAL_VS_VARIABLE_PROB
+            w_t = can_terminal.float() * terminal_bias
+            w_u = (can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
+            w_b = (can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
             
             # Ensure at least terminal is valid (fallback)
             total_w = w_t + w_u + w_b
@@ -218,12 +221,12 @@ class GPUOperators:
         
         # Final validation
         valid = (stack == 1)
-        n_invalid = (~valid).sum().item()
+        invalid = ~valid
         
-        if n_invalid > 0:
+        if invalid.any():
             x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
-            population[~valid, 0] = x0_id
-            population[~valid, 1:] = PAD_ID
+            population[invalid, 0] = x0_id
+            population[invalid, 1:] = PAD_ID
         
         return population
 
@@ -242,6 +245,100 @@ class GPUOperators:
         is_pad = (population == PAD_ID)
         deltas[is_pad] = 0
         # Final stack = sum of all deltas
+        final_stack = deltas.sum(dim=1)
+        return (final_stack == 1)
+
+    def _generate_small_subtrees(self, size: int, max_len: int) -> torch.Tensor:
+        """
+        Generate small RPN subtrees with limited length (for subtree mutation).
+        Uses CUDA fast path if available, fallback to PyTorch loop.
+        """
+        device = self.device
+        
+        # CUDA fast path
+        if RPN_CUDA_AVAILABLE:
+            try:
+                population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+                seed = random.getrandbits(62)
+                t_ids = self.terminal_ids.contiguous()
+                u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
+                b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
+                rpn_cuda_native.generate_random_rpn(population, t_ids, u_ids, b_ids, seed)
+                valid = self._validate_rpn_batch_custom(population, max_len)
+                invalid = ~valid
+                if invalid.any():
+                    x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
+                    population[invalid, 0] = x0_id
+                    population[invalid, 1:] = PAD_ID
+                return population
+            except Exception:
+                pass
+        
+        # PyTorch fallback — same as generate_random_population_gpu but with shorter max_len
+        population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+        stack = torch.zeros(size, dtype=torch.long, device=device)
+        n_terminals = self.terminal_ids.shape[0]
+        n_arity1 = self.arity_1_ids.shape[0]
+        n_arity2 = self.arity_2_ids.shape[0]
+        all_rand = torch.rand(size, max_len, device=device)
+        rand_terminal_idx = torch.randint(0, max(1, n_terminals), (size, max_len), device=device)
+        rand_arity1_idx = torch.randint(0, max(1, n_arity1), (size, max_len), device=device) if n_arity1 > 0 else None
+        rand_arity2_idx = torch.randint(0, max(1, n_arity2), (size, max_len), device=device) if n_arity2 > 0 else None
+        terminal_bias = GpuGlobals.TERMINAL_VS_VARIABLE_PROB
+        
+        for j in range(max_len):
+            remaining = max_len - j - 1
+            s = stack
+            can_terminal = ((s + 1) >= 1) & ((s + 1) <= 1 + remaining)
+            can_unary = (n_arity1 > 0) & (s >= 1) & (s <= 1 + remaining)
+            can_binary = (n_arity2 > 0) & ((s - 1) >= 1) & ((s - 1) <= 1 + remaining)
+            if remaining == 0:
+                can_terminal = can_terminal & ((s + 1) == 1)
+                can_unary = can_unary & (s == 1) if n_arity1 > 0 else can_unary
+                can_binary = can_binary & ((s - 1) == 1) if n_arity2 > 0 else can_binary
+            w_t = can_terminal.float() * terminal_bias
+            w_u = (can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
+            w_b = (can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
+            total_w = w_t + w_u + w_b
+            no_valid = (total_w == 0)
+            w_t = w_t + no_valid.float()
+            total_w = w_t + w_u + w_b
+            p_t = w_t / total_w
+            p_u = w_u / total_w
+            r = all_rand[:, j]
+            is_terminal = r < p_t
+            is_unary = (~is_terminal) & (r < (p_t + p_u))
+            is_binary = (~is_terminal) & (~is_unary)
+            chosen_tokens = self.terminal_ids[rand_terminal_idx[:, j] % n_terminals]
+            if n_arity1 > 0:
+                unary_tokens = self.arity_1_ids[rand_arity1_idx[:, j] % n_arity1]
+                chosen_tokens = torch.where(is_unary, unary_tokens, chosen_tokens)
+            if n_arity2 > 0:
+                binary_tokens = self.arity_2_ids[rand_arity2_idx[:, j] % n_arity2]
+                chosen_tokens = torch.where(is_binary, binary_tokens, chosen_tokens)
+            chosen_deltas = torch.ones(size, dtype=torch.long, device=device)
+            if n_arity1 > 0:
+                chosen_deltas = torch.where(is_unary, torch.zeros(size, dtype=torch.long, device=device), chosen_deltas)
+            if n_arity2 > 0:
+                chosen_deltas = torch.where(is_binary, -torch.ones(size, dtype=torch.long, device=device), chosen_deltas)
+            population[:, j] = chosen_tokens
+            stack = stack + chosen_deltas
+        
+        valid = (stack == 1)
+        invalid = ~valid
+        if invalid.any():
+            x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
+            population[invalid, 0] = x0_id
+            population[invalid, 1:] = PAD_ID
+        return population
+
+    def _validate_rpn_batch_custom(self, population: torch.Tensor, max_len: int) -> torch.Tensor:
+        """Validate RPN batch for custom-length populations."""
+        B, L = population.shape
+        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1)]
+        deltas = 1 - arities
+        is_pad = (population == PAD_ID)
+        deltas[is_pad] = 0
         final_stack = deltas.sum(dim=1)
         return (final_stack == 1)
 
@@ -491,6 +588,19 @@ class GPUOperators:
             c1 = gather_mixed(src_idx_c1, sel_c1, parents_1, parents_2)
             c2 = gather_mixed(src_idx_c2, sel_c2, parents_1, parents_2)
         
+        # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite duro ---
+        if GpuGlobals.USE_HARD_DEPTH_LIMIT:
+            hard_limit = GpuGlobals.MAX_TREE_DEPTH_HARD_LIMIT
+            c1_len = (c1 != PAD_ID).sum(dim=1)
+            c2_len = (c2 != PAD_ID).sum(dim=1)
+            # Si un hijo excede el límite, revertir al padre original
+            too_long_1 = c1_len > hard_limit
+            too_long_2 = c2_len > hard_limit
+            if too_long_1.any():
+                c1[too_long_1] = parents_1[too_long_1]
+            if too_long_2.any():
+                c2[too_long_2] = parents_2[too_long_2]
+        
         parents[p1_idx] = c1
         parents[p2_idx] = c2
         return parents
@@ -540,22 +650,25 @@ class GPUOperators:
         if n_dups == 0:
             return population, constants, 0
             
-        pop_out = population.clone()
-        const_out = constants.clone()
-        
+        # In-place replacement — no need to clone entire 1M population
         # Generate replacements
         fresh_pop = self.generate_random_population(n_dups)
         
-        # Constants for replacements?
-        # If constants are [B, K]. 
-        # fresh_pop needs fresh constants within configured range.
+        # Constants for replacements - use integer range if FORCE_INTEGER_CONSTANTS
         K = constants.shape[1]
-        fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+        if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+            fresh_consts = torch.randint(
+                GpuGlobals.CONSTANT_INT_MIN_VALUE, 
+                GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
+                (n_dups, K), device=self.device, dtype=torch.long
+            ).to(self.dtype)
+        else:
+            fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
         
-        pop_out[dup_indices] = fresh_pop
-        const_out[dup_indices] = fresh_consts
+        population[dup_indices] = fresh_pop
+        constants[dup_indices] = fresh_consts
         
-        return pop_out, const_out, n_dups
+        return population, constants, n_dups
 
     def tarpeian_control(self, population: torch.Tensor, fitness: torch.Tensor) -> torch.Tensor:
         lengths = (population != PAD_ID).sum(dim=1).float()
@@ -588,12 +701,12 @@ class GPUOperators:
         has_valid = valid_mask.any(dim=1)
         mutate_mask = mutate_mask & has_valid
         
-        n_mut = mutate_mask.sum().item()
-        if n_mut == 0:
+        if not mutate_mask.any():
             return population
             
         # Indices of mutants
         mutant_indices = torch.nonzero(mutate_mask).squeeze(1)
+        n_mut = mutant_indices.numel()
         
         # Select random end point for each mutant
         # We use multinomial on valid positions
@@ -606,13 +719,13 @@ class GPUOperators:
         remove_lens = ends - starts + 1
         
         # Generate NEW random subtrees (RPN)
-        # Depth 2-4 is usually good for subtrees
-        # We use generate_random_population but force small trees if possible?
-        # Standard gen uses MAX_TREE_DEPTH_INITIAL (8?). A bit large for subtree.
-        # But we filter by length below.
-        
-        # Generate replacements (over-generate slightly if needed? No, just generate N)
-        replacements = self.generate_random_population(n_mut) # [n_mut, L]
+        # MAX_TREE_DEPTH_MUTATION limita la profundidad de subtrees generados en mutación.
+        # Genera con max_len corto para forzar árboles pequeños.
+        max_subtree_len = min(self.max_len, GpuGlobals.MAX_TREE_DEPTH_MUTATION * 2 + 1)
+        replacements_raw = self._generate_small_subtrees(n_mut, max_subtree_len)
+        # Pad to full max_len for splicing
+        replacements = torch.full((n_mut, self.max_len), PAD_ID, dtype=torch.long, device=self.device)
+        replacements[:, :max_subtree_len] = replacements_raw
         # Determine actual length of replacements (until first PAD)
         repl_lengths = (replacements != PAD_ID).sum(dim=1)
         

@@ -19,7 +19,13 @@ from .gpu_simplifier import GPUSymbolicSimplifier
 
 class TensorGeneticEngine:
     def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None, model=None):
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Device selection respects FORCE_CPU_MODE
+        if device:
+            self.device = device
+        elif GpuGlobals.FORCE_CPU_MODE:
+            self.device = torch.device('cpu')
+        else:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model # Neural Model (AlphaSymbolicModel)
         
         # Defaults from Globals
@@ -63,7 +69,7 @@ class TensorGeneticEngine:
         self.pattern_memory = PatternMemory(
             self.device, 
             self.operators,
-            max_patterns=100,
+            max_patterns=GpuGlobals.PATTERN_MAX_PATTERNS,
             fitness_threshold=GpuGlobals.PATTERN_RECORD_FITNESS_THRESHOLD,
             min_uses=GpuGlobals.PATTERN_MEM_MIN_USES,
             dtype=self.dtype
@@ -80,6 +86,10 @@ class TensorGeneticEngine:
         self._cached_arity_0_ids = None
         self._cached_arity_1_ids = None
         self._cached_arity_2_ids = None
+
+        # --- Pre-cached tensors for hot loop ---
+        self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
+        self._selection_metric_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
 
     # --- Wrappers for backward compatibility and convenience ---
 
@@ -362,8 +372,8 @@ class TensorGeneticEngine:
              
              mcts = MCTS(
                  self.model, self.device, 
-                 n_simulations=50, # Quick burst
-                 max_depth=30,
+                 n_simulations=GpuGlobals.ALPHA_MCTS_N_SIMULATIONS,
+                 max_depth=self.max_len,
                  num_variables=self.num_variables
              )
              
@@ -389,10 +399,9 @@ class TensorGeneticEngine:
         _, best_local_idx = torch.topk(fit_view, mig_size, dim=1, largest=False)
         _, worst_local_idx = torch.topk(fit_view, mig_size, dim=1, largest=True)
         
-        # 3. Convert to global indices
-        island_offsets = torch.arange(0, self.pop_size, island_size, device=self.device).view(self.n_islands, 1)
-        best_global_idx = (best_local_idx + island_offsets).view(-1)
-        worst_global_idx = (worst_local_idx + island_offsets).view(-1)
+        # 3. Convert to global indices (reuse cached tensor)
+        best_global_idx = (best_local_idx + self._island_offsets).view(-1)
+        worst_global_idx = (worst_local_idx + self._island_offsets).view(-1)
         
         # 4. Extract Migrants
         migrants_pop = population[best_global_idx].view(self.n_islands, mig_size, self.max_len)
@@ -816,6 +825,7 @@ class TensorGeneticEngine:
         best_rpn = None
         best_consts_vec = None
         stagnation = 0
+        global_stagnation = 0  # Solo se resetea con mejora real, no con cataclismo
         generations = 0
         current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
         COMPLEXITY_PENALTY = GpuGlobals.COMPLEXITY_PENALTY
@@ -833,31 +843,34 @@ class TensorGeneticEngine:
             generations += 1
 
             # Migration (track modified indices for fitness cache invalidation)
+            all_modified = False  # Flag instead of 1M-element tensor
             modified_indices = None
-            if self.n_islands > 1 and generations % 10 == 0: # Default interval 10
+            # Reduce migration during stagnation to preserve island diversity
+            mig_interval = GpuGlobals.MIGRATION_INTERVAL_STAGNATION if stagnation > GpuGlobals.MIGRATION_STAGNATION_THRESHOLD else GpuGlobals.MIGRATION_INTERVAL
+            if self.n_islands > 1 and generations % mig_interval == 0:
                  population, pop_constants = self.migrate_islands(population, pop_constants, 
                      fitness_rmse if cached_next_fit is None else cached_next_fit)
-                 # Migration modifies ~MIGRATION_SIZE*n_islands worst individuals
-                 # Mark all as modified to force re-eval (conservative)
-                 modified_indices = torch.arange(0, self.pop_size, device=self.device)  # full re-eval on migration gens
+                 all_modified = True
+            
+            # Deduplication — Remove clones to maintain diversity
+            if generations % GpuGlobals.DEDUPLICATION_INTERVAL == 0:
+                population, pop_constants, n_dups = self.operators.deduplicate_population(population, pop_constants)
+                if n_dups > 0:
+                    all_modified = True
 
             # --- Neural Flash (Intelligence Injection) ---
-            if GpuGlobals.USE_NEURAL_FLASH and self.model is not None and generations % 50 == 0:
+            if GpuGlobals.USE_NEURAL_FLASH and self.model is not None and generations % GpuGlobals.NEURAL_FLASH_INTERVAL == 0:
                  pop_neural, const_neural = self.neural_flash_injection(x_t, y_t)
                  if pop_neural is not None:
-                     # Inject into random island (or spread)
-
                      n_inj = pop_neural.shape[0]
                      if n_inj > 0:
-                         # Replace random losers
-                         limit = min(n_inj, self.pop_size // 10)
+                         limit = min(n_inj, int(self.pop_size * GpuGlobals.NEURAL_FLASH_INJECT_PERCENT))
                          indices = torch.randint(0, self.pop_size, (limit,), device=self.device)
                          population[indices] = pop_neural[:limit]
                          pop_constants[indices] = const_neural[:limit]
-                         # print(f"[Generation {generations}] Neural Flash injected {limit} insights.")
 
             # --- Alpha MCTS (Deep Thought) ---
-            if GpuGlobals.USE_ALPHA_MCTS and self.model is not None and generations % 100 == 0:
+            if GpuGlobals.USE_ALPHA_MCTS and self.model is not None and generations % GpuGlobals.ALPHA_MCTS_INTERVAL == 0:
                  mcts_formula = self.alpha_mcts_refinement(x_t, y_t)
                  if mcts_formula:
                       print(f"[Generation {generations}] Alpha MCTS found structure: {mcts_formula}")
@@ -881,27 +894,28 @@ class TensorGeneticEngine:
                  )
                  if inject_positions is not None:
                      # Mark injected positions for re-evaluation
-                     if modified_indices is None:
-                         modified_indices = inject_positions
-                     else:
-                         modified_indices = torch.cat([modified_indices, inject_positions])
+                     if not all_modified:
+                         if modified_indices is None:
+                             modified_indices = inject_positions
+                         else:
+                             modified_indices = torch.cat([modified_indices, inject_positions])
 
             # Eval — P0-1: Reuse cached fitness from C++ orchestrator when possible
-            if cached_next_fit is not None and not GpuGlobals.USE_LEXICASE_SELECTION and modified_indices is None:
+            if cached_next_fit is not None and not GpuGlobals.USE_LEXICASE_SELECTION and not all_modified and modified_indices is None:
                 # Fast path: reuse C++ fitness, no evaluation needed
                 fitness_rmse = cached_next_fit
                 abs_errors = None
-            elif cached_next_fit is not None and not GpuGlobals.USE_LEXICASE_SELECTION and modified_indices is not None:
-                # Partial re-eval: only re-evaluate modified individuals
+            elif cached_next_fit is not None and not GpuGlobals.USE_LEXICASE_SELECTION and (all_modified or modified_indices is not None):
+                # Partial or full re-eval based on modifications
                 fitness_rmse = cached_next_fit
                 abs_errors = None
-                unique_mod = modified_indices.unique()
-                if unique_mod.numel() < self.pop_size:
+                if all_modified:
+                    fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
+                else:
+                    unique_mod = modified_indices.unique()
                     partial_rmse = self.evaluator.evaluate_batch(
                         population[unique_mod], x_t, y_t, pop_constants[unique_mod])
                     fitness_rmse[unique_mod] = partial_rmse
-                else:
-                    fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
             elif GpuGlobals.USE_LEXICASE_SELECTION:
                 abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants)
                 fitness_rmse = torch.mean(abs_errors**2, dim=1).sqrt() # Approx RMSE for stats
@@ -909,25 +923,65 @@ class TensorGeneticEngine:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
                 abs_errors = None
             cached_next_fit = None  # Consumed
+            
+            # --- Weighted Fitness (opcional: pondera errores por dificultad) ---
+            if GpuGlobals.USE_WEIGHTED_FITNESS and abs_errors is not None:
+                # Ponderar cada caso por su dificultad media (errores más altos pesan más)
+                case_difficulty = abs_errors.mean(dim=0)  # [D]
+                weights = (case_difficulty + 1e-9) ** GpuGlobals.WEIGHTED_FITNESS_EXPONENT
+                weights = weights / weights.sum() * abs_errors.shape[1]  # Normalizar
+                weighted_sq = (abs_errors ** 2) * weights.unsqueeze(0)
+                fitness_rmse = torch.mean(weighted_sq, dim=1).sqrt()
+                
+            # --- Pareto Front Update (liviano: solo top-200, cada 25 gens) ---
+            if GpuGlobals.USE_PARETO_SELECTION and generations % 25 == 0:
+                k_pareto = min(self.pop_size, 200)
+                _, top_pareto_idx = torch.topk(fitness_rmse, k_pareto, largest=False)
+                pareto_fit = fitness_rmse[top_pareto_idx]
+                pareto_len = (population[top_pareto_idx] != PAD_ID).sum(dim=1).float()
+                try:
+                    front_local = self.pareto.get_pareto_front(pareto_fit, pareto_len)
+                    if front_local:
+                        # Mapear índices locales a globales
+                        self._pareto_front_global = top_pareto_idx[front_local].tolist()
+                        # Inyectar miembros del frente como élites en islas aleatorias
+                        for fi, gi in enumerate(self._pareto_front_global[:self.n_islands]):
+                            elite_slot = fi * self.island_size  # Pos 0 de cada isla
+                            if population is self.pop_buffer_A:
+                                self.pop_buffer_A[elite_slot] = population[gi]
+                                self.const_buffer_A[elite_slot] = pop_constants[gi]
+                            else:
+                                self.pop_buffer_B[elite_slot] = population[gi]
+                                self.const_buffer_B[elite_slot] = pop_constants[gi]
+                except Exception:
+                    pass  # Non-fatal
                 
             # --- Pattern Memory Recording ---
             # Record successful subtrees
-            if GpuGlobals.USE_PATTERN_MEMORY and generations % 20 == 0:  # Reduced frequency for CPU relief
+            if GpuGlobals.USE_PATTERN_MEMORY and generations % GpuGlobals.PATTERN_RECORD_INTERVAL == 0:
                  self.pattern_memory.record_subtrees(
                      population, fitness_rmse, self.grammar, 
-                     min_size=3, max_size=12
+                     min_size=GpuGlobals.PATTERN_MIN_SIZE, max_size=GpuGlobals.PATTERN_MAX_SIZE
                  )
             
-            # Optimize Top K — P0-2/3/4: Reduce PSO cost (steps 50→15, k 200→100, every 3 gens)
-            PSO_INTERVAL = 3
-            if GpuGlobals.USE_NANO_PSO and generations % PSO_INTERVAL == 0:
-                k_opt = min(self.pop_size, 100)
+            # Optimize Top K — Adaptive PSO coverage based on stagnation
+            if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
+                # During stagnation: optimize more individuals with more steps
+                if stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD:
+                    k_opt = min(self.pop_size, GpuGlobals.PSO_K_STAGNATION)
+                    pso_steps = GpuGlobals.PSO_STEPS_STAGNATION
+                else:
+                    k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
+                    pso_steps = GpuGlobals.PSO_STEPS_NORMAL
                 _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
                 
                 opt_pop = population[top_idx]
                 opt_consts = pop_constants[top_idx]
                 
-                refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=15)
+                refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=pso_steps)
+                # Forzar constantes enteras si está configurado
+                if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                    refined_consts = refined_consts.round()
                 pop_constants[top_idx] = refined_consts
                 fitness_rmse[top_idx] = refined_mse
             
@@ -935,7 +989,7 @@ class TensorGeneticEngine:
             min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
             min_rmse_val = min_rmse.item()  # Single sync — min_idx now also CPU-cached
             
-            if min_rmse_val == min_rmse_val and min_rmse_val < best_rmse:  # NaN check via !=
+            if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):  # NaN check + tolerance
                 best_rmse = min_rmse_val
                 min_idx_val = min_idx.item()  # Free — already synced
                 best_rpn = population[min_idx_val].clone()
@@ -948,6 +1002,7 @@ class TensorGeneticEngine:
                 island_idx = (min_idx_val // self.island_size) if self.n_islands > 1 else 0
 
                 stagnation = 0
+                global_stagnation = 0  # Mejora real resetea ambos
                 
                 # Check for exact solution
                 if best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD:
@@ -978,22 +1033,28 @@ class TensorGeneticEngine:
                         callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             else:
                 stagnation += 1
+                global_stagnation += 1
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")
                 
             if callback and generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0:
                 callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
 
             # Cataclysm / Reset
-            if stagnation >= GpuGlobals.STAGNATION_LIMIT:
-                 n_elites = int(self.pop_size * 0.10)
+            if GpuGlobals.USE_ISLAND_CATACLYSM and stagnation >= GpuGlobals.STAGNATION_LIMIT:
+                 n_elites = int(self.pop_size * GpuGlobals.CATACLYSM_ELITE_PERCENT)
                  n_random = self.pop_size - n_elites
-                 sorted_idx = torch.argsort(fitness_rmse)
-                 elites = population[sorted_idx[:n_elites]]
-                 elite_c = pop_constants[sorted_idx[:n_elites]]
+                 _, sorted_idx = torch.topk(fitness_rmse, n_elites, largest=False)  # topk is faster than full argsort
+                 elites = population[sorted_idx]
+                 elite_c = pop_constants[sorted_idx]
                  
                  new_pop = self.operators.generate_random_population(n_random)
-                 # FIX: use self.dtype
-                 new_c = torch.randn(n_random, self.max_constants, device=self.device, dtype=self.dtype)
+                 new_c = torch.empty(n_random, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                 
+                 # Mutate half the elites to add structural variety near the best
+                 n_mutate_elites = n_elites // 2
+                 if n_mutate_elites > 0:
+                     mutated = self.operators.subtree_mutation(elites[n_elites//4:n_elites//4+n_mutate_elites].clone(), 1.0)
+                     elites[n_elites//4:n_elites//4+n_mutate_elites] = mutated
                  
                  # Note: Cataclysm creates new tensor, breaking buffer link temporarily.
                  # But we assign it to 'population' variable.
@@ -1028,12 +1089,38 @@ class TensorGeneticEngine:
                  stagnation = 0
                  continue
 
-            # Dynamic Mutation
-            if stagnation > 10:
-                current_mutation_rate = min(0.4, GpuGlobals.BASE_MUTATION_RATE + (stagnation - 10) * 0.01)
+            # Global Stagnation — reinicio total si ni con cataclismos mejora
+            if global_stagnation >= GpuGlobals.GLOBAL_STAGNATION_LIMIT:
+                print(f"[Engine] Global stagnation ({GpuGlobals.GLOBAL_STAGNATION_LIMIT} gens). Full restart around best.")
+                new_pop = self.operators.generate_random_population(self.pop_size)
+                new_c = torch.empty(self.pop_size, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                # Write to current buffer
+                if population is self.pop_buffer_A:
+                    self.pop_buffer_A[:] = new_pop
+                    self.const_buffer_A[:] = new_c
+                    if best_rpn is not None:
+                        self.pop_buffer_A[0] = best_rpn
+                        self.const_buffer_A[0] = best_consts_vec
+                    population = self.pop_buffer_A
+                    pop_constants = self.const_buffer_A
+                else:
+                    self.pop_buffer_B[:] = new_pop
+                    self.const_buffer_B[:] = new_c
+                    if best_rpn is not None:
+                        self.pop_buffer_B[0] = best_rpn
+                        self.const_buffer_B[0] = best_consts_vec
+                    population = self.pop_buffer_B
+                    pop_constants = self.const_buffer_B
+                stagnation = 0
+                global_stagnation = 0
+                continue
+
+            # Dynamic Mutation — Ramp up during stagnation
+            if stagnation > GpuGlobals.MUTATION_STAGNATION_TRIGGER:
+                current_mutation_rate = min(GpuGlobals.MUTATION_RATE_CAP, GpuGlobals.BASE_MUTATION_RATE + (stagnation - GpuGlobals.MUTATION_STAGNATION_TRIGGER) * GpuGlobals.MUTATION_RAMP_PER_GEN)
                 
                 # --- Residual Boosting (Every 20 stagnation steps) ---
-                if GpuGlobals.USE_RESIDUAL_BOOSTING and stagnation % 20 == 0 and best_rpn is not None:
+                if GpuGlobals.USE_RESIDUAL_BOOSTING and stagnation % GpuGlobals.RESIDUAL_BOOST_INTERVAL == 0 and best_rpn is not None:
                      boost_str, boost_rmse, boost_rpn, boost_c = self.attempt_residual_boost(best_rpn, best_consts_vec, x_t, y_t)
                      if boost_str and boost_rmse < best_rmse:
                          print(f"[Engine] Residual Boosting SUCCESS! New RMSE: {boost_rmse:.6f}")
@@ -1055,12 +1142,24 @@ class TensorGeneticEngine:
                          else:
                              self.pop_buffer_B[0] = best_rpn
                              self.const_buffer_B[0] = best_consts_vec
+                
+                # --- Stagnation Random Injection ---
+                # Inyectar individuos aleatorios durante estancamiento para mantener diversidad
+                if GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT > 0 and stagnation % 10 == 0:
+                    n_inject = int(self.pop_size * GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT)
+                    if n_inject > 0:
+                        inject_pop = self.operators.generate_random_population(n_inject)
+                        inject_c = torch.empty(n_inject, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                        # Reemplazar los peores individuos
+                        _, worst_idx = torch.topk(fitness_rmse, n_inject, largest=True)
+                        population[worst_idx] = inject_pop
+                        pop_constants[worst_idx] = inject_c
                          
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
                 
             # Evolution Step (Vectorized Island Model + Double Buffering)
-            island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
+            island_offsets = self._island_offsets
 
             # Determine Buffers based on generation parity
             # If gen % 2 == 0: Read A, Write B (Logic: Gen started with A, so Next is B)
@@ -1071,23 +1170,30 @@ class TensorGeneticEngine:
             
             # --- EVOLUTION STEP (Reproduction) ---
             if GpuGlobals.USE_CUDA_ORCHESTRATOR:
-                # 1. Selection Metric with Complexity Penalty
+                # 1. Selection Metric with Complexity Penalty (in-place to reduce allocations)
                 lengths = (population != PAD_ID).sum(dim=1).float()
-                selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
+                # selection_metric = fitness_rmse * (1.0 + penalty * lengths) + lengths * 1e-6
+                selection_metric = self._selection_metric_buf
+                torch.mul(lengths, COMPLEXITY_PENALTY, out=selection_metric)
+                selection_metric.add_(1.0)
+                selection_metric.mul_(fitness_rmse)
+                selection_metric.add_(lengths, alpha=1e-6)
+                
+                # Adaptive tournament size: reduce during stagnation to allow more diversity
+                effective_tournament = max(GpuGlobals.TOURNAMENT_SIZE_FLOOR, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - stagnation // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
                 # Refresh Mutation Bank periodically for structural innovation
-                if self.mutation_bank is None or generations % 50 == 0:
-                    # Generate 2000 fresh random subtrees as mutation ingredients
-                    self.mutation_bank = self.operators.generate_random_population(2000)
+                if self.mutation_bank is None or generations % GpuGlobals.MUTATION_BANK_REFRESH_INTERVAL == 0:
+                    self.mutation_bank = self.operators.generate_random_population(GpuGlobals.MUTATION_BANK_SIZE)
 
                 next_pop, next_c, next_fit = self.evolve_generation_cuda(
                     population, pop_constants, selection_metric, abs_errors, x_t, y_t, self.mutation_bank,
                     mutation_rate=current_mutation_rate,
                     crossover_rate=GpuGlobals.DEFAULT_CROSSOVER_RATE,
-                    tournament_size=GpuGlobals.DEFAULT_TOURNAMENT_SIZE,
+                    tournament_size=effective_tournament,
                     pso_steps=0, # Disable global PSO to avoid OOM
-                    pso_particles=20
+                    pso_particles=GpuGlobals.PSO_PARTICLES
                 )
                 
                 if next_pop is not None:
@@ -1132,7 +1238,12 @@ class TensorGeneticEngine:
                 total_mut = n_mut_per_island * self.n_islands
                 
                 lengths = (population != PAD_ID).sum(dim=1).float()
-                selection_metric = fitness_rmse * (1.0 + COMPLEXITY_PENALTY * lengths) + lengths * 1e-6
+                # In-place selection metric computation (reuse buffer)
+                selection_metric = self._selection_metric_buf
+                torch.mul(lengths, COMPLEXITY_PENALTY, out=selection_metric)
+                selection_metric.add_(1.0)
+                selection_metric.mul_(fitness_rmse)
+                selection_metric.add_(lengths, alpha=1e-6)
                 
                 def get_island_parents(n_needed_per_island):
                     rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
