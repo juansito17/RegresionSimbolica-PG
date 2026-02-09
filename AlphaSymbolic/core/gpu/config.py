@@ -82,15 +82,15 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Generación Inicial de Árboles
     # ----------------------------------------
-    MAX_TREE_DEPTH_INITIAL = 8
-    CONSTANT_MIN_VALUE = -100.0
-    CONSTANT_MAX_VALUE = 100.0
-    CONSTANT_INT_MIN_VALUE = -100
-    CONSTANT_INT_MAX_VALUE = 100
+    MAX_TREE_DEPTH_INITIAL = 5
+    CONSTANT_MIN_VALUE = -10.0
+    CONSTANT_MAX_VALUE = 10.0
+    CONSTANT_INT_MIN_VALUE = -10
+    CONSTANT_INT_MAX_VALUE = 10
     MAX_CONSTANTS = 15
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60   # Límite duro de profundidad de arboles
-    MAX_TREE_DEPTH_MUTATION = 6      # Profundidad máxima de subtrees generados en mutación
+    MAX_TREE_DEPTH_MUTATION = 4      # Profundidad máxima de subtrees generados en mutación
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
@@ -101,21 +101,21 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    USE_OP_SIN      = False
-    USE_OP_COS      = False
+    USE_OP_SIN      = True
+    USE_OP_COS      = True
     USE_OP_TAN      = False
     USE_OP_LOG      = True
     USE_OP_EXP      = True
-    USE_OP_FACT     = True
+    USE_OP_FACT     = False   # Desactivado: causa bloat sin beneficio para regresión
     USE_OP_FLOOR    = False
-    USE_OP_GAMMA    = True
+    USE_OP_GAMMA    = False    # Desactivado: lgamma/gamma causan explosión numérica y bloat
     USE_OP_ASIN     = False
     USE_OP_ACOS     = False
     USE_OP_ATAN     = False
     USE_OP_CEIL     = False
     USE_OP_SIGN     = False
     USE_OP_SQRT     = True
-    USE_OP_ABS      = False
+    USE_OP_ABS      = True    # Activado: PySR lo usa frecuentemente
 
     # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
     OPERATOR_WEIGHTS = [
@@ -145,7 +145,7 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
     # ----------------------------------------
-    BASE_MUTATION_RATE = 0.40
+    BASE_MUTATION_RATE = 0.15
     MUTATION_RATE_CAP = 0.90         # Techo de mutación adaptativa
     MUTATION_RAMP_PER_GEN = 0.02     # Incremento por gen de estancamiento
     MUTATION_STAGNATION_TRIGGER = 5  # Gens estancadas para empezar a subir mutación
@@ -159,9 +159,11 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Fitness y Evaluación
     # ----------------------------------------
-    COMPLEXITY_PENALTY = 0.01
+    COMPLEXITY_PENALTY = 0.02
+    VAR_DIVERSITY_PENALTY = 0.0    # Desactivado: usar seed injection + PSO en lugar de penalidad
+    VAR_FORCE_SEED_PERCENT = 0.0   # Desactivado: seeds estructurales reemplazan fuerza bruta
     LOSS_FUNCTION = 'RMSE'
-    EXACT_SOLUTION_THRESHOLD = 1e-8
+    EXACT_SOLUTION_THRESHOLD = 1e-6
     FITNESS_EQUALITY_TOLERANCE = 1e-9  # Tolerancia para considerar dos fitness iguales
     USE_WEIGHTED_FITNESS = False       # Ponderar casos de fitness por dificultad
     WEIGHTED_FITNESS_EXPONENT = 0.25   # Exponente para ponderación de fitness
@@ -169,8 +171,8 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Estancamiento y Cataclismo
     # ----------------------------------------
-    STAGNATION_LIMIT = 25            # Gens sin mejora para disparar cataclismo
-    GLOBAL_STAGNATION_LIMIT = 80      # Gens sin mejora global para reinicio completo
+    STAGNATION_LIMIT = 40            # Gens sin mejora para disparar cataclismo  
+    GLOBAL_STAGNATION_LIMIT = 200     # Gens sin mejora global para reinicio completo
     CATACLYSM_ELITE_PERCENT = 0.05   # % de élites que sobreviven el cataclismo (menos = más exploración)
     STAGNATION_RANDOM_INJECT_PERCENT = 0.0  # Desactivado: overhead sin beneficio (peores nunca ganan selección)
     USE_ISLAND_CATACLYSM = True      # Activar/desactivar cataclismo
@@ -179,13 +181,13 @@ class GpuGlobals:
     # Parámetros de PSO (Particle Swarm Optimization)
     # ----------------------------------------
     USE_NANO_PSO = True
-    PSO_INTERVAL = 3                 # Ejecutar PSO cada N generaciones
-    PSO_K_NORMAL = 100               # Individuos a optimizar normalmente
-    PSO_K_STAGNATION = 200           # Individuos a optimizar durante estancamiento
+    PSO_INTERVAL = 2                 # Ejecutar PSO cada 2 generaciones
+    PSO_K_NORMAL = 200               # Top-200 optimizados por PSO
+    PSO_K_STAGNATION = 500           # Más individuos durante estancamiento
     PSO_STEPS_NORMAL = 15            # Pasos de PSO normales
-    PSO_STEPS_STAGNATION = 20        # Pasos de PSO durante estancamiento
+    PSO_STEPS_STAGNATION = 25        # Pasos agresivos durante estancamiento
     PSO_STAGNATION_THRESHOLD = 15    # Gens estancadas para usar parámetros agresivos
-    PSO_PARTICLES = 20               # Partículas por individuo
+    PSO_PARTICLES = 30               # Partículas por individuo (más = mejor exploración)
     
     # ----------------------------------------
     # Parámetros de Pattern Memory
@@ -204,8 +206,8 @@ class GpuGlobals:
     # Parámetros de Simplificación
     # ----------------------------------------
     USE_SIMPLIFICATION = True
-    K_SIMPLIFY = 10
-    SIMPLIFICATION_INTERVAL = 50
+    K_SIMPLIFY = 50
+    SIMPLIFICATION_INTERVAL = 10
     SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9  # Tolerancia para colapsar valores cercanos a 0
     SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9   # Tolerancia para colapsar valores cercanos a 1
     
@@ -218,7 +220,8 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Selección Pareto
     # ----------------------------------------
-    USE_PARETO_SELECTION = False      # Pareto liviano: protege fórmulas cortas+buenas como élites
+    USE_PARETO_SELECTION = True       # Pareto liviano: protege fórmulas cortas+buenas como élites
+    PARETO_INTERVAL = 5              # Cada cuántas gens actualizar el frente de Pareto
     PARETO_MAX_FRONT_SIZE = 30       # Tamaño máximo del frente de Pareto
     
     # ----------------------------------------

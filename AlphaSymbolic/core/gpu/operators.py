@@ -60,13 +60,70 @@ class GPUOperators:
         # Cache int32 arities for CUDA
         self.token_arity_int = self.token_arity.to(dtype=torch.int32)
 
+    def _force_multi_variable(self, population: torch.Tensor) -> torch.Tensor:
+        """
+        Ensure a fraction of the population uses all available variables.
+        Replaces random terminal positions with missing variable tokens.
+        Fully vectorized — no Python per-individual loops.
+        """
+        if self.num_variables <= 1 or GpuGlobals.VAR_FORCE_SEED_PERCENT <= 0:
+            return population
+        
+        size = population.shape[0]
+        device = self.device
+        n_force = int(size * GpuGlobals.VAR_FORCE_SEED_PERCENT)
+        if n_force < 1:
+            return population
+        
+        subset = population[:n_force]  # [n_force, max_len]
+        
+        for vi in range(self.num_variables):
+            var_name = f'x{vi}'
+            vid = self.grammar.token_to_id.get(var_name, -1)
+            if vid <= 0:
+                continue
+            
+            has_var = (subset == vid).any(dim=1)  # [n_force]
+            missing_mask = ~has_var
+            n_missing = missing_mask.sum().item()
+            
+            if n_missing == 0:
+                continue
+            
+            missing_idx = missing_mask.nonzero(as_tuple=True)[0]  # [n_missing]
+            missing_pop = subset[missing_idx]  # [n_missing, max_len]
+            
+            # Find terminal positions (arity-0 tokens, non-PAD)
+            is_term = torch.zeros_like(missing_pop, dtype=torch.bool)
+            for tid in self.arity_0_ids:
+                is_term |= (missing_pop == tid.item())
+            
+            # Each row: pick a random terminal position to replace
+            has_any = is_term.any(dim=1)  # [n_missing]
+            if not has_any.any():
+                continue
+            
+            valid_idx = has_any.nonzero(as_tuple=True)[0]
+            valid_pop = missing_pop[valid_idx]
+            valid_term = is_term[valid_idx]
+            
+            # Trick: random weights * mask → argmax picks random terminal position
+            rand_w = torch.rand_like(valid_term.float()) * valid_term.float()
+            pos = rand_w.argmax(dim=1)  # [n_valid]
+            valid_pop[torch.arange(valid_idx.shape[0], device=device), pos] = vid
+            
+            missing_pop[valid_idx] = valid_pop
+            subset[missing_idx] = missing_pop
+        
+        return population
+
     def generate_random_population(self, size: int) -> torch.Tensor:
         """
         Helper to generate random RPN population of given size.
-        Uses GPU-native generation for speed.
+        Uses GPU-native generation for speed, then forces multi-variable usage.
         """
-        # Use GPU native generator (fast path)
-        return self.generate_random_population_gpu(size)
+        pop = self.generate_random_population_gpu(size)
+        return self._force_multi_variable(pop)
     
     def generate_random_population_cpu(self, size: int) -> torch.Tensor:
         """

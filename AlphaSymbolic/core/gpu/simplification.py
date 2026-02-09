@@ -320,7 +320,7 @@ class GPUSimplifier:
                     elif token == 'e' or token == 'exp': stack.append(f"exp({a})")
                     elif token == 'q' or token == 'sqrt': stack.append(f"sqrt({a})")
                     elif token == 'a' or token == 'abs': stack.append(f"abs({a})")
-                    elif token == 'neg': stack.append(f"neg({a})")
+                    elif token == 'neg': stack.append(f"(-{a})")
                     elif token == '_' or token == 'floor': stack.append(f"floor({a})")
                     elif token == '!' or token == 'gamma': stack.append(f"gamma({a})")
                     elif token == 'g' or token == 'lgamma': stack.append(f"lgamma({a})")
@@ -342,7 +342,7 @@ class GPUSimplifier:
                     elif token == '-' and a == "0":
                          stack.append(f"(-{b})")
                     elif token == 'pow' or token == '^':
-                         stack.append(f"({a} ^ {b})")
+                         stack.append(f"({a} ** {b})")
                     elif token == '%':
                          stack.append(f"({a} % {b})")
                     else:

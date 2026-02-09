@@ -90,6 +90,15 @@ class TensorGeneticEngine:
         # --- Pre-cached tensors for hot loop ---
         self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
         self._selection_metric_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
+        
+        # --- Variable diversity: cache variable token IDs for penalty computation ---
+        self._var_token_ids = []
+        if self.num_variables > 1:
+            for vi in range(self.num_variables):
+                vid = self.grammar.token_to_id.get(f'x{vi}', -1)
+                if vid > 0:
+                    self._var_token_ids.append(vid)
+        self._var_diversity_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype) if self._var_token_ids else None
 
     # --- Wrappers for backward compatibility and convenience ---
 
@@ -111,16 +120,47 @@ class TensorGeneticEngine:
     def infix_to_rpn(self, formulas: List[str]) -> torch.Tensor:
         return self.operators._infix_list_to_rpn(formulas)
         
+    @staticmethod
+    def _postprocess_formula(formula: str) -> str:
+        """Post-process formula string for Python eval compatibility."""
+        import re
+        # Replace neg(expr) with (-(expr))
+        # Handle nested neg() by iterating
+        max_iters = 20
+        for _ in range(max_iters):
+            idx = formula.find('neg(')
+            if idx == -1:
+                break
+            # Find matching closing paren
+            depth = 0
+            start = idx + 4  # after 'neg('
+            end = start
+            for i in range(start, len(formula)):
+                if formula[i] == '(':
+                    depth += 1
+                elif formula[i] == ')':
+                    if depth == 0:
+                        end = i
+                        break
+                    depth -= 1
+            inner = formula[start:end]
+            formula = formula[:idx] + f'(-({inner}))' + formula[end+1:]
+        # Replace ^ with ** for Python
+        formula = formula.replace(' ^ ', '**').replace('^', '**')
+        return formula
+
     def rpn_to_infix(self, rpn_tensor: torch.Tensor, constants: torch.Tensor = None) -> str:
         if not GpuGlobals.USE_SYMPY:
              # Basic conversion without SymPy cleanup
-             return self.simplifier.rpn_to_infix_static(rpn_tensor, constants, self.grammar)
+             raw = self.simplifier.rpn_to_infix_static(rpn_tensor, constants, self.grammar)
+             return self._postprocess_formula(raw)
              
         res = self.simplifier._rpn_to_infix_str(rpn_tensor, constants)
         if res == "Invalid":
              # Fallback to basic
-             return self.simplifier.rpn_to_infix_static(rpn_tensor, constants, self.grammar)
-        return res
+             raw = self.simplifier.rpn_to_infix_static(rpn_tensor, constants, self.grammar)
+             return self._postprocess_formula(raw)
+        return self._postprocess_formula(res)
 
     def predict_individual(self, rpn: torch.Tensor, consts: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """
@@ -138,9 +178,6 @@ class TensorGeneticEngine:
         if x.dim() == 1:
             x_for_vm = x.unsqueeze(0)
         elif x.dim() == 2:
-            # If x is [N, Vars], and Vars matches num_variables, transpose.
-            # But wait, how do we know which is which? 
-            # We can check against self.num_variables.
             if x.shape[1] == self.num_variables:
                 x_for_vm = x.T.contiguous()
             else:
@@ -153,6 +190,45 @@ class TensorGeneticEngine:
         
         # Reshape to [N]
         return preds_flat
+
+    def _check_semantic_var_usage(self, rpn: torch.Tensor, consts: torch.Tensor, x_t: torch.Tensor) -> bool:
+        """
+        Check if all variables are semantically used (not dead code).
+        Returns True only if changing each variable changes the formula's output.
+        x_t: [N, Vars]
+        """
+        if self.num_variables <= 1:
+            return True
+        
+        try:
+            # Get original predictions — MUST clone since VM reuses internal buffer
+            preds_orig = self.predict_individual(rpn, consts, x_t).clone()
+            if preds_orig is None or torch.isnan(preds_orig).all():
+                return False
+            
+            for vi in range(self.num_variables):
+                x_mod = x_t.clone()
+                # Set variable vi to a different value (shift by 1.0)
+                x_mod[:, vi] = x_mod[:, vi] + 1.0
+                preds_mod = self.predict_individual(rpn, consts, x_mod).clone()
+                
+                if preds_mod is None:
+                    return False
+                
+                # Check if output changed meaningfully
+                diff = (preds_orig - preds_mod).abs()
+                # Filter out NaN/Inf
+                valid = torch.isfinite(diff)
+                if valid.any():
+                    max_diff = diff[valid].max().item()
+                    if max_diff < 1e-6:
+                        return False  # Variable vi is semantically dead
+                else:
+                    return False  # All NaN/Inf
+            
+            return True  # All variables affect the output
+        except Exception:
+            return False
 
     def attempt_residual_boost(self, best_rpn, best_consts, x_t, y_t):
         """
@@ -685,6 +761,107 @@ class TensorGeneticEngine:
         return winners_global        
 
 
+    @staticmethod
+    def _simplify_with_sympy(formula_str):
+        """Try to simplify formula using SymPy for reduced complexity."""
+        try:
+            import sympy
+            import re as re_mod
+            from sympy import symbols, sin, cos, sqrt, exp, log, Abs, pi
+            from sympy.parsing.sympy_parser import parse_expr, standard_transformations
+            # Use real=True to avoid re(), im(), Abs() from complex assumptions
+            x0 = symbols('x0', real=True, positive=False)
+            local_dict = {'x0': x0, 'pi': sympy.pi, 'e': sympy.E, 'abs': Abs, 'neg': lambda a: -a}
+            expr = parse_expr(formula_str, local_dict=local_dict,
+                             transformations=standard_transformations)
+            simplified = sympy.simplify(expr)
+            # Try to clean up floats close to integers
+            simplified = sympy.nsimplify(simplified, tolerance=1e-3, rational=False)
+            result = str(simplified)
+            # Sanitize SymPy-specific syntax back to Python-evaluable
+            result = result.replace('Abs(', 'abs(')
+            result = re_mod.sub(r'\bre\(', '(', result)   # re(x0) → (x0)
+            result = re_mod.sub(r'\bim\(', '(0*', result)  # im(x0) → (0*...)
+            result = re_mod.sub(r'\bI\b', '0', result)     # imaginary unit → 0
+            result = re_mod.sub(r'\bE\b', '2.718281828', result)  # Euler constant
+            result = re_mod.sub(r'(?<!\w)oo(?!\w)', '1e30', result)  # infinity
+            # Reject if has SymPy-specific functions we can't eval
+            bad_tokens = ['zoo', 'nan', 'Symbol', 'Rational', 'Integer', 'Float',
+                          'Piecewise', 'conjugate', 'Derivative', 'Integral']
+            if any(tok in result for tok in bad_tokens):
+                return formula_str
+            # Ensure x0 is still present
+            if 'x0' in formula_str and 'x0' not in result:
+                return formula_str
+            return result
+        except Exception:
+            return formula_str
+
+    @staticmethod
+    def _eval_formula_safe(formula_str, x_np):
+        """Try to eval a formula string on numpy data. Returns y_pred or None."""
+        import numpy as np
+        try:
+            safe_dict = {'x0': x_np, 'sin': np.sin, 'cos': np.cos, 'exp': np.exp,
+                         'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
+                         'pi': np.pi, 'e': np.e, 'neg': lambda a: -a}
+            y = eval(formula_str, {"__builtins__": {}}, safe_dict)
+            if isinstance(y, (int, float)):
+                y = np.full_like(x_np, y)
+            if isinstance(y, np.ndarray) and len(y) == len(x_np) and np.all(np.isfinite(y)):
+                return y
+        except Exception:
+            pass
+        return None
+
+    def _post_simplify_formula(self, formula_str, x_t, y_t):
+        """Simplify formula via Sniper re-detection and SymPy. Returns simplest valid version."""
+        if not formula_str or formula_str == 'None':
+            return formula_str
+        
+        import numpy as np
+        x_np = x_t.cpu().numpy().flatten().astype(np.float64)
+        y_np = y_t.cpu().numpy().flatten().astype(np.float64)
+        
+        best = formula_str
+        best_len = len(formula_str)
+        
+        # First: verify original formula evaluates correctly
+        y_orig_pred = self._eval_formula_safe(formula_str, x_np)
+        if y_orig_pred is None:
+            return formula_str  # Can't eval original, don't try to simplify
+        
+        rmse_orig = float(np.sqrt(np.mean((y_np - y_orig_pred) ** 2)))
+        
+        # Strategy 1: Re-run Sniper on the engine's predictions to find a cleaner pattern
+        try:
+            y_pred_t = torch.tensor(y_orig_pred, dtype=torch.float32, device=self.device)
+            sniper_clean = self.sniper.run(x_t, y_pred_t)
+            if sniper_clean and len(sniper_clean) < best_len:
+                y_clean = self._eval_formula_safe(sniper_clean, x_np)
+                if y_clean is not None:
+                    rmse_clean = float(np.sqrt(np.mean((y_np - y_clean) ** 2)))
+                    if rmse_clean <= rmse_orig * 1.1 + 1e-6:
+                        best = sniper_clean
+                        best_len = len(sniper_clean)
+        except Exception:
+            pass
+        
+        # Strategy 2: SymPy simplification (with eval validation)
+        try:
+            sympy_result = self._simplify_with_sympy(best)
+            if sympy_result and sympy_result != best and len(sympy_result) < best_len:
+                y_sympy = self._eval_formula_safe(sympy_result, x_np)
+                if y_sympy is not None:
+                    rmse_sympy = float(np.sqrt(np.mean((y_np - y_sympy) ** 2)))
+                    if rmse_sympy <= rmse_orig * 1.1 + 1e-6:
+                        best = sympy_result
+                        best_len = len(sympy_result)
+        except Exception:
+            pass
+        
+        return best
+
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
         # 1. Data Setup
         # FIX: Use self.dtype
@@ -714,6 +891,7 @@ class TensorGeneticEngine:
         
         # --- 1.5 The Sniper (Intelligence Check) ---
         # Before doing heavy lifting, check for simple patterns (Linear, Geometric)
+        sniper_formula = None
         if GpuGlobals.USE_SNIPER:
             # Pass GPU tensors directly - Sniper already works with torch internally
             sniper_formula = self.sniper.run(x_t, y_t)
@@ -805,7 +983,45 @@ class TensorGeneticEngine:
                 n = min(seed_pop.shape[0], self.pop_size)
                 # Update Buffer directly
                 population[:n] = seed_pop[:n]
-                pop_constants[:n] = seed_consts[:n].to(self.dtype)
+                # Use NARROW constant range for seeds to avoid overflow in pow operations
+                # Seeds with explicit numeric values already have their constants set by load_population_from_strings
+                # Only randomize constants that are zero (i.e., placeholder 'C' tokens without explicit values)
+                existing_consts = seed_consts[:n].to(self.dtype)
+                # For each seed, randomize constants that are exactly 0.0 (placeholders)
+                # Keep constants that were explicitly set from numeric values in the formula string
+                placeholder_mask = (existing_consts == 0.0)
+                pop_constants[:n] = existing_consts
+                # Narrow init: [-2, 2] avoids overflow when used as exponents
+                narrow_rand = torch.empty_like(pop_constants[:n]).uniform_(-2.0, 2.0)
+                pop_constants[:n] = torch.where(placeholder_mask, narrow_rand, existing_consts)
+                
+                # PSO Warmup: optimize seed constants BEFORE main loop
+                if GpuGlobals.USE_NANO_PSO and n > 0:
+                    warmup_steps = 80  # Thorough warmup — critical for seed quality
+                    batch_sz = min(n, 5000)
+                    for bi in range(0, n, batch_sz):
+                        be = min(bi + batch_sz, n)
+                        ref_c, ref_f = self.optimizer.nano_pso(
+                            population[bi:be], pop_constants[bi:be], x_t, y_t, steps=warmup_steps)
+                        pop_constants[bi:be] = ref_c
+                    # Report best seed after warmup
+                    seed_fit = self.evaluator.evaluate_batch(population[:n], x_t, y_t, pop_constants[:n])
+                    best_seed_rmse = seed_fit.min().item()
+                    print(f"[Engine] PSO warmup on {n} seeds ({warmup_steps} steps): best RMSE = {best_seed_rmse:.6f}")
+                    
+                    # Early exit for high-confidence clean Sniper seeds
+                    # Prevents overfitting to noisy data when true signal is clean
+                    if sniper_formula and best_seed_rmse < 1.0:
+                        import re
+                        y_var = torch.var(y_t).item()
+                        if y_var > 1e-12:
+                            seed_r2 = 1.0 - (best_seed_rmse**2 / y_var)
+                            has_long_decimal = bool(re.search(r'\d+\.\d{3,}', sniper_formula))
+                            # Use lower R² threshold for very clean/short formulas (noise tolerance)
+                            r2_threshold = 0.995 if len(sniper_formula) < 25 else 0.999
+                            if seed_r2 > r2_threshold and not has_long_decimal and len(sniper_formula) < 60:
+                                print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
+                                return sniper_formula
             else:
                 print("[DEBUG] CRITICAL: Seed loading returned None!")
                 
@@ -837,8 +1053,14 @@ class TensorGeneticEngine:
         start_time = time.time()
         while True:
             # Timeout
-            if timeout_sec and (time.time() - start_time) >= timeout_sec: break
+            elapsed = time.time() - start_time
+            if timeout_sec and elapsed >= timeout_sec: break
             if generations >= GpuGlobals.GENERATIONS: break
+            
+            # Time-based early exit: good-enough solution before full timeout
+            if best_rmse < 0.005 and elapsed > 10:
+                print(f"\n[Engine] Good-enough solution (RMSE={best_rmse:.6f}, {elapsed:.1f}s). Early exit.")
+                break
             
             generations += 1
 
@@ -933,8 +1155,8 @@ class TensorGeneticEngine:
                 weighted_sq = (abs_errors ** 2) * weights.unsqueeze(0)
                 fitness_rmse = torch.mean(weighted_sq, dim=1).sqrt()
                 
-            # --- Pareto Front Update (liviano: solo top-200, cada 25 gens) ---
-            if GpuGlobals.USE_PARETO_SELECTION and generations % 25 == 0:
+            # --- Pareto Front Update (liviano: solo top-200) ---
+            if GpuGlobals.USE_PARETO_SELECTION and generations % GpuGlobals.PARETO_INTERVAL == 0:
                 k_pareto = min(self.pop_size, 200)
                 _, top_pareto_idx = torch.topk(fitness_rmse, k_pareto, largest=False)
                 pareto_fit = fitness_rmse[top_pareto_idx]
@@ -964,7 +1186,7 @@ class TensorGeneticEngine:
                      min_size=GpuGlobals.PATTERN_MIN_SIZE, max_size=GpuGlobals.PATTERN_MAX_SIZE
                  )
             
-            # Optimize Top K — Adaptive PSO coverage based on stagnation
+            # Optimize Top K — focus PSO on multi-variable formulas
             if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
                 # During stagnation: optimize more individuals with more steps
                 if stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD:
@@ -973,7 +1195,18 @@ class TensorGeneticEngine:
                 else:
                     k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
                     pso_steps = GpuGlobals.PSO_STEPS_NORMAL
-                _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
+                
+                # Use penalized metric to select top-K for PSO (favor multi-variable)
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    _pso_metric = fitness_rmse.clone()
+                    _n_miss = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
+                    _n_miss.fill_(float(len(self._var_token_ids)))
+                    for vid in self._var_token_ids:
+                        _n_miss.sub_((population == vid).any(dim=1).float())
+                    _pso_metric.add_(_n_miss, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                    _, top_idx = torch.topk(_pso_metric, k_opt, largest=False)
+                else:
+                    _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
                 
                 opt_pop = population[top_idx]
                 opt_consts = pop_constants[top_idx]
@@ -985,18 +1218,44 @@ class TensorGeneticEngine:
                 pop_constants[top_idx] = refined_consts
                 fitness_rmse[top_idx] = refined_mse
             
-            # Best Tracking (single GPU->CPU sync for both values)
-            min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-            min_rmse_val = min_rmse.item()  # Single sync — min_idx now also CPU-cached
+            # Best Tracking — only consider formulas using ALL variables (if multi-var mode)
+            if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                # Compute mask: which individuals use all variables
+                _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                for vid in self._var_token_ids:
+                    _uses_all &= (population == vid).any(dim=1)
+                if _uses_all.any():
+                    _masked_rmse = fitness_rmse.clone()
+                    _masked_rmse[~_uses_all] = float('inf')
+                    min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
+                    min_rmse_val = min_rmse.item()
+                else:
+                    # No formula uses all vars yet — fall back to raw
+                    min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+                    min_rmse_val = min_rmse.item()
+            else:
+                min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+                min_rmse_val = min_rmse.item()  # Single sync
             
             if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):  # NaN check + tolerance
-                best_rmse = min_rmse_val
-                min_idx_val = min_idx.item()  # Free — already synced
-                best_rpn = population[min_idx_val].clone()
-                best_consts_vec = pop_constants[min_idx_val].clone()
-                self.best_global_rmse = best_rmse
-                self.best_global_rpn = best_rpn
-                self.best_global_consts = best_consts_vec
+                min_idx_val = min_idx.item()
+                candidate_rpn = population[min_idx_val]
+                candidate_consts = pop_constants[min_idx_val]
+                
+                # Semantic variable check — reject formulas with dead variables
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    if not self._check_semantic_var_usage(candidate_rpn, candidate_consts, x_t):
+                        # Mark this individual as "dead" so it loses selection
+                        fitness_rmse[min_idx_val] = float('inf')
+                        min_rmse_val = float('inf')  # Skip acceptance
+                
+                if min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
+                    best_rmse = min_rmse_val
+                    best_rpn = candidate_rpn.clone()
+                    best_consts_vec = candidate_consts.clone()
+                    self.best_global_rmse = best_rmse
+                    self.best_global_rpn = best_rpn
+                    self.best_global_consts = best_consts_vec
                 
                 # Identify Island
                 island_idx = (min_idx_val // self.island_size) if self.n_islands > 1 else 0
@@ -1016,7 +1275,9 @@ class TensorGeneticEngine:
                     # Handle Log Transform Inverse if needed
                     if GpuGlobals.USE_LOG_TRANSFORMATION:
                         formula = f"exp({formula})"
-                        
+                    
+                    # Post-simplify for reduced complexity
+                    formula = self._post_simplify_formula(formula, x_t, y_t)
                     return formula
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
 
@@ -1039,11 +1300,19 @@ class TensorGeneticEngine:
             if callback and generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0:
                 callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
 
-            # Cataclysm / Reset
+            # Cataclysm / Reset — use penalized metric to preserve multi-variable formulas
             if GpuGlobals.USE_ISLAND_CATACLYSM and stagnation >= GpuGlobals.STAGNATION_LIMIT:
                  n_elites = int(self.pop_size * GpuGlobals.CATACLYSM_ELITE_PERCENT)
                  n_random = self.pop_size - n_elites
-                 _, sorted_idx = torch.topk(fitness_rmse, n_elites, largest=False)  # topk is faster than full argsort
+                 # Compute cataclysm metric: prefer multi-variable formulas
+                 cat_metric = fitness_rmse.clone()
+                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                     _n_missing = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
+                     _n_missing.fill_(float(len(self._var_token_ids)))
+                     for vid in self._var_token_ids:
+                         _n_missing.sub_((population == vid).any(dim=1).float())
+                     cat_metric.add_(_n_missing, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                 _, sorted_idx = torch.topk(cat_metric, n_elites, largest=False)
                  elites = population[sorted_idx]
                  elite_c = pop_constants[sorted_idx]
                  
@@ -1111,6 +1380,23 @@ class TensorGeneticEngine:
                         self.const_buffer_B[0] = best_consts_vec
                     population = self.pop_buffer_B
                     pop_constants = self.const_buffer_B
+                    
+                # Re-inject seeds with fresh random constants on restart  
+                if seeds:
+                    seed_pop_r, seed_consts_r = self.load_population_from_strings(seeds)
+                    if seed_pop_r is not None:
+                        nr = min(seed_pop_r.shape[0], self.pop_size - 1)  # Leave slot 0 for best
+                        population[1:1+nr] = seed_pop_r[:nr]
+                        # Narrow random init for seeds
+                        existing_c = seed_consts_r[:nr].to(self.dtype)
+                        p_mask = (existing_c == 0.0)
+                        narrow = torch.empty(nr, self.max_constants, device=self.device, dtype=self.dtype).uniform_(-2.0, 2.0)
+                        pop_constants[1:1+nr] = torch.where(p_mask, narrow, existing_c)
+                        # Quick PSO on re-injected seeds
+                        if GpuGlobals.USE_NANO_PSO:
+                            ref_c2, _ = self.optimizer.nano_pso(
+                                population[1:1+nr], pop_constants[1:1+nr], x_t, y_t, steps=30)
+                            pop_constants[1:1+nr] = ref_c2
                 stagnation = 0
                 global_stagnation = 0
                 continue
@@ -1179,6 +1465,16 @@ class TensorGeneticEngine:
                 selection_metric.mul_(fitness_rmse)
                 selection_metric.add_(lengths, alpha=1e-6)
                 
+                # 1b. Variable Diversity Penalty (ADDITIVE): penalize formulas missing variables
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    var_pen = self._var_diversity_buf
+                    var_pen.fill_(float(len(self._var_token_ids)))  # start at num_variables
+                    for vid in self._var_token_ids:
+                        var_pen.sub_((population == vid).any(dim=1).float())  # subtract 1 per var found
+                    # var_pen is now n_missing_vars (0..num_vars)
+                    # Additive: selection_metric += PENALTY * n_missing
+                    selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                
                 # Adaptive tournament size: reduce during stagnation to allow more diversity
                 effective_tournament = max(GpuGlobals.TOURNAMENT_SIZE_FLOOR, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - stagnation // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
                 
@@ -1202,6 +1498,12 @@ class TensorGeneticEngine:
                     next_c = next_c[:self.pop_size]
                     # P0-1: Cache the fitness from C++ for reuse in next iteration
                     cached_next_fit = next_fit[:self.pop_size] if next_fit is not None else None
+                    # Global Elite Injection: preserve best formula in position 0
+                    if best_rpn is not None:
+                        next_pop[0] = best_rpn
+                        next_c[0] = best_consts_vec
+                        if cached_next_fit is not None:
+                            cached_next_fit[0] = best_rmse
                 else:
                     # Rare failure (ImportError), proceed to fallback if needed or return
                     print("[Engine] CUDA Orchestrator failed, please restart without USE_CUDA_ORCHESTRATOR")
@@ -1244,6 +1546,14 @@ class TensorGeneticEngine:
                 selection_metric.add_(1.0)
                 selection_metric.mul_(fitness_rmse)
                 selection_metric.add_(lengths, alpha=1e-6)
+                
+                # Variable Diversity Penalty (legacy path - ADDITIVE)
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    var_pen = self._var_diversity_buf
+                    var_pen.fill_(float(len(self._var_token_ids)))
+                    for vid in self._var_token_ids:
+                        var_pen.sub_((population == vid).any(dim=1).float())
+                    selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
                 def get_island_parents(n_needed_per_island):
                     rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
@@ -1354,11 +1664,21 @@ class TensorGeneticEngine:
             pop_constants = pop_constants[:self.pop_size]
                  
         if best_rpn is not None:
+             # --- Final Simplification Pass ---
+             try:
+                 sim_pop, _, n_s = self.gpu_simplifier.simplify_batch(
+                     best_rpn.unsqueeze(0), best_consts_vec.unsqueeze(0), max_passes=10)
+                 if n_s > 0:
+                     best_rpn = sim_pop[0]
+             except Exception:
+                 pass  # Non-fatal
+             
              formula = self.rpn_to_infix(best_rpn, best_consts_vec)
              # Inverse Transform if needed
              if GpuGlobals.USE_LOG_TRANSFORMATION:
-                 # If we trained on log(y), the formula predicts log(y).
-                 # To predict y, we need exp(formula).
                  formula = f"exp({formula})"
+             
+             # Post-simplify for reduced complexity
+             formula = self._post_simplify_formula(formula, x_t, y_t)
              return formula
         return None
