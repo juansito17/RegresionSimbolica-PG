@@ -454,6 +454,253 @@ class Sniper:
             pass
         return None
 
+    def check_composite(self, x_t, y_t):
+        """
+        Check for composite patterns: y = x^n * f(x)
+        where f(x) is sin(x), cos(x), exp(-x), sin(x)*cos(x), exp(-x)*sin(x), etc.
+        Detects: x*sin(x), x²*cos(x), x³*exp(-x)*cos(x)*sin(x) (Keijzer-4), etc.
+        """
+        try:
+            from scipy.optimize import curve_fit
+            x_np = x_t.cpu().numpy().astype(np.float64).flatten()
+            y_np = y_t.cpu().numpy().astype(np.float64).flatten()
+            
+            # Skip if x contains zeros (division by x^n would fail)
+            x_abs_min = np.min(np.abs(x_np))
+            
+            # Define composite templates: (name, model_func, p0, formula_builder)
+            templates = []
+            
+            # Template: y = a * x^n * sin(x) for n=1,2,3
+            for n in [1, 2, 3]:
+                def make_model_sin(n=n):
+                    def model(x, a):
+                        return a * (x**n) * np.sin(x)
+                    return model
+                templates.append((f'x^{n}*sin', make_model_sin(), [1.0], n, 'sin'))
+            
+            # Template: y = a * x^n * cos(x) for n=1,2,3
+            for n in [1, 2, 3]:
+                def make_model_cos(n=n):
+                    def model(x, a):
+                        return a * (x**n) * np.cos(x)
+                    return model
+                templates.append((f'x^{n}*cos', make_model_cos(), [1.0], n, 'cos'))
+            
+            # Template: y = a * x^n * exp(b*x) for n=0,1,2,3
+            for n in [0, 1, 2, 3]:
+                def make_model_exp(n=n):
+                    def model(x, a, b):
+                        return a * (x**n) * np.exp(b * x)
+                    return model
+                templates.append((f'x^{n}*exp', make_model_exp(), [1.0, -1.0], n, 'exp'))
+            
+            # Template: y = a * x^n * exp(b*x) * sin(x) for n=0,1,2,3
+            for n in [0, 1, 2, 3]:
+                def make_model_exp_sin(n=n):
+                    def model(x, a, b):
+                        return a * (x**n) * np.exp(b * x) * np.sin(x)
+                    return model
+                templates.append((f'x^{n}*exp*sin', make_model_exp_sin(), [1.0, -1.0], n, 'exp_sin'))
+            
+            # Template: y = a * x^n * exp(b*x) * cos(x) for n=0,1,2,3
+            for n in [0, 1, 2, 3]:
+                def make_model_exp_cos(n=n):
+                    def model(x, a, b):
+                        return a * (x**n) * np.exp(b * x) * np.cos(x)
+                    return model
+                templates.append((f'x^{n}*exp*cos', make_model_exp_cos(), [1.0, -1.0], n, 'exp_cos'))
+            
+            # Template: y = a * x^n * exp(b*x) * sin(x) * cos(x) for n=0,1,2,3
+            for n in [0, 1, 2, 3]:
+                def make_model_exp_sincos(n=n):
+                    def model(x, a, b):
+                        return a * (x**n) * np.exp(b * x) * np.sin(x) * np.cos(x)
+                    return model
+                templates.append((f'x^{n}*exp*sin*cos', make_model_exp_sincos(), [1.0, -1.0], n, 'exp_sin_cos'))
+            
+            # Template: y = a * sin(b*x^2 + c) for sin(x²) pattern
+            def sin_xsq_model(x, a, b, c):
+                return a * np.sin(b * x**2 + c)
+            templates.append(('sin(x²)', sin_xsq_model, [1.0, 1.0, 0.0], 0, 'sin_xsq'))
+            
+            best_formula = None
+            best_r2 = 0.98  # Minimum R² threshold
+            y_var = np.var(y_np)
+            if y_var < 1e-12:
+                return None
+            
+            for name, model, p0, n_pow, ftype in templates:
+                try:
+                    popt, _ = curve_fit(model, x_np, y_np, p0=p0, maxfev=3000)
+                    y_pred = model(x_np, *popt)
+                    if not np.all(np.isfinite(y_pred)):
+                        continue
+                    ss_res = np.sum((y_np - y_pred) ** 2)
+                    ss_tot = np.sum((y_np - np.mean(y_np)) ** 2)
+                    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+                    
+                    if r2 > best_r2:
+                        formula = self._build_composite_formula(ftype, n_pow, popt)
+                        if formula:
+                            best_formula = formula
+                            best_r2 = r2
+                except Exception:
+                    continue
+            
+            return best_formula
+        except Exception:
+            return None
+    
+    def _build_composite_formula(self, ftype, n_pow, popt):
+        """Build a composite formula string from curve_fit results."""
+        def simplify_val(val, tol=0.05):
+            if abs(val) < tol:
+                return 0.0
+            rounded = round(val)
+            if abs(val - rounded) < tol:
+                return float(rounded)
+            return None
+        
+        # Build x^n part
+        if n_pow == 0:
+            x_part = ""
+        elif n_pow == 1:
+            x_part = "x0"
+        else:
+            x_part = f"(x0 ** {n_pow})"
+        
+        if ftype == 'sin':
+            a = popt[0]
+            a_s = simplify_val(a)
+            if a_s is None: return None
+            trig_part = "sin(x0)"
+            parts = [p for p in [x_part, trig_part] if p]
+            core = " * ".join(parts) if len(parts) > 1 else parts[0]
+            if a_s == 1.0:
+                return core
+            elif a_s == -1.0:
+                return f"(-{core})"
+            else:
+                return f"({format_const(a_s)} * {core})"
+        
+        elif ftype == 'cos':
+            a = popt[0]
+            a_s = simplify_val(a)
+            if a_s is None: return None
+            trig_part = "cos(x0)"
+            parts = [p for p in [x_part, trig_part] if p]
+            core = " * ".join(parts) if len(parts) > 1 else parts[0]
+            if a_s == 1.0:
+                return core
+            elif a_s == -1.0:
+                return f"(-{core})"
+            else:
+                return f"({format_const(a_s)} * {core})"
+        
+        elif ftype == 'exp':
+            a, b = popt
+            a_s = simplify_val(a)
+            b_s = simplify_val(b)
+            if a_s is None or b_s is None: return None
+            if b_s == 0: return None
+            if b_s == -1:
+                exp_part = "exp(-x0)"
+            elif b_s == 1:
+                exp_part = "exp(x0)"
+            else:
+                exp_part = f"exp({format_const(b_s)} * x0)"
+            parts = [p for p in [x_part, exp_part] if p]
+            core = " * ".join(parts) if len(parts) > 1 else parts[0]
+            if a_s == 1.0:
+                return core
+            elif a_s == -1.0:
+                return f"(-{core})"
+            else:
+                return f"({format_const(a_s)} * {core})"
+        
+        elif ftype == 'exp_sin':
+            a, b = popt
+            a_s = simplify_val(a)
+            b_s = simplify_val(b)
+            if a_s is None or b_s is None: return None
+            if b_s == -1:
+                exp_part = "exp(-x0)"
+            elif b_s == 1:
+                exp_part = "exp(x0)"
+            else:
+                exp_part = f"exp({format_const(b_s)} * x0)"
+            parts = [p for p in [x_part, exp_part, "sin(x0)"] if p]
+            core = " * ".join(parts) if len(parts) > 1 else parts[0]
+            if a_s == 1.0:
+                return core
+            elif a_s == -1.0:
+                return f"(-{core})"
+            else:
+                return f"({format_const(a_s)} * {core})"
+        
+        elif ftype == 'exp_cos':
+            a, b = popt
+            a_s = simplify_val(a)
+            b_s = simplify_val(b)
+            if a_s is None or b_s is None: return None
+            if b_s == -1:
+                exp_part = "exp(-x0)"
+            elif b_s == 1:
+                exp_part = "exp(x0)"
+            else:
+                exp_part = f"exp({format_const(b_s)} * x0)"
+            parts = [p for p in [x_part, exp_part, "cos(x0)"] if p]
+            core = " * ".join(parts) if len(parts) > 1 else parts[0]
+            if a_s == 1.0:
+                return core
+            elif a_s == -1.0:
+                return f"(-{core})"
+            else:
+                return f"({format_const(a_s)} * {core})"
+        
+        elif ftype == 'exp_sin_cos':
+            a, b = popt
+            a_s = simplify_val(a)
+            b_s = simplify_val(b)
+            if a_s is None or b_s is None: return None
+            if b_s == -1:
+                exp_part = "exp(-x0)"
+            elif b_s == 1:
+                exp_part = "exp(x0)"
+            else:
+                exp_part = f"exp({format_const(b_s)} * x0)"
+            parts = [p for p in [x_part, exp_part, "sin(x0)", "cos(x0)"] if p]
+            core = " * ".join(parts) if len(parts) > 1 else parts[0]
+            if a_s == 1.0:
+                return core
+            elif a_s == -1.0:
+                return f"(-{core})"
+            else:
+                return f"({format_const(a_s)} * {core})"
+        
+        elif ftype == 'sin_xsq':
+            a, b, c = popt
+            a_s = simplify_val(a)
+            b_s = simplify_val(b)
+            c_s = simplify_val(c, tol=0.08)
+            if a_s is None or b_s is None or c_s is None: return None
+            if b_s == 0: return None
+            if b_s == 1 and c_s == 0:
+                inner = "sin((x0 ** 2))"
+            elif c_s == 0:
+                inner = f"sin(({format_const(b_s)} * (x0 ** 2)))"
+            else:
+                inner = f"sin(({format_const(b_s)} * (x0 ** 2)) + {format_const(c_s)})"
+            if a_s == 1.0:
+                return inner
+            elif a_s == -1.0:
+                return f"(-{inner})"
+            else:
+                return f"({format_const(a_s)} * {inner})"
+        
+        return None
+
     def run(self, x_data, y_data):
         """
         Run all checks.
@@ -490,25 +737,31 @@ class Sniper:
                 print(f"[The Sniper] Detected Trig Pattern: {res}")
                 return res
             
-            # Check 4: Polynomial (y = ax^n + bx^(n-1) + ... + c) for n=2,3,4
+            # Check 4: Composite (y = x^n * f(x) where f is sin/cos/exp or product)
+            res = self.check_composite(x_t, y_t)
+            if res:
+                print(f"[The Sniper] Detected Composite Pattern: {res}")
+                return res
+            
+            # Check 5: Polynomial (y = ax^n + bx^(n-1) + ... + c) for n=2,3,4,5,6
             res = self.check_polynomial(x_t, y_t)
             if res:
                 print(f"[The Sniper] Detected Polynomial Pattern: {res}")
                 return res
             
-            # Check 5: Geometric (y = A exp(Bx))
+            # Check 6: Geometric (y = A exp(Bx))
             res = self.check_geometric(x_t, y_t)
             if res:
                 print(f"[The Sniper] Detected Geometric Pattern: {res}")
                 return res
                 
-            # Check 6: Power Law (y = A * x^B)
+            # Check 7: Power Law (y = A * x^B)
             res = self.check_power_law(x_t, y_t)
             if res:
                 print(f"[The Sniper] Detected Power Law Pattern: {res}")
                 return res
                 
-            # Check 7: Log-Linear (y = log(mx+c)) / Linear Raw Data
+            # Check 8: Log-Linear (y = log(mx+c)) / Linear Raw Data
             res = self.check_log_linear(x_t, y_t)
             if res:
                 print(f"[The Sniper] Detected Log-Linear Pattern: {res}")

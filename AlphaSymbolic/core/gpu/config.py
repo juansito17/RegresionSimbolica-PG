@@ -59,9 +59,9 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 1_000_000
+    POP_SIZE = 500_000
     GENERATIONS = 1_000_000  
-    NUM_ISLANDS = 40 # 1M / 40 = 25k pop per island
+    NUM_ISLANDS = 25 # 500k / 25 = 20k pop per island
     MIN_POP_PER_ISLAND = 20
 
     # --- Fórmula Inicial ---
@@ -90,7 +90,7 @@ class GpuGlobals:
     MAX_CONSTANTS = 15
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60   # Límite duro de profundidad de arboles
-    MAX_TREE_DEPTH_MUTATION = 4      # Profundidad máxima de subtrees generados en mutación
+    MAX_TREE_DEPTH_MUTATION = 6      # Profundidad máxima de subtrees generados en mutación (más profundo = más exploración estructural)
 
     # ----------------------------------------
     # Parámetros de Operadores Genéticos (Configuración de Operadores)
@@ -146,14 +146,14 @@ class GpuGlobals:
     # Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
     # ----------------------------------------
     BASE_MUTATION_RATE = 0.15
-    MUTATION_RATE_CAP = 0.90         # Techo de mutación adaptativa
-    MUTATION_RAMP_PER_GEN = 0.02     # Incremento por gen de estancamiento
+    MUTATION_RATE_CAP = 0.70         # Techo de mutación adaptativa (más bajo = preserva mejores soluciones)
+    MUTATION_RAMP_PER_GEN = 0.015    # Incremento por gen de estancamiento (más suave)
     MUTATION_STAGNATION_TRIGGER = 5  # Gens estancadas para empezar a subir mutación
-    BASE_ELITE_PERCENTAGE = 0.10
-    DEFAULT_CROSSOVER_RATE = 0.50
-    DEFAULT_TOURNAMENT_SIZE = 7
+    BASE_ELITE_PERCENTAGE = 0.12     # Más elites preservadas = convergencia más estable
+    DEFAULT_CROSSOVER_RATE = 0.60    # Más crossover = más recombinación de building blocks
+    DEFAULT_TOURNAMENT_SIZE = 5      # Torneo más pequeño = más diversidad en selección
     TOURNAMENT_SIZE_FLOOR = 3        # Piso del torneo adaptativo
-    TOURNAMENT_ADAPTIVE_DIVISOR = 8  # Cada N gens estancadas baja 1 el torneo
+    TOURNAMENT_ADAPTIVE_DIVISOR = 6  # Cada N gens estancadas baja 1 el torneo
     TERMINAL_VS_VARIABLE_PROB = 0.50 # Prob de terminal vs variable en generación aleatoria (0.5 = neutro)
 
     # ----------------------------------------
@@ -171,9 +171,9 @@ class GpuGlobals:
     # ----------------------------------------
     # Parámetros de Estancamiento y Cataclismo
     # ----------------------------------------
-    STAGNATION_LIMIT = 40            # Gens sin mejora para disparar cataclismo  
-    GLOBAL_STAGNATION_LIMIT = 200     # Gens sin mejora global para reinicio completo
-    CATACLYSM_ELITE_PERCENT = 0.05   # % de élites que sobreviven el cataclismo (menos = más exploración)
+    STAGNATION_LIMIT = 30            # Gens sin mejora para disparar cataclismo (reaccionar más rápido)
+    GLOBAL_STAGNATION_LIMIT = 150     # Gens sin mejora global para reinicio completo (menos desperdicio)
+    CATACLYSM_ELITE_PERCENT = 0.08   # % de élites que sobreviven el cataclismo (más = mejores building blocks preservados)
     STAGNATION_RANDOM_INJECT_PERCENT = 0.0  # Desactivado: overhead sin beneficio (peores nunca ganan selección)
     USE_ISLAND_CATACLYSM = True      # Activar/desactivar cataclismo
     
@@ -182,11 +182,11 @@ class GpuGlobals:
     # ----------------------------------------
     USE_NANO_PSO = True
     PSO_INTERVAL = 2                 # Ejecutar PSO cada 2 generaciones
-    PSO_K_NORMAL = 200               # Top-200 optimizados por PSO
-    PSO_K_STAGNATION = 500           # Más individuos durante estancamiento
-    PSO_STEPS_NORMAL = 15            # Pasos de PSO normales
-    PSO_STEPS_STAGNATION = 25        # Pasos agresivos durante estancamiento
-    PSO_STAGNATION_THRESHOLD = 15    # Gens estancadas para usar parámetros agresivos
+    PSO_K_NORMAL = 300               # Top-300 optimizados por PSO (más individuos benefician de constantes optimizadas)
+    PSO_K_STAGNATION = 600           # Más individuos durante estancamiento
+    PSO_STEPS_NORMAL = 20            # Pasos de PSO normales (más pasos = constantes más precisas)
+    PSO_STEPS_STAGNATION = 30        # Pasos agresivos durante estancamiento
+    PSO_STAGNATION_THRESHOLD = 10    # Gens estancadas para usar parámetros agresivos (reaccionar antes)
     PSO_PARTICLES = 30               # Partículas por individuo (más = mejor exploración)
     
     # ----------------------------------------
