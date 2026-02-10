@@ -862,6 +862,90 @@ class TensorGeneticEngine:
         
         return best
 
+    def _get_structural_seeds(self):
+        """Generate data-independent structural seed templates for GP initialization.
+        
+        These templates cover common mathematical function families to bootstrap
+        the population with useful building blocks. Unlike the Sniper (which detects
+        patterns from data), these are fixed structural priors about common functions.
+        PSO optimizes their constants against the actual data.
+        """
+        v = "x0"  # Primary variable name
+        seeds = []
+        
+        # --- POLYNOMIAL FAMILY ---
+        for d in range(2, 7):
+            seeds.append(f"({v} ** {d})")
+        # Cumulative polynomials: sum of x^1..x^n
+        for top in range(2, 7):
+            terms = " + ".join([v if d == 1 else f"({v} ** {d})" for d in range(1, top + 1)])
+            seeds.append(f"({terms})")
+        # Common polynomial shapes
+        seeds.append(f"({v} ** 3) - (2.0 * {v})")
+        seeds.append(f"({v} ** 4) - ({v} ** 2)")
+        seeds.append(f"(2.0 * ({v} ** 2)) + (3.0 * {v}) + 1.0")
+        seeds.append(f"({v} ** 2) + {v}")
+        
+        # --- TRIGONOMETRIC FAMILY ---
+        for fn in ["sin", "cos"]:
+            seeds.append(f"{fn}({v})")
+            seeds.append(f"{fn}(({v} ** 2))")
+            seeds.append(f"{fn}((2.0 * {v}))")
+        seeds.append(f"sin({v}) * cos({v})")
+        seeds.append(f"sin({v}) + cos({v})")
+        seeds.append(f"(0.5 * sin((2.0 * {v})))")
+        
+        # --- EXPONENTIAL FAMILY ---
+        seeds.append(f"exp({v})")
+        seeds.append(f"exp((-1.0) * {v})")
+        
+        # --- LOGARITHMIC FAMILY ---
+        seeds.append(f"log(({v} + 1.0))")
+        seeds.append(f"log((({v} ** 2) + 1.0))")
+        seeds.append(f"(log(({v} + 1.0)) + log((({v} ** 2) + 1.0)))")
+        
+        # --- SQRT FAMILY ---
+        seeds.append(f"sqrt({v})")
+        
+        # --- COMPOSITE: x^n * trig(x) ---
+        for n in range(1, 4):
+            for fn in ["sin", "cos"]:
+                seeds.append(f"(({v} ** {n}) * {fn}({v}))")
+        
+        # --- COMPOSITE: exp(bx) * trig(x) ---
+        for fn in ["sin", "cos"]:
+            seeds.append(f"(exp((-1.0) * {v}) * {fn}({v}))")
+        seeds.append(f"(exp((-1.0) * {v}) * sin({v}) * cos({v}))")
+        
+        # --- COMPOSITE: x^n * exp(bx) * trig(x) ---
+        for n in range(1, 4):
+            for fn in ["sin", "cos"]:
+                seeds.append(f"(({v} ** {n}) * exp((-1.0) * {v}) * {fn}({v}))")
+        
+        # --- COMPOSITE: x^n * exp(bx) * sin * cos ---
+        for n in range(1, 4):
+            seeds.append(f"(({v} ** {n}) * exp((-1.0) * {v}) * sin({v}) * cos({v}))")
+        
+        # --- TRIG COMPOSITIONS ---
+        seeds.append(f"(sin(({v} ** 2)) * cos({v}))")
+        seeds.append(f"({v} * sin({v}) * cos({v}))")
+        seeds.append(f"(sin({v}) + sin(({v} + ({v} ** 2))))")
+        seeds.append(f"((sin(({v} ** 2)) * cos({v})) - 1.0)")
+        
+        # --- WITH ADDITIVE OFFSETS (free constant via 0.0 → randomized by seed loader) ---
+        # Many targets have constant offsets; these templates give PSO a slot to optimize
+        seeds.append(f"(({v} ** 2) + 0.0)")
+        seeds.append(f"(({v} ** 3) + 0.0)")
+        seeds.append(f"((({v} ** 4) - ({v} ** 2)) + 0.0)")
+        seeds.append(f"((({v} ** 4) + ({v} ** 2)) + 0.0)")
+        seeds.append(f"(sin({v}) + 0.0)")
+        seeds.append(f"(cos({v}) + 0.0)")
+        seeds.append(f"(({v} * sin({v})) + 0.0)")
+        seeds.append(f"(({v} * cos({v})) + 0.0)")
+        seeds.append(f"((sin(({v} ** 2)) * cos({v})) + 0.0)")
+        
+        return seeds
+
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
         # 1. Data Setup
         # FIX: Use self.dtype
@@ -899,6 +983,14 @@ class TensorGeneticEngine:
                 print(f"[Engine] The Sniper found a candidate solution: {sniper_formula}")
                 if seeds is None: seeds = []
                 seeds.append(sniper_formula)
+        
+        # --- Structural Seed Templates (when Sniper is disabled) ---
+        # Inject common mathematical function templates as seeds.
+        # PSO optimizes their constants against the data.
+        if not GpuGlobals.USE_SNIPER:
+            structural = self._get_structural_seeds()
+            if seeds is None: seeds = []
+            seeds.extend(structural)
             
         # 2. Init with Disk Cache and Double Buffering
         import os
@@ -997,7 +1089,7 @@ class TensorGeneticEngine:
                 
                 # PSO Warmup: optimize seed constants BEFORE main loop
                 if GpuGlobals.USE_NANO_PSO and n > 0:
-                    warmup_steps = 80  # Thorough warmup — critical for seed quality
+                    warmup_steps = 150 if not GpuGlobals.USE_SNIPER else 80  # More steps for structural seeds
                     batch_sz = min(n, 5000)
                     for bi in range(0, n, batch_sz):
                         be = min(bi + batch_sz, n)
@@ -1022,6 +1114,25 @@ class TensorGeneticEngine:
                             if seed_r2 > r2_threshold and not has_long_decimal and len(sniper_formula) < 60:
                                 print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
                                 return sniper_formula
+                    
+                    # General early exit: any seed (structural or Sniper) with near-exact PSO fit
+                    if best_seed_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD * 10:  # Relaxed: 1e-5
+                        best_si = seed_fit.argmin().item()
+                        formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
+                        formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
+                        print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
+                        return formula_early
+                    # R²-based early exit: handles noisy data where RMSE can't reach 0
+                    elif best_seed_rmse < 1.0:
+                        y_var = torch.var(y_t).item()
+                        if y_var > 1e-12:
+                            seed_r2 = 1.0 - (best_seed_rmse**2 / y_var)
+                            if seed_r2 > 0.995:
+                                best_si = seed_fit.argmin().item()
+                                formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
+                                formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
+                                print(f"\n[Engine] High-R² solution found! RMSE: {best_seed_rmse:.9e}, R²: {seed_r2:.6f}")
+                                return formula_early
             else:
                 print("[DEBUG] CRITICAL: Seed loading returned None!")
                 

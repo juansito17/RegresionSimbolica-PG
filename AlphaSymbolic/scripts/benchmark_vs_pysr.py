@@ -153,7 +153,7 @@ def _count_ast_nodes(formula_str: str) -> int:
 # Runner de AlphaSymbolic (GPU Engine)
 # ─────────────────────────────────────────────────────────────────
 
-def run_alphasybolic(problem: BenchmarkProblem, timeout_sec: int = 30) -> MethodResult:
+def run_alphasybolic(problem: BenchmarkProblem, timeout_sec: int = 30, use_sniper: bool = True) -> MethodResult:
     """Ejecuta AlphaSymbolic en un problema."""
     import torch
     from core.gpu import TensorGeneticEngine
@@ -178,7 +178,7 @@ def run_alphasybolic(problem: BenchmarkProblem, timeout_sec: int = 30) -> Method
     GpuGlobals.POP_SIZE = 50_000       # Población moderada para benchmark
     GpuGlobals.NUM_ISLANDS = 10
     GpuGlobals.USE_LOG_TRANSFORMATION = False
-    GpuGlobals.USE_SNIPER = True
+    GpuGlobals.USE_SNIPER = use_sniper
     GpuGlobals.USE_OP_COS = True       # NECESARIO para muchos benchmarks
     GpuGlobals.EXACT_SOLUTION_THRESHOLD = 1e-6  # Early termination
     GpuGlobals.COMPLEXITY_PENALTY = 0.02   # Parsimonia fuerte
@@ -470,6 +470,7 @@ def run_benchmark(
     timeout_sec: int = 30,
     run_alpha: bool = True,
     run_pysr_flag: bool = True,
+    use_sniper: bool = True,
 ) -> List[MethodResult]:
     """Ejecuta el benchmark completo."""
     
@@ -477,7 +478,8 @@ def run_benchmark(
     total = len(problems)
     methods_to_run = []
     if run_alpha:
-        methods_to_run.append("AlphaSymbolic")
+        alpha_label = "AlphaSymbolic" if use_sniper else "AlphaSymbolic (Sin Sniper)"
+        methods_to_run.append(alpha_label)
     if run_pysr_flag:
         methods_to_run.append("PySR")
     
@@ -486,6 +488,8 @@ def run_benchmark(
     print("═" * 70)
     print(f"  Problemas: {total}")
     print(f"  Timeout por problema: {timeout_sec}s")
+    if not use_sniper:
+        print(f"  Modo: GP puro (Sin Sniper) — Seeds estructurales + PSO")
     print(f"  Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("═" * 70 + "\n")
     
@@ -498,7 +502,7 @@ def run_benchmark(
         
         if run_alpha:
             print(f"  ▸ Ejecutando AlphaSymbolic...", end="", flush=True)
-            result = run_alphasybolic(problem, timeout_sec)
+            result = run_alphasybolic(problem, timeout_sec, use_sniper=use_sniper)
             all_results.append(result)
             status = "✅" if result.solved else "❌"
             print(f"  {status}  RMSE={result.rmse_test:.6f}  R²={result.r2_test:.4f}  "
@@ -735,6 +739,8 @@ def main():
                         default="all", help="Subconjunto de problemas")
     parser.add_argument("--only", choices=["alpha", "pysr"], default=None, 
                         help="Ejecutar solo un método")
+    parser.add_argument("--no-sniper", action="store_true",
+                        help="Desactivar The Sniper (GP puro con seeds estructurales)")
     parser.add_argument("--output", default=None, help="Directorio de salida")
     args = parser.parse_args()
     
@@ -758,7 +764,8 @@ def main():
         problems, 
         timeout_sec=args.timeout,
         run_alpha=run_alpha,
-        run_pysr_flag=run_pysr_flag
+        run_pysr_flag=run_pysr_flag,
+        use_sniper=not args.no_sniper
     )
     
     # Mostrar resultados
