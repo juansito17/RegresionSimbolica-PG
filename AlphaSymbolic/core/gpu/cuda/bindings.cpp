@@ -15,7 +15,7 @@ void launch_rpn_kernel(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -36,7 +36,7 @@ void run_rpn_cuda(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -50,7 +50,7 @@ void run_rpn_cuda(
         population, x, constants, out_preds, out_sp, out_error,
         PAD_ID, id_x_start, 
         id_C, id_pi, id_e,
-        id_0, id_1, id_2, id_3, id_5, id_10,
+        id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
         op_add, op_sub, op_mul, op_div, op_pow, op_mod,
         op_sin, op_cos, op_tan,
         op_log, op_exp,
@@ -153,7 +153,7 @@ std::vector<torch::Tensor> evolve_generation(
     // OpCodes
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -177,7 +177,7 @@ void launch_fused_pso(
     float const_min, float const_max,
     int PAD_ID, int id_x_start,
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -203,7 +203,7 @@ void launch_simplify_batch(
     int op_log, int op_exp, int op_sqrt, int op_abs,
     int op_gamma, int op_lgamma,
     int op_floor, int op_ceil, int op_sign,
-    int id_0, int id_1, int id_2
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6
 );
 
 void launch_precompute_subtree_starts(

@@ -21,13 +21,17 @@
 // Device functions for unary/binary ops (Templated)
 template <typename T>
 __device__ __forceinline__ T safe_div(T a, T b, bool &error) {
-    if (abs(b) < 1e-9) { error = true; return (T)0.0; }
+    if (abs(b) < (T)1e-9) {
+        return a; // protected division
+    }
     return a / b;
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_mod(T a, T b, bool &error) {
-    if (abs(b) < 1e-9) { error = true; return (T)0.0; }
+    if (abs(b) < (T)1e-9) {
+        return (T)0.0; // protected modulo
+    }
     T r = fmod(a, b);
     if ((b > 0 && r < 0) || (b < 0 && r > 0)) {
         r += b;
@@ -37,58 +41,76 @@ __device__ __forceinline__ T safe_mod(T a, T b, bool &error) {
 
 template <typename T>
 __device__ __forceinline__ T safe_log(T a, bool &error) {
-    if (a <= 0.0) { error = true; return (T)0.0; }
-    return log(a);
+    return log(abs(a) + (T)1e-9); // protected log
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_exp(T a, bool &error) {
-    if (a < -100.0) return (T)0.0;
-    if (a > 100.0) { error = true; return (T)1e30; } // Prevent overflow to Inf
-    return exp(a);
+    T x = a;
+    if (x < (T)-80.0) x = (T)-80.0;
+    if (x > (T)80.0) x = (T)80.0;
+    return exp(x);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_sqrt(T a, bool &error) {
-    if (a < 0.0) { error = true; return (T)0.0; }
-    return sqrt(a);
+    return sqrt(abs(a)); // protected sqrt
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_pow(T a, T b, bool &error) {
     if (a != a || b != b) { error = true; return (T)0.0; }
-    // Negative base with non-integer exponent is complex
-    if (a < 0.0 && floor(b) != b) { error = true; return (T)0.0; }
+    
+    // Case (0,0) -> 1.0 (limit)
+    if (abs(a) < (T)1e-10 && abs(b) < (T)1e-10) return (T)1.0;
+    
+    // Protected negative-base handling
+    if (a < (T)0.0) {
+        T ib = round(b);
+        if (abs(b - ib) > (T)1e-3) {
+            a = abs(a);
+        } else {
+            b = ib;
+        }
+    }
+    
+    // Safety: prevent extreme overflow that kills the individual
+    // If a > 1 and b > 100, or similar combinations
+    if (abs(a) > (T)1.0 && b > (T)80.0) b = (T)80.0;
+    if (abs(a) > (T)100.0 && b > (T)10.0) b = (T)10.0;
+
     T res = pow(a, b);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    if (res != res || isinf(res)) { return (T)0.0; }
     return res;
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_asin(T a, bool &error) {
-    if (a < -1.0 || a > 1.0) { error = true; return (T)0.0; }
+    if (a < (T)-1.0) a = (T)-1.0;
+    if (a > (T)1.0) a = (T)1.0;
     return asin(a);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_acos(T a, bool &error) {
-    if (a < -1.0 || a > 1.0) { error = true; return (T)0.0; }
+    if (a < (T)-1.0) a = (T)-1.0;
+    if (a > (T)1.0) a = (T)1.0;
     return acos(a);
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_tgamma(T a, bool &error) {
-    if (a <= 0.0 && floor(a) == a) { error = true; return (T)0.0; }
+    if (a <= (T)0.0 && floor(a) == a) return (T)0.0;
     T res = tgamma(a);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    if (res != res || isinf(res)) return (T)0.0;
     return res;
 }
 
 template <typename T>
 __device__ __forceinline__ T safe_lgamma(T a, bool &error) {
-    if (a <= 0.0 && floor(a) == a) { error = true; return (T)0.0; }
+    if (a <= (T)0.0 && floor(a) == a) return (T)0.0;
     T res = lgamma(a);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    if (res != res || isinf(res)) return (T)0.0;
     return res;
 }
 
@@ -106,7 +128,7 @@ __global__ void rpn_eval_kernel(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     // Ops
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
@@ -136,6 +158,7 @@ __global__ void rpn_eval_kernel(
     for (int pc = 0; pc < L; ++pc) {
         int64_t token = my_prog[pc];
         
+        
         if (token == PAD_ID) break;
 
         scalar_t val = (scalar_t)0.0;
@@ -150,7 +173,9 @@ __global__ void rpn_eval_kernel(
         else if (token == id_1) val = (scalar_t)1.0;
         else if (token == id_2) val = (scalar_t)2.0;
         else if (token == id_3) val = (scalar_t)3.0;
+        else if (token == id_4) val = (scalar_t)4.0;
         else if (token == id_5) val = (scalar_t)5.0;
+        else if (token == id_6) val = (scalar_t)6.0;
         else if (token == id_10) val = (scalar_t)10.0;
         else if (token == id_pi) val = (scalar_t)pi_val;
         else if (token == id_e) val = (scalar_t)e_val;
@@ -211,13 +236,14 @@ __global__ void rpn_eval_kernel(
         else if (token == op_exp) res = safe_exp(op1, error);
         else if (token == op_floor) res = floor(op1);
         else if (token == op_ceil) res = ceil(op1);
-        else if (token == op_sign) res = (op1 > 0) ? (scalar_t)1.0 : ((op1 < 0) ? (scalar_t)-1.0 : (scalar_t)0.0);
+        else if (token == op_sign) res = (op1 > (scalar_t)0.0) ? (scalar_t)1.0 : ((op1 < (scalar_t)0.0) ? (scalar_t)-1.0 : (scalar_t)0.0);
         else if (token == op_asin) res = safe_asin(op1, error);
         else if (token == op_acos) res = safe_acos(op1, error);
         else if (token == op_atan) res = atan(op1);
         else if (token == op_fact) res = safe_tgamma(op1 + (scalar_t)1.0, error);
         else if (token == op_gamma) res = safe_tgamma(op1, error);
         else if (token == op_lgamma) res = safe_lgamma(op1, error);
+        else { error = true; break; }
         
         if (error) break;
         stack[sp++] = res;
@@ -242,7 +268,7 @@ void launch_rpn_kernel(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -282,7 +308,7 @@ void launch_rpn_kernel(
             PAD_ID, 
             id_x_start, 
             id_C, id_pi, id_e,
-            id_0, id_1, id_2, id_3, id_5, id_10,
+            id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
             op_add, op_sub, op_mul, op_div, op_pow, op_mod,
             op_sin, op_cos, op_tan,
             op_log, op_exp,
@@ -505,19 +531,17 @@ __global__ void crossover_splicing_kernel(
     int64_t val_c1 = PAD_ID;
     
     if (t < len_pre1) {
-        val_c1 = parent1[n * L + t];
+        if (t >= 0 && t < L) val_c1 = parent1[n * L + t];
     } else if (t < cut1) {
         // From Sub2
-        // t corresponds to index relative to start of sub2
-        // offset = t - len_pre1
-        // src_idx = s2 + offset
-        val_c1 = parent2[n * L + (s2 + t - len_pre1)];
+        int64_t src_idx = s2 + t - len_pre1;
+        if (src_idx >= 0 && src_idx < L) {
+            val_c1 = parent2[n * L + src_idx];
+        }
     } else {
         // From Post1
-        // offset = t - cut1
-        // src_idx = e1 + 1 + offset
         int64_t src_idx = e1 + 1 + t - cut1;
-        if (src_idx < L) {
+        if (src_idx >= 0 && src_idx < L) {
             val_c1 = parent1[n * L + src_idx];
         } else {
             val_c1 = PAD_ID;
@@ -534,12 +558,15 @@ __global__ void crossover_splicing_kernel(
     int64_t val_c2 = PAD_ID;
     
     if (t < len_pre2) {
-        val_c2 = parent2[n * L + t];
+        if (t >= 0 && t < L) val_c2 = parent2[n * L + t];
     } else if (t < cut2) {
-        val_c2 = parent1[n * L + (s1 + t - len_pre2)];
+        int64_t src_idx = s1 + t - len_pre2;
+        if (src_idx >= 0 && src_idx < L) {
+            val_c2 = parent1[n * L + src_idx];
+        }
     } else {
         int64_t src_idx = e2 + 1 + t - cut2;
-        if (src_idx < L) {
+        if (src_idx >= 0 && src_idx < L) {
             val_c2 = parent2[n * L + src_idx];
         } else {
             val_c2 = PAD_ID;
@@ -698,7 +725,7 @@ void launch_rpn_kernel(
     int PAD_ID, 
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -734,7 +761,7 @@ std::vector<torch::Tensor> evolve_generation(
     // OpCodes
     int id_x_start, 
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -916,10 +943,11 @@ std::vector<torch::Tensor> evolve_generation(
         auto pbest_pos = pos.clone();
         auto pbest_err = torch::full({B, pso_particles}, std::numeric_limits<float>::infinity(), float_opt);
         
-        // Pre-allocate eval outputs
+        // Pre-allocate eval outputs (Shape must match B*P x N_data)
+        int num_evals = total_particles * N_data;
         auto preds = torch::empty({total_particles, N_data}, float_opt);
-        auto sp = torch::empty({total_particles, STACK_SIZE}, int_opt);
-        auto error_flags = torch::empty({total_particles}, byte_opt);
+        auto sp = torch::empty({num_evals}, int_opt);
+        auto error_flags = torch::empty({num_evals}, byte_opt);
         
         for(int step=0; step<pso_steps; ++step) {
             auto flat_pos = pos.view({-1, K}); 
@@ -930,7 +958,7 @@ std::vector<torch::Tensor> evolve_generation(
                 preds, sp, error_flags,
                 PAD_ID, id_x_start, 
                 id_C, id_pi, id_e,
-                id_0, id_1, id_2, id_3, id_5, id_10,
+                id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
                 op_add, op_sub, op_mul, op_div, op_pow, op_mod,
                 op_sin, op_cos, op_tan,
                 op_log, op_exp,

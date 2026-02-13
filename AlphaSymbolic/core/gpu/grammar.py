@@ -19,7 +19,7 @@ class GPUGrammar:
         elif num_variables == 1:
             self.active_variables = ['x0'] 
 
-        self.terminals = self.active_variables + ['C', '0', '1', '2', '3', '5', '10', 'pi'] # Sync with core.grammar.CONSTANTS
+        self.terminals = self.active_variables + ['C', '0', '1', '2', '3', '4', '5', '6', '10', 'pi', 'e'] 
         for t in self.terminals:
             self.token_to_id[t] = self.next_id
             self.id_to_token[self.next_id] = t
@@ -53,7 +53,7 @@ class GPUGrammar:
             if GpuGlobals.USE_OP_TAN:   self.operators.append('tan')
             if GpuGlobals.USE_OP_LOG:   self.operators.append('log')
             if GpuGlobals.USE_OP_EXP:   self.operators.append('exp')
-            if GpuGlobals.USE_OP_FACT:  self.operators.append('!') 
+            if GpuGlobals.USE_OP_FACT:  self.operators.append('fact') 
             if GpuGlobals.USE_OP_GAMMA: 
                 self.operators.append('gamma')
                 self.operators.append('lgamma')

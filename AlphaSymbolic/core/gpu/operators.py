@@ -854,3 +854,33 @@ class GPUOperators:
         population[final_mutant_pop_idx] = out_seqs
         
         return population
+
+    def repair_invalid_population(self, population: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """Replace invalid RPN individuals with fresh random individuals.
+        This prevents evolutionary collapse to trivial fallbacks.
+        """
+        valid_mask = self._validate_rpn_batch(population)
+        invalid_mask = ~valid_mask
+        n_invalid = int(invalid_mask.sum().item())
+        if n_invalid == 0:
+            return population, constants, 0
+
+        invalid_idx = invalid_mask.nonzero(as_tuple=True)[0]
+        population[invalid_idx] = self.generate_random_population(n_invalid)
+
+        if constants is not None and constants.numel() > 0:
+            k = constants.shape[1]
+            if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                fresh_consts = torch.randint(
+                    GpuGlobals.CONSTANT_INT_MIN_VALUE,
+                    GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
+                    (n_invalid, k), device=self.device, dtype=torch.long
+                ).to(self.dtype)
+            else:
+                fresh_consts = torch.empty(n_invalid, k, device=self.device, dtype=self.dtype).uniform_(
+                    GpuGlobals.CONSTANT_MIN_VALUE,
+                    GpuGlobals.CONSTANT_MAX_VALUE
+                )
+            constants[invalid_idx] = fresh_consts
+
+        return population, constants, n_invalid

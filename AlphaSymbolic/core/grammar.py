@@ -33,19 +33,13 @@ OPERATORS = {
     'sign': 1,
     'floor': 1,
     'ceil': 1,
+    'fact': 1,
     'mod': 2,
     '%': 2,     # Alias for mod
     'gamma': 1,
     'lgamma': 1,
     
-    # === C++ / GPU Specific Aliases ===
-    'e': 1,     # Alias for exp
-    '!': 1,     # Alias for gamma/factorial
-    'g': 1,     # Alias for lgamma
-    '_': 1,     # Alias for floor
-    'S': 1,     # Alias for asin
-    'C': 1,     # Alias for acos
-    'T': 1,     # Alias for atan
+    # === C++ / GPU Specific Aliases REMOVED (Collision Risk) ===
 }
 
 # Operator groups for curriculum control
@@ -61,7 +55,7 @@ OPERATOR_STAGES = {
 # Terminal tokens
 VARIABLES = ['x' + str(i) for i in range(10)] # x0, x1, ..., x9
 # 'C' is a placeholder for learnable constants
-CONSTANTS = ['C', '0', '1', '2', '3', '5', '10', 'pi', 'e']
+CONSTANTS = ['C', '0', '1', '2', '3', '4', '5', '10', 'pi', 'e']
 
 # Full Vocabulary
 VOCABULARY = list(OPERATORS.keys()) + VARIABLES + CONSTANTS
@@ -228,36 +222,20 @@ class ExpressionTree:
             # Functions like sin(x)
             func_id = node.func.id
             # Allow both standard names and GPU short tokens
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial', 'pow',
-                           'S', 'C', 'T', 'e', 'g', '_', '!']: 
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial', 'pow']: 
                 
-                # Map back to short tokens if used by engine
-                # We assume engine uses short tokens for S, C, T, e, !, _, g
                 token = func_id
-                # Only map critical C++ aliases if absolutely needed, but prefer standard tokens
-                # if func_id == 'asin': token = 'S'  <-- S risks conflict? No, but let's be explicit
-                # if func_id == 'acos': token = 'C'  <-- C conflicts with Constant C!
-                # if func_id == 'atan': token = 'T'  <-- T risks conflict?
-                if func_id == 'exp': token = 'e'     # e is also constant e (2.71)?
-                # Check 'e'. CONSTANTS has 'e'. OPERATORS has 'e'.
-                # COLLISION on 'e'!
-                # exp(x) arity 1. e constant arity 0.
-                # Must fix 'e' too. Use 'exp'.
+                if func_id == 'fact' or func_id == 'factorial': token = 'fact' 
+                if func_id == 'lgamma': token = 'lgamma'
                 
-                if func_id == 'fact' or func_id == 'factorial': token = '!' 
-                if func_id == 'floor': token = '_'
-                if func_id == 'lgamma': token = 'g' # g is safe?
-                
-                # Force standard names to avoid collisions with Constants (C, e)
+                # Standardize
                 if func_id == 'exp': token = 'exp'
                 if func_id == 'acos': token = 'acos' 
                 if func_id == 'asin': token = 'asin'
                 if func_id == 'atan': token = 'atan'
-                if func_id == 'floor': token = '_'
-                if func_id == 'lgamma': token = 'g'
-                # func_id == 'gamma' stays 'gamma' (True Gamma)
+                if func_id == 'floor': token = 'floor'
                 
-                # Special Handle for 'gamma' -> If it maps to !, it's factorial. 
+                # Special Handle for 'gamma'
                 # If we want PRECISE Gamma, we must ensure engine supports 'gamma' token.
                 # Looking at OPERATORS dict, 'gamma' is a valid token.
                 
@@ -434,6 +412,10 @@ class ExpressionTree:
             
             if val == '!':
                 # CUDA safe_fact uses tgamma(arg + 1)
+                arg = args[0] + 1.0
+                return np.where(arg <= 0.0, np.nan, scipy_gamma(arg))
+            if val == 'fact':
+                # Alias of factorial for parser compatibility (fact(x) -> gamma(x+1))
                 arg = args[0] + 1.0
                 return np.where(arg <= 0.0, np.nan, scipy_gamma(arg))
                 

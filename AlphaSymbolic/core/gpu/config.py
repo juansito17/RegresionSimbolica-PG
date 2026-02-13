@@ -59,7 +59,7 @@ class GpuGlobals:
     # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
     # - Island Migration limit hit at 5.0M.
     # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
-    POP_SIZE = 500_000
+    POP_SIZE = 1_000_000
     GENERATIONS = 1_000_000  
     NUM_ISLANDS = 25 # 500k / 25 = 20k pop per island
     MIN_POP_PER_ISLAND = 20
@@ -101,14 +101,14 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    USE_OP_SIN      = True
-    USE_OP_COS      = True
+    USE_OP_SIN      = False  # Desactivado: causa bloat sin beneficio para regresión
+    USE_OP_COS      = False
     USE_OP_TAN      = False
     USE_OP_LOG      = True
     USE_OP_EXP      = True
-    USE_OP_FACT     = False   # Desactivado: causa bloat sin beneficio para regresión
+    USE_OP_FACT     = True   # Desactivado: causa bloat sin beneficio para regresión
     USE_OP_FLOOR    = False
-    USE_OP_GAMMA    = False    # Desactivado: lgamma/gamma causan explosión numérica y bloat
+    USE_OP_GAMMA    = True    # Desactivado: lgamma/gamma causan explosión numérica y bloat
     USE_OP_ASIN     = False
     USE_OP_ACOS     = False
     USE_OP_ATAN     = False
@@ -177,6 +177,10 @@ class GpuGlobals:
     STAGNATION_RANDOM_INJECT_PERCENT = 0.0  # Desactivado: overhead sin beneficio (peores nunca ganan selección)
     USE_ISLAND_CATACLYSM = True      # Activar/desactivar cataclismo
     
+    # --- Soft Restart (Global) ---
+    SOFT_RESTART_ENABLED = True      # If True, global stagnation preserves elite % instead of full reset
+    SOFT_RESTART_ELITE_RATIO = 0.10  # % of population to keep during global restart (10% = 800 indivs for 8k pop)
+    
     # ----------------------------------------
     # Parámetros de PSO (Particle Swarm Optimization)
     # ----------------------------------------
@@ -208,6 +212,7 @@ class GpuGlobals:
     USE_SIMPLIFICATION = True
     K_SIMPLIFY = 50
     SIMPLIFICATION_INTERVAL = 10
+    USE_CONSOLE_BEST_SIMPLIFICATION = False
     SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9  # Tolerancia para colapsar valores cercanos a 0
     SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9   # Tolerancia para colapsar valores cercanos a 1
     
@@ -229,6 +234,20 @@ class GpuGlobals:
     # ----------------------------------------
     USE_RESIDUAL_BOOSTING = True
     RESIDUAL_BOOST_INTERVAL = 20     # Cada cuántas gens de estancamiento intentar boost
+
+    # ----------------------------------------
+    # Early Exit "Good Enough"
+    # ----------------------------------------
+    GOOD_ENOUGH_RMSE = -1.0          # Desactivado globalmente (condición nunca se cumple)
+    GOOD_ENOUGH_R2 = 0.995           # Umbral de R² mínimo para salida temprana
+    GOOD_ENOUGH_MIN_SECONDS = 4.0    # Tiempo mínimo antes de permitir salida temprana
+
+    # ----------------------------------------
+    # Global Restart Injection
+    # ----------------------------------------
+    USE_STRUCTURAL_RESTART_INJECTION = False
+    STRUCTURAL_RESTART_INJECTION_RATIO = 0.25  # Porcentaje de población inyectada con bases estructurales
+    HARD_RESTART_ELITE_RATIO = 0.12            # % élites preservadas en hard restart (sin plantillas)
     
     # ----------------------------------------
     # Parámetros de Mutation Bank
@@ -250,14 +269,24 @@ class GpuGlobals:
     # Parámetros de Selección
     # ----------------------------------------
     USE_LEXICASE_SELECTION = True
-    USE_SNIPER = True
+    USE_SNIPER = False
+    USE_STRUCTURAL_SEEDS = False
     
     # ----------------------------------------
     # Otros Parámetros
     # ----------------------------------------
     PROGRESS_REPORT_INTERVAL = 100
     USE_CUDA_ORCHESTRATOR = True
+    USE_INITIAL_POP_CACHE = True
     USE_SYMPY = False
     FORCE_INTEGER_CONSTANTS = False   # Forzar constantes enteras en PSO/generación
+
+    # ----------------------------------------
+    # Anti-trivial collapse controls
+    # ----------------------------------------
+    TRIVIAL_FORMULA_MAX_TOKENS = 2      # e.g., x0 or constant-only
+    TRIVIAL_FORMULA_PENALTY = 1.5       # additive penalty in selection metric
+    TRIVIAL_FORMULA_ALLOW_RMSE = 1e-3   # allow trivial elites only if genuinely good
+    NO_VARIABLE_PENALTY = 2.5           # penalize formulas that do not use input variables
     
     INF = float('inf')

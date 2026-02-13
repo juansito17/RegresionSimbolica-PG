@@ -34,8 +34,24 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
     # But RPN decoding is simple if we have the method.
     # We will use the global 'engine' instance defined below.
     
-    formula_str = engine.rpn_to_infix(best_rpn_tensor, best_consts_tensor)
-    formula_size = engine.get_tree_size(best_rpn_tensor) 
+    display_rpn = best_rpn_tensor
+    display_consts = best_consts_tensor
+    if GpuGlobals.USE_CONSOLE_BEST_SIMPLIFICATION:
+        try:
+            simp_pop, simp_consts, _ = engine.gpu_simplifier.simplify_batch(
+                best_rpn_tensor.unsqueeze(0),
+                best_consts_tensor.unsqueeze(0),
+                max_passes=10
+            )
+            if simp_pop is not None and simp_pop.shape[0] > 0:
+                display_rpn = simp_pop[0]
+                if simp_consts is not None and simp_consts.shape[0] > 0:
+                    display_consts = simp_consts[0]
+        except Exception:
+            pass
+
+    formula_str = engine.rpn_to_infix(display_rpn, display_consts)
+    formula_size = engine.get_tree_size(display_rpn)
 
     if is_new_best:
         print(f"\n========================================")
@@ -54,7 +70,7 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
         # We convert X_VALUES to tensor first.
         try:
             x_tensor = torch.tensor(X_VALUES, dtype=engine.dtype, device=engine.device)
-            preds_tensor = engine.predict_individual(best_rpn_tensor, best_consts_tensor, x_tensor)
+            preds_tensor = engine.predict_individual(display_rpn, display_consts, x_tensor)
             preds = preds_tensor.detach().cpu().numpy().flatten()
             
             # Determine display targets

@@ -93,7 +93,7 @@ class GPUOptimizer:
             # OpCode IDs
             vm.PAD_ID, vm.id_x_start,
             vm.id_C, vm.id_pi, vm.id_e,
-            vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_5, vm.id_10,
+            vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_4, vm.id_5, vm.id_6, vm.id_10,
             vm.op_add, vm.op_sub, vm.op_mul, vm.op_div, vm.op_pow, vm.op_mod,
             vm.op_sin, vm.op_cos, vm.op_tan,
             vm.op_log, vm.op_exp,

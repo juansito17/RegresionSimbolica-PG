@@ -32,13 +32,34 @@
 // Returns RMSE contribution (squared error) for that sample, or INF on error.
 
 template <typename scalar_t>
+__device__ __forceinline__ scalar_t safe_pow_fused(scalar_t a, scalar_t b) {
+    if (a != a || b != b) return (scalar_t)1e30;
+    // Native integer Check
+    bool is_int = (floorf(b) == b);
+    if (a < 0.0f && !is_int) {
+        // More permissive: if very close to int
+        if (fabsf(b - roundf(b)) < 1e-4f) {
+            b = roundf(b);
+        } else {
+            return (scalar_t)1e30;
+        }
+    }
+    if (a == 0.0f && b < 0.0f) return (scalar_t)1e30;
+    scalar_t res = powf(a, b);
+    if (res != res || isinf(res)) return (scalar_t)1e30;
+    // Clamp extreme values
+    if (fabsf(res) > 1e18f) return (scalar_t)1e30;
+    return res;
+}
+
+template <typename scalar_t>
 __device__ __forceinline__ scalar_t eval_rpn_single(
     const int64_t* prog, int L,
     const scalar_t* x_vars, int num_vars, int d_idx, int D,
     const scalar_t* consts, int K,
     int PAD_ID, int id_x_start,
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -67,7 +88,9 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
         else if (token == id_1) val = (scalar_t)1.0;
         else if (token == id_2) val = (scalar_t)2.0;
         else if (token == id_3) val = (scalar_t)3.0;
+        else if (token == id_4) val = (scalar_t)4.0;
         else if (token == id_5) val = (scalar_t)5.0;
+        else if (token == id_6) val = (scalar_t)6.0;
         else if (token == id_10) val = (scalar_t)10.0;
         else if (token == id_pi) val = pi_val;
         else if (token == id_e) val = e_val;
@@ -95,17 +118,15 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
             else if (token == op_sub) res = a - b;
             else if (token == op_mul) res = a * b;
             else if (token == op_div) {
-                if (fabsf(b) < 1e-9f) { error = true; break; }
+                if (fabsf(b) < 1e-12f) { error = true; break; }
                 res = a / b;
             }
             else if (token == op_pow) {
-                if (a != a || b != b) { error = true; break; }
-                if (a < 0.0f && floorf(b) != b) { error = true; break; }
-                res = powf(a, b);
-                if (res != res || isinf(res)) { error = true; break; }
+                res = safe_pow_fused<scalar_t>(a, b);
+                if (res >= (scalar_t)1e29) { error = true; break; }
             }
             else if (token == op_mod) {
-                if (fabsf(b) < 1e-9f) { error = true; break; }
+                if (fabsf(b) < 1e-12f) { error = true; break; }
                 res = fmodf(a, b);
             }
             stack[sp++] = res;
@@ -127,12 +148,12 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
             res = sqrtf(a);
         }
         else if (token == op_log) {
-            if (a <= 0.0f) { error = true; break; }
+            if (a <= 1e-12f) { error = true; break; }
             res = logf(a);
         }
         else if (token == op_exp) {
-            if (a > 100.0f) { error = true; break; }
-            if (a < -100.0f) res = 0.0f;
+            if (a > 80.0f) { error = true; break; } // Clamp exp range
+            if (a < -80.0f) res = 0.0f;
             else res = expf(a);
         }
         else if (token == op_floor) res = floorf(a);
@@ -149,11 +170,13 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
         else if (token == op_atan) res = atanf(a);
         else if (token == op_fact) {
             if (a <= -1.0f && floorf(a + 1.0f) == (a + 1.0f)) { error = true; break; }
+            if (a > 50.0f) { error = true; break; }
             res = tgammaf(a + 1.0f);
             if (res != res || isinf(res)) { error = true; break; }
         }
         else if (token == op_gamma) {
             if (a <= 0.0f && floorf(a) == a) { error = true; break; }
+            if (a > 50.0f) { error = true; break; }
             res = tgammaf(a);
             if (res != res || isinf(res)) { error = true; break; }
         }
@@ -163,7 +186,7 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
             if (res != res || isinf(res)) { error = true; break; }
         }
 
-        if (error) break;
+        if (error || res != res || isinf(res)) { error = true; break; }
         stack[sp++] = res;
     }
 
@@ -197,7 +220,7 @@ __global__ void fused_pso_kernel(
     // OpCode IDs (same as eval kernel)
     int PAD_ID, int id_x_start,
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -289,7 +312,7 @@ __global__ void fused_pso_kernel(
                 pos, K,
                 PAD_ID, id_x_start,
                 id_C, id_pi, id_e,
-                id_0, id_1, id_2, id_3, id_5, id_10,
+                id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
                 op_add, op_sub, op_mul, op_div, op_pow, op_mod,
                 op_sin, op_cos, op_tan,
                 op_log, op_exp,
@@ -313,28 +336,6 @@ __global__ void fused_pso_kernel(
         }
 
         // --- 3. Update global best (need reduction across particles) ---
-        s_particle_errs[p] = pbest_err;
-        __syncthreads();
-
-        // Thread 0 finds the minimum and updates shared gbest
-        if (p == 0) {
-            int best_p = -1;
-            scalar_t best_e = s_gbest_err[0];
-            for (int pp = 0; pp < num_particles; pp++) {
-                if (s_particle_errs[pp] < best_e) {
-                    best_e = s_particle_errs[pp];
-                    best_p = pp;
-                }
-            }
-            if (best_p >= 0) {
-                s_gbest_err[0] = best_e;
-                // We can't directly read pbest_pos of another thread...
-                // Store the winning particle index so all threads can check
-            }
-        }
-        __syncthreads();
-
-        // The winning particle writes its pbest_pos to shared gbest_pos
         // We need a different approach: use shared memory for all pbest positions
         // For small P (20), we can use shared memory to communicate
 
@@ -359,7 +360,8 @@ __global__ void fused_pso_kernel(
 
         if (p == 0) {
             int bp = -1;
-            scalar_t be = s_gbest_err[0];
+            scalar_t old_be = s_gbest_err[0];
+            scalar_t be = old_be;
             for (int pp = 0; pp < num_particles; pp++) {
                 if (s_particle_errs[pp] < be) {
                     be = s_particle_errs[pp];
@@ -367,7 +369,14 @@ __global__ void fused_pso_kernel(
                 }
             }
             s_best_particle = bp;
-            if (bp >= 0) s_gbest_err[0] = be;
+            if (bp >= 0) {
+                s_gbest_err[0] = be;
+                /*
+                if (be < old_be && step % 10 == 0) {
+                     printf("[Fused PSO] Block %d: Step %d, New Best RMSE: %f\n", b, step, (float)be);
+                }
+                */
+            }
         }
         __syncthreads();
 
@@ -396,6 +405,7 @@ __global__ void fused_pso_kernel(
 
     // === Write final global best to output ===
     if (p == 0) {
+        // printf("[Fused PSO] Final Block %d: RMSE=%f\n", b, (float)s_gbest_err[0]);
         out_gbest_err[b] = s_gbest_err[0];
         for (int k = 0; k < K; k++) {
             out_gbest_pos[b * K + k] = s_gbest_pos[k];
@@ -418,7 +428,7 @@ void launch_fused_pso(
     // OpCode IDs
     int PAD_ID, int id_x_start,
     int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_5, int id_10,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
@@ -469,7 +479,7 @@ void launch_fused_pso(
             rng_seed,
             PAD_ID, id_x_start,
             id_C, id_pi, id_e,
-            id_0, id_1, id_2, id_3, id_5, id_10,
+            id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
             op_add, op_sub, op_mul, op_div, op_pow, op_mod,
             op_sin, op_cos, op_tan,
             op_log, op_exp,

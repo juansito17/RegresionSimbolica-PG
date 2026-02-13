@@ -115,7 +115,7 @@ __global__ void simplify_batch_kernel(
     int op_log, int op_exp, int op_sqrt, int op_abs,
     int op_gamma, int op_lgamma,
     int op_floor, int op_ceil, int op_sign,
-    int id_0, int id_1, int id_2
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6
 ) {
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
@@ -710,7 +710,7 @@ void launch_simplify_batch(
     int op_log, int op_exp, int op_sqrt, int op_abs,
     int op_gamma, int op_lgamma,
     int op_floor, int op_ceil, int op_sign,
-    int id_0, int id_1, int id_2
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(arities);
@@ -741,7 +741,7 @@ void launch_simplify_batch(
         op_log, op_exp, op_sqrt, op_abs,
         op_gamma, op_lgamma,
         op_floor, op_ceil, op_sign,
-        id_0, id_1, id_2
+        id_0, id_1, id_2, id_3, id_4, id_5, id_6
     );
 }
 

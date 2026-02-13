@@ -5,6 +5,7 @@ A high-performance symbolic simplification engine designed for millions of formu
 All operations are 100% vectorized using PyTorch tensors.
 Zero Python loops over the batch dimension ensure maximum GPU throughput.
 """
+import math
 import torch
 from typing import Tuple, List
 from .grammar import PAD_ID, GPUGrammar
@@ -30,6 +31,8 @@ class GPUSymbolicSimplifier:
         self.grammar = grammar
         self.device = device
         self.dtype = dtype
+        self._fold_abs_tol = 1e-4
+        self._fold_rel_tol = 1e-5
         self._cache_operator_ids()
         self._build_arity_table()
         self._cache_val_table()
@@ -46,10 +49,11 @@ class GPUSymbolicSimplifier:
         self.OP_DIV = g.token_to_id.get('/', -1)
         self.OP_POW_IDS = get_ids(['pow', '^', '**'])
         self.OP_LOG_IDS = get_ids(['log', 'ln'])
-        self.OP_EXP_IDS = get_ids(['exp', 'e'])
+        self.OP_EXP_IDS = get_ids(['exp'])
         self.OP_NEG_IDS = get_ids(['neg'])
         self.OP_SQRT_IDS = get_ids(['sqrt'])
         self.OP_ABS_IDS = get_ids(['abs'])
+        self.OP_FACT_IDS = get_ids(['fact', 'factorial'])
         
         self.OP_SIN = g.token_to_id.get('sin', -1)
         self.OP_COS = g.token_to_id.get('cos', -1)
@@ -80,6 +84,12 @@ class GPUSymbolicSimplifier:
         
         # ID aliases
         self.ID_0, self.ID_1, self.ID_2 = self.CONST_0, self.CONST_1, self.CONST_2
+        self.ID_3 = self.grammar.token_to_id.get('3', -1)
+        self.ID_4 = self.grammar.token_to_id.get('4', -1)
+        self.ID_5 = self.grammar.token_to_id.get('5', -1)
+        self.ID_6 = self.grammar.token_to_id.get('6', -1)
+        self.ID_PI = self.grammar.token_to_id.get('pi', -1)
+        self.ID_E = self.grammar.token_to_id.get('e', -1)
         
     def _build_arity_table(self):
         from core.grammar import OPERATORS
@@ -90,6 +100,11 @@ class GPUSymbolicSimplifier:
         self.arity_table = torch.zeros(max_id, dtype=torch.long, device=self.device)
         for token, tid in self.grammar.token_to_id.items():
             self.arity_table[tid] = OPERATORS.get(token, 0)
+        # GPU grammar may expose aliases not present in core OPERATORS
+        if 'fact' in self.grammar.token_to_id:
+            self.arity_table[self.grammar.token_to_id['fact']] = 1
+        if 'factorial' in self.grammar.token_to_id:
+            self.arity_table[self.grammar.token_to_id['factorial']] = 1
         
         # arity_table[PAD_ID] remains 0, which is safe for subtree logic
 
@@ -100,15 +115,31 @@ class GPUSymbolicSimplifier:
         for t, tid in self.grammar.token_to_id.items():
             if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()):
                 self._cached_val_table[tid] = float(t)
+            elif t == 'pi':
+                self._cached_val_table[tid] = math.pi
+            elif t == 'e':
+                self._cached_val_table[tid] = math.e
         self._cached_lit_vals = self._cached_val_table[self.literal_ids] if self.literal_ids.numel() > 0 else None
                 
     def _is_zero(self, token_ids: torch.Tensor) -> torch.Tensor:
-        if self.zero_ids.numel() == 0: return torch.zeros_like(token_ids, dtype=torch.bool)
-        return (token_ids.unsqueeze(-1) == self.zero_ids).any(dim=-1)
+        by_id = (token_ids.unsqueeze(-1) == self.zero_ids).any(dim=-1) if self.zero_ids.numel() > 0 else torch.zeros_like(token_ids, dtype=torch.bool)
+        if not hasattr(self, '_cached_val_table'):
+            return by_id
+        max_id = self._cached_val_table.size(0)
+        t = token_ids.clamp(0, max_id - 1)
+        vals = self._cached_val_table[t]
+        by_val = (~vals.isnan()) & (vals.abs() <= self._fold_abs_tol)
+        return by_id | by_val
     
     def _is_one(self, token_ids: torch.Tensor) -> torch.Tensor:
-        if self.one_ids.numel() == 0: return torch.zeros_like(token_ids, dtype=torch.bool)
-        return (token_ids.unsqueeze(-1) == self.one_ids).any(dim=-1)
+        by_id = (token_ids.unsqueeze(-1) == self.one_ids).any(dim=-1) if self.one_ids.numel() > 0 else torch.zeros_like(token_ids, dtype=torch.bool)
+        if not hasattr(self, '_cached_val_table'):
+            return by_id
+        max_id = self._cached_val_table.size(0)
+        t = token_ids.clamp(0, max_id - 1)
+        vals = self._cached_val_table[t]
+        by_val = (~vals.isnan()) & ((vals - 1.0).abs() <= self._fold_abs_tol)
+        return by_id | by_val
 
     def _is_constant(self, tokens: torch.Tensor) -> torch.Tensor:
         return (tokens.unsqueeze(-1) == self.literal_ids).any(dim=-1)
@@ -117,9 +148,49 @@ class GPUSymbolicSimplifier:
         if val == 0.0: return self._is_zero(tokens)
         if val == 1.0: return self._is_one(tokens)
         if val == 2.0: return tokens == self.CONST_2
-        val_str = str(int(val)) if val.is_integer() else str(val)
-        tid = self.grammar.token_to_id.get(val_str, -1)
-        return tokens == tid if tid != -1 else torch.zeros_like(tokens, dtype=torch.bool)
+        max_id = self._cached_val_table.size(0)
+        t = tokens.clamp(0, max_id - 1)
+        vals = self._cached_val_table[t]
+        return (~vals.isnan()) & ((vals - val).abs() <= self._fold_abs_tol)
+
+    def _map_values_to_literal_ids(self, values: torch.Tensor, valid_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Map numeric values to grammar literal token IDs with tolerance.
+        Returns (token_ids, match_mask), both shape [B].
+        """
+        B = values.shape[0]
+        token_ids = torch.full((B,), -1, device=self.device, dtype=torch.long)
+        finite_mask = valid_mask & torch.isfinite(values)
+
+        if self.ID_0 != -1:
+            m0 = finite_mask & (values.abs() <= self._fold_abs_tol)
+            token_ids[m0] = self.ID_0
+        if self.ID_1 != -1:
+            m1 = finite_mask & (token_ids == -1) & ((values - 1.0).abs() <= self._fold_abs_tol)
+            token_ids[m1] = self.ID_1
+        if self.ID_2 != -1:
+            m2 = finite_mask & (token_ids == -1) & ((values - 2.0).abs() <= self._fold_abs_tol)
+            token_ids[m2] = self.ID_2
+
+        if self._cached_lit_vals is not None and self._cached_lit_vals.numel() > 0:
+            unresolved = finite_mask & (token_ids == -1)
+            if unresolved.any():
+                dists = (values.unsqueeze(-1) - self._cached_lit_vals.unsqueeze(0)).abs()
+                min_dist, min_idx = dists.min(dim=1)
+                tol = self._fold_abs_tol + self._fold_rel_tol * values.abs()
+                m_lit = unresolved & (min_dist <= tol)
+                token_ids[m_lit] = self.literal_ids[min_idx[m_lit]]
+
+        matched = token_ids != -1
+        return token_ids, matched
+
+    def _map_single_value_to_literal_id(self, value: float) -> int:
+        vals = torch.tensor([value], device=self.device, dtype=self.dtype)
+        mask = torch.tensor([True], device=self.device, dtype=torch.bool)
+        token_ids, matched = self._map_values_to_literal_ids(vals, mask)
+        if matched[0].item():
+            return int(token_ids[0].item())
+        return -1
 
     def _precompute_all_subtree_starts(self, population: torch.Tensor) -> torch.Tensor:
         """
@@ -239,6 +310,10 @@ class GPUSymbolicSimplifier:
                     for t, tid in self.grammar.token_to_id.items():
                         if t.replace('.','',1).isdigit() or (t.startswith('-') and t[1:].replace('.','',1).isdigit()):
                             vt[tid] = float(t)
+                        elif t == 'pi':
+                            vt[tid] = float(math.pi)
+                        elif t == 'e':
+                            vt[tid] = float(math.e)
                     self._cuda_val_table = vt.contiguous()
                     # Build literal_ids (int64) and literal_vals (float32) for nearest-literal mapping
                     self._cuda_literal_ids = self.literal_ids.contiguous()
@@ -262,7 +337,7 @@ class GPUSymbolicSimplifier:
                     _first_or(self.OP_LOG_IDS), _first_or(self.OP_EXP_IDS), _first_or(self.OP_SQRT_IDS), _first_or(self.OP_ABS_IDS),
                     _first_or(self.OP_GAMMA_IDS), _first_or(self.OP_LGAMMA_IDS),
                     self.OP_FLOOR, self.OP_CEIL, self.OP_SIGN,
-                    self.ID_0, self.ID_1, self.ID_2
+                    self.ID_0, self.ID_1, self.ID_2, self.ID_3, self.ID_4, self.ID_5, self.ID_6
                 )
                 
                 # Validate after CUDA simplification
@@ -270,12 +345,34 @@ class GPUSymbolicSimplifier:
                 if not is_valid.all():
                     invalid_indices = torch.where(~is_valid)[0]
                     pop[invalid_indices] = population[invalid_indices]
-                
-                return pop, constants, 0  # CUDA kernel doesn't report count
+
+                # CUDA kernel is fast but can miss some higher-order/iterative patterns.
+                # Run a short vectorized GPU cleanup pass to normalize final expressions.
+                cleanup_passes = 2 if max_passes >= 2 else 1
+                pop, constants, n_cleanup = self._simplify_fallback_passes(
+                    pop,
+                    constants,
+                    cleanup_passes,
+                    original_population=population,
+                )
+
+                return pop, constants, n_cleanup
             except Exception:
                 pass  # Fall through to Python implementation
-        
-        # ============ PyTorch FALLBACK ============
+
+        return self._simplify_fallback_passes(pop, constants, max_passes, original_population=population)
+
+    def _simplify_fallback_passes(
+        self,
+        pop: torch.Tensor,
+        constants: torch.Tensor,
+        max_passes: int,
+        original_population: torch.Tensor = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """Vectorized GPU simplification passes used as fallback and post-CUDA cleanup."""
+        if original_population is None:
+            original_population = pop
+
         total_simplified = 0
         for _ in range(max_passes):
             n_pass = 0
@@ -291,23 +388,33 @@ class GPUSymbolicSimplifier:
                 starts_cache = self._precompute_all_subtree_starts(pop)
             
             pop, n = self._apply_identity_rules(pop, starts_cache); n_pass += n
+            if n > 0:
+                starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_zero_rules(pop, starts_cache); n_pass += n
+            if n > 0:
+                starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_self_cancellation_rules(pop); n_pass += n
             pop, n = self._apply_associative_rules(pop, starts_cache); n_pass += n
+            if n > 0:
+                starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_advanced_rules(pop, starts_cache); n_pass += n
+            if n > 0:
+                starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_term_consolidation(pop, starts_cache); n_pass += n
+            if n > 0:
+                starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_modulo_rules(pop, starts_cache); n_pass += n
             pop, n = self._apply_constant_folding(pop, starts_cache); n_pass += n
             pop, n = self._compact_formulas(pop); n_pass += n
             if n_pass == 0: break
             total_simplified += n_pass
-        
+
         # Validation Step: Revert rows that became invalid (unbalanced)
         is_valid = self._validate_batch_stack(pop)
         if not is_valid.all():
             invalid_indices = torch.where(~is_valid)[0]
-            pop[invalid_indices] = population[invalid_indices]
-            
+            pop[invalid_indices] = original_population[invalid_indices]
+
         return pop, constants, total_simplified
     
     def _validate_batch_stack(self, population: torch.Tensor) -> torch.Tensor:
@@ -393,8 +500,8 @@ class GPUSymbolicSimplifier:
             # The operations below are cheap no-ops when masks are all-False
             
             s2 = self._get_subtree_starts_cached(starts_cache, j-1) if starts_cache is not None else self._get_subtree_starts(pop, j-1)
-            is_z2 = has_work & (s2 == j-1) & self._is_zero(pop[:, j-1])
-            is_o2 = has_work & (s2 == j-1) & self._is_one(pop[:, j-1])
+            is_z2 = has_work & (s2 == j-1) & self._is_constant_value(pop[:, j-1], 0.0)
+            is_o2 = has_work & (s2 == j-1) & self._is_constant_value(pop[:, j-1], 1.0)
             
             # x+0, x-0, x*1, x/1, x^1 -> skip arg2/op (keep arg1)
             to_skip_arg2 = (is_plus & is_z2) | (is_minus & is_z2) | (is_mult & is_o2) | (is_div & is_o2) | (is_pow & is_o2)
@@ -406,21 +513,20 @@ class GPUSymbolicSimplifier:
             # 0+x, 1*x -> skip arg1/op (keep arg2)
             s1 = self._get_subtree_starts_cached(starts_cache, s2-1) if starts_cache is not None else self._get_subtree_starts(pop, s2-1)
             valid_s1 = (s2 > 0)
-            is_z1 = (s1 == s2-1) & self._is_zero(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & valid_s1
-            is_o1 = (s1 == s2-1) & self._is_one(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1)) & valid_s1
+            is_z1 = (s1 == s2-1) & self._is_constant_value(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1), 0.0) & valid_s1
+            is_o1 = (s1 == s2-1) & self._is_constant_value(pop.gather(1, (s2-1).clamp(0).unsqueeze(1)).squeeze(1), 1.0) & valid_s1
             
             to_skip_arg1 = (is_plus & is_z1) | (is_mult & is_o1)
             to_skip_arg1 &= (s2 > 0) & (s2 < L)
-            if to_skip_arg1.any():
-                rows = torch.where(to_skip_arg1)[0]
-                pop[rows, (s2-1)[rows]] = PAD_ID
-                pop[rows, j] = PAD_ID
-                n_simplified += to_skip_arg1.sum().item()
+            rows = torch.where(to_skip_arg1)[0]
+            pop[rows, (s2-1)[rows]] = PAD_ID
+            pop[rows, j] = PAD_ID
+            n_simplified += to_skip_arg1.sum().item()
             
             # Special Constant Result Rules: x^0 -> 1, 1^x -> 1
             match_const_1 = is_pow & (is_z2 | is_o1)
             match_const_1 &= (s1 >= 0) & (s1 < L)
-            if match_const_1.any() and o_id != -1:
+            if o_id != -1:
                 rows = torch.where(match_const_1)[0]
                 start = s1[match_const_1]
                 sub_pop = pop[rows]
@@ -530,7 +636,10 @@ class GPUSymbolicSimplifier:
         pop = population.clone()
         n_simplified = 0
         z_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
+        neg_id = self.OP_NEG_IDS[0].item() if self.OP_NEG_IDS.numel() > 0 else -1
         for j in range(2, L):
+            op = pop[:, j]
+
             is_mult = (pop[:, j] == self.OP_MULT)
             s2 = self._get_subtree_starts_cached(starts_cache, j-1) if starts_cache is not None else self._get_subtree_starts(pop, j-1)
             is_z2 = is_mult & (s2 == j-1) & self._is_zero(pop[:, j-1])
@@ -563,6 +672,53 @@ class GPUSymbolicSimplifier:
                 pop[rows] = sub_pop
                 
                 n_simplified += match.sum().item()
+
+            # 0 - x -> neg(x)
+            if neg_id != -1:
+                is_minus = (op == self.OP_MINUS)
+                is_zero_left = is_minus & (s2 > 0) & (s1 == s2 - 1)
+                left_tok = pop.gather(1, (s2 - 1).clamp(0).unsqueeze(1)).squeeze(1)
+                is_zero_left &= self._is_constant_value(left_tok, 0.0)
+
+                rows = torch.where(is_zero_left)[0]
+                for b in rows:
+                    start = int(s1[b].item())
+                    arg2_start = int(s2[b].item())
+                    if start < 0 or arg2_start < 0 or arg2_start >= j:
+                        continue
+
+                    arg2 = pop[b, arg2_start:j].clone()
+                    new = torch.cat([
+                        arg2,
+                        torch.tensor([neg_id], device=self.device, dtype=torch.long)
+                    ])
+                    if new.numel() <= (j - start + 1):
+                        pop[b, start:start + new.numel()] = new
+                        pop[b, start + new.numel():j + 1] = PAD_ID
+                        n_simplified += 1
+
+            # x / (-1) -> neg(x)
+            if neg_id != -1:
+                is_div = (op == self.OP_DIV)
+                is_neg_one_right = is_div & (s2 == j - 1) & self._is_constant_value(pop[:, j - 1], -1.0)
+
+                rows = torch.where(is_neg_one_right)[0]
+                for b in rows:
+                    start = int(s1[b].item())
+                    arg2_start = int(s2[b].item())
+                    if start < 0 or arg2_start <= start or arg2_start >= j:
+                        continue
+
+                    arg1 = pop[b, start:arg2_start].clone()
+                    new = torch.cat([
+                        arg1,
+                        torch.tensor([neg_id], device=self.device, dtype=torch.long)
+                    ])
+                    if new.numel() <= (j - start + 1):
+                        pop[b, start:start + new.numel()] = new
+                        pop[b, start + new.numel():j + 1] = PAD_ID
+                        n_simplified += 1
+
         return pop, n_simplified
 
     def _apply_self_cancellation_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
@@ -640,6 +796,16 @@ class GPUSymbolicSimplifier:
                 pop[:, j-1] = torch.where(match_at, PAD_ID, pop[:, j-1])
                 counts += match_at.long()
 
+                # abs(neg(x)) -> abs(x)
+                match_an = is_op_in(tokens, self.OP_ABS_IDS) & is_op_in(pop[:, j-1], self.OP_NEG_IDS)
+                pop[:, j-1] = torch.where(match_an, PAD_ID, pop[:, j-1])
+                counts += match_an.long()
+
+                # abs(abs(x)) -> abs(x)
+                match_aa = is_op_in(tokens, self.OP_ABS_IDS) & is_op_in(pop[:, j-1], self.OP_ABS_IDS)
+                pop[:, j-1] = torch.where(match_aa, PAD_ID, pop[:, j-1])
+                counts += match_aa.long()
+
             # --- SOTA / Better than basic Sympy ---
             # sqrt(x^2) -> abs(x)
             if j >= 3 and abs_id != -1:
@@ -655,6 +821,7 @@ class GPUSymbolicSimplifier:
             arg_is0 = is_unary & self._is_zero(arg)
             arg_is1 = is_unary & self._is_one(arg)
             arg_is2 = is_unary & self._is_constant_value(arg, 2.0)
+            arg_is_e = is_unary & self._is_constant_value(arg, math.e)
             
             to_zero = arg_is0 & ((tokens==self.OP_SIN)|(tokens==self.OP_TAN)|is_op_in(tokens, self.OP_ABS_IDS))
             to_zero |= arg_is1 & is_op_in(tokens, self.OP_LOG_IDS)
@@ -666,14 +833,22 @@ class GPUSymbolicSimplifier:
                 pop[:, j] = torch.where(to_zero, PAD_ID, pop[:, j])
                 counts += to_zero.long()
             
-            to_one = arg_is0 & ((tokens==self.OP_COS)|is_op_in(tokens, self.OP_EXP_IDS))
+            to_one = arg_is0 & ((tokens==self.OP_COS)|is_op_in(tokens, self.OP_EXP_IDS)|is_op_in(tokens, self.OP_FACT_IDS))
             to_one |= arg_is1 & is_op_in(tokens, self.OP_GAMMA_IDS)
             to_one |= arg_is2 & is_op_in(tokens, self.OP_GAMMA_IDS)
+            to_one |= arg_is_e & is_op_in(tokens, self.OP_LOG_IDS)
             
             if o_id != -1:
                 pop[:, j-1] = torch.where(to_one, o_id, pop[:, j-1])
                 pop[:, j] = torch.where(to_one, PAD_ID, pop[:, j])
                 counts += to_one.long()
+
+            # exp(1) -> e (when symbolic e exists in grammar)
+            to_e = arg_is1 & is_op_in(tokens, self.OP_EXP_IDS)
+            if self.ID_E != -1:
+                pop[:, j-1] = torch.where(to_e, self.ID_E, pop[:, j-1])
+                pop[:, j] = torch.where(to_e, PAD_ID, pop[:, j])
+                counts += to_e.long()
             
             # --- Negation Rules: x + neg(x) -> 0 (cached subtree starts) ---
             if j >= 2:
@@ -707,20 +882,111 @@ class GPUSymbolicSimplifier:
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
-        if self.ID_2 == -1: return pop, 0
         
         for j in range(4, L):
             op = pop[:, j]
             is_plus = (op == self.OP_PLUS)
+
+            s2_batch = self._get_subtree_starts_cached(starts_cache, j-1) if starts_cache is not None else self._get_subtree_starts(pop, j-1)
+            s1_batch = self._get_subtree_starts_cached(starts_cache, s2_batch-1) if starts_cache is not None else self._get_subtree_starts(pop, s2_batch-1)
+
+            # Constant hoisting for nested plus:
+            # (c1 + (c2 + x)) -> ((c1 + c2) + x)
+            # ((x + c2) + c1) -> ((c1 + c2) + x)
+            rows_plus = torch.where(is_plus)[0]
+            for b in rows_plus:
+                s1 = int(s1_batch[b].item())
+                s2 = int(s2_batch[b].item())
+                if s1 < 0 or s2 < 0 or s1 >= s2 or s2 > j:
+                    continue
+
+                # Case A: c1 + ( ... )
+                if s1 == s2 - 1 and pop[b, j-1] == self.OP_PLUS:
+                    c1_tok = pop[b, s1]
+                    if c1_tok >= 0 and c1_tok < self._cached_val_table.size(0):
+                        c1_val = self._cached_val_table[c1_tok].item()
+                        if not math.isnan(c1_val):
+                            if starts_cache is not None:
+                                inner_s2 = int(self._get_subtree_starts_cached(starts_cache, j-2)[b].item())
+                                inner_s1 = int(self._get_subtree_starts_cached(starts_cache, inner_s2-1)[b].item())
+                            else:
+                                inner_s2 = int(self._get_subtree_starts(pop[b:b+1], j-2)[0].item())
+                                inner_s1 = int(self._get_subtree_starts(pop[b:b+1], inner_s2-1)[0].item())
+                            if inner_s1 >= 0 and inner_s2 >= 0 and inner_s1 < inner_s2:
+                                c2_tok = None
+                                x_tokens = None
+                                # (c2 + x)
+                                if inner_s1 == inner_s2 - 1:
+                                    c2_tok = pop[b, inner_s1]
+                                    x_tokens = pop[b, inner_s2:j-1].clone()
+                                # (x + c2)
+                                elif inner_s2 == j-2:
+                                    c2_tok = pop[b, inner_s2]
+                                    x_tokens = pop[b, inner_s1:inner_s2].clone()
+
+                                if c2_tok is not None and c2_tok >= 0 and c2_tok < self._cached_val_table.size(0) and x_tokens is not None and x_tokens.numel() > 0:
+                                    c2_val = self._cached_val_table[c2_tok].item()
+                                    if not math.isnan(c2_val):
+                                        new_c_tid = self._map_single_value_to_literal_id(c1_val + c2_val)
+                                        if new_c_tid != -1:
+                                            new_seg = torch.cat([
+                                                torch.tensor([new_c_tid], device=self.device, dtype=torch.long),
+                                                x_tokens,
+                                                torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
+                                            ])
+                                            if new_seg.numel() <= (j - s1 + 1):
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg
+                                                pop[b, s1+new_seg.numel():j+1] = PAD_ID
+                                                n_simplified += 1
+                                                continue
+
+                # Case B: ( ... ) + c1
+                if s2 == j - 1 and pop[b, s2-1] == self.OP_PLUS:
+                    c1_tok = pop[b, s2]
+                    if c1_tok >= 0 and c1_tok < self._cached_val_table.size(0):
+                        c1_val = self._cached_val_table[c1_tok].item()
+                        if not math.isnan(c1_val):
+                            inner_end = s2 - 1
+                            if starts_cache is not None:
+                                inner_s2 = int(self._get_subtree_starts_cached(starts_cache, inner_end-1)[b].item())
+                                inner_s1 = int(self._get_subtree_starts_cached(starts_cache, inner_s2-1)[b].item())
+                            else:
+                                inner_s2 = int(self._get_subtree_starts(pop[b:b+1], inner_end-1)[0].item())
+                                inner_s1 = int(self._get_subtree_starts(pop[b:b+1], inner_s2-1)[0].item())
+                            if inner_s1 >= 0 and inner_s2 >= 0 and inner_s1 < inner_s2:
+                                c2_tok = None
+                                x_tokens = None
+                                # (c2 + x)
+                                if inner_s1 == inner_s2 - 1:
+                                    c2_tok = pop[b, inner_s1]
+                                    x_tokens = pop[b, inner_s2:inner_end].clone()
+                                # (x + c2)
+                                elif inner_s2 == inner_end - 1:
+                                    c2_tok = pop[b, inner_s2]
+                                    x_tokens = pop[b, inner_s1:inner_s2].clone()
+
+                                if c2_tok is not None and c2_tok >= 0 and c2_tok < self._cached_val_table.size(0) and x_tokens is not None and x_tokens.numel() > 0:
+                                    c2_val = self._cached_val_table[c2_tok].item()
+                                    if not math.isnan(c2_val):
+                                        new_c_tid = self._map_single_value_to_literal_id(c1_val + c2_val)
+                                        if new_c_tid != -1:
+                                            new_seg = torch.cat([
+                                                torch.tensor([new_c_tid], device=self.device, dtype=torch.long),
+                                                x_tokens,
+                                                torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
+                                            ])
+                                            if new_seg.numel() <= (j - s1 + 1):
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg
+                                                pop[b, s1+new_seg.numel():j+1] = PAD_ID
+                                                n_simplified += 1
+                                                continue
             
             # Pattern: (x + y) + z -> 2*x + y
+            if self.ID_2 == -1:
+                continue
             match_1 = is_plus & (pop[:, j-1] == self.OP_PLUS)
             rows = torch.where(match_1)[0]
             if rows.numel() == 0: continue
-            
-            # Get subtree starts from cache for batch
-            s2_batch = self._get_subtree_starts_cached(starts_cache, j-1) if starts_cache is not None else self._get_subtree_starts(pop, j-1)
-            s1_batch = self._get_subtree_starts_cached(starts_cache, s2_batch-1) if starts_cache is not None else self._get_subtree_starts(pop, s2_batch-1)
             
             for b in rows:
                 idx_s1, idx_s2 = s1_batch[b].item(), s2_batch[b].item()
@@ -922,38 +1188,31 @@ class GPUSymbolicSimplifier:
             
             if mask.any():  # Single sync guards allocation + heavy computation
                 res = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
-                v = val[mask]
-                
-                m = mask & (op==self.OP_SIN); res[m] = torch.sin(v[m[mask]])
-                m = mask & (op==self.OP_COS); res[m] = torch.cos(v[m[mask]])
-                m = mask & (op==self.OP_TAN); res[m] = torch.tan(v[m[mask]])
-                m = mask & is_op_in(op, self.OP_LOG_IDS); res[m] = torch.log(v[m[mask]])
-                m = mask & is_op_in(op, self.OP_EXP_IDS); res[m] = torch.exp(v[m[mask]])
-                m = mask & is_op_in(op, self.OP_SQRT_IDS); res[m] = torch.sqrt(v[m[mask]])
-                m = mask & is_op_in(op, self.OP_ABS_IDS); res[m] = torch.abs(v[m[mask]])
-                m = mask & (op==self.OP_FLOOR); res[m] = torch.floor(v[m[mask]])
-                m = mask & (op==self.OP_CEIL); res[m] = torch.ceil(v[m[mask]])
-                m = mask & (op==self.OP_SIGN); res[m] = torch.sign(v[m[mask]])
-                m = mask & (op==self.OP_ASIN); res[m] = torch.asin(v[m[mask]])
-                m = mask & (op==self.OP_ACOS); res[m] = torch.acos(v[m[mask]])
-                m = mask & (op==self.OP_ATAN); res[m] = torch.atan(v[m[mask]])
-                
-                m_g = mask & is_op_in(op, self.OP_GAMMA_IDS)
-                res[m_g] = torch.exp(torch.lgamma(v[m_g[mask]]))
-                m_lg = mask & is_op_in(op, self.OP_LGAMMA_IDS)
-                res[m_lg] = torch.lgamma(v[m_lg[mask]])
-                
-                res[res.isnan() | res.isinf()] = 0.0
-                
-                # Vectorized literal mapping (replaces per-literal Python loop + its syncs)
-                if lit_vals is not None:
-                    dists = (res.unsqueeze(-1) - lit_vals.unsqueeze(0)).abs()  # [B, num_lits]
-                    min_dist, min_idx = dists.min(dim=1)
-                    match_close = mask & (min_dist < 1e-5)
-                    best_tid = self.literal_ids[min_idx]
-                    pop[:, j-1] = torch.where(match_close, best_tid, pop[:, j-1])
-                    pop[:, j] = torch.where(match_close, PAD_ID, pop[:, j])
-                    counts += match_close.long()
+                applied = torch.zeros(B, device=self.device, dtype=torch.bool)
+
+                m = mask & (op == self.OP_SIN); res[m] = torch.sin(val[m]); applied |= m
+                m = mask & (op == self.OP_COS); res[m] = torch.cos(val[m]); applied |= m
+                m = mask & (op == self.OP_TAN); res[m] = torch.tan(val[m]); applied |= m
+                m = mask & is_op_in(op, self.OP_LOG_IDS); res[m] = torch.log(val[m]); applied |= m
+                m = mask & is_op_in(op, self.OP_EXP_IDS); res[m] = torch.exp(val[m]); applied |= m
+                m = mask & is_op_in(op, self.OP_SQRT_IDS); res[m] = torch.sqrt(val[m]); applied |= m
+                m = mask & is_op_in(op, self.OP_ABS_IDS); res[m] = torch.abs(val[m]); applied |= m
+                m = mask & is_op_in(op, self.OP_NEG_IDS); res[m] = -val[m]; applied |= m
+                m = mask & (op == self.OP_FLOOR); res[m] = torch.floor(val[m]); applied |= m
+                m = mask & (op == self.OP_CEIL); res[m] = torch.ceil(val[m]); applied |= m
+                m = mask & (op == self.OP_SIGN); res[m] = torch.sign(val[m]); applied |= m
+                m = mask & (op == self.OP_ASIN); res[m] = torch.asin(val[m]); applied |= m
+                m = mask & (op == self.OP_ACOS); res[m] = torch.acos(val[m]); applied |= m
+                m = mask & (op == self.OP_ATAN); res[m] = torch.atan(val[m]); applied |= m
+                m = mask & is_op_in(op, self.OP_FACT_IDS); res[m] = torch.exp(torch.lgamma(val[m] + 1.0)); applied |= m
+
+                m = mask & is_op_in(op, self.OP_GAMMA_IDS); res[m] = torch.exp(torch.lgamma(val[m])); applied |= m
+                m = mask & is_op_in(op, self.OP_LGAMMA_IDS); res[m] = torch.lgamma(val[m]); applied |= m
+
+                best_tid, match_close = self._map_values_to_literal_ids(res, applied)
+                pop[:, j-1] = torch.where(match_close, best_tid, pop[:, j-1])
+                pop[:, j] = torch.where(match_close, PAD_ID, pop[:, j])
+                counts += match_close.long()
 
             # --- Binary Folding (removed outer .any() sync) ---
             is_binary = (arity == 2)
@@ -966,33 +1225,25 @@ class GPUSymbolicSimplifier:
                 
                 if mask.any():  # Single sync guards allocation + heavy computation
                     res = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
-                    v1_m, v2_m = v1[mask], v2[mask]
-                    
-                    m = mask & (op==self.OP_PLUS); res[m] = v1_m[m[mask]] + v2_m[m[mask]]
-                    m = mask & (op==self.OP_MINUS); res[m] = v1_m[m[mask]] - v2_m[m[mask]]
-                    m = mask & (op==self.OP_MULT); res[m] = v1_m[m[mask]] * v2_m[m[mask]]
-                    
-                    m = mask & (op==self.OP_DIV)
-                    nz = torch.zeros(B, device=self.device, dtype=torch.bool)
-                    nz[mask] = (v2_m != 0)
-                    m = m & nz
-                    res[m] = v1_m[m[mask]] / v2_m[m[mask]]
-                    
+                    applied = torch.zeros(B, device=self.device, dtype=torch.bool)
+
+                    m = mask & (op == self.OP_PLUS); res[m] = v1[m] + v2[m]; applied |= m
+                    m = mask & (op == self.OP_MINUS); res[m] = v1[m] - v2[m]; applied |= m
+                    m = mask & (op == self.OP_MULT); res[m] = v1[m] * v2[m]; applied |= m
+
+                    m = mask & (op == self.OP_DIV) & (v2 != 0)
+                    res[m] = v1[m] / v2[m]
+                    applied |= m
+
                     m = mask & is_op_in(op, self.OP_POW_IDS)
-                    res[m] = v1_m[m[mask]].pow(v2_m[m[mask]])
-                    
-                    res[res.isnan() | res.isinf()] = 0.0
-                    
-                    # Vectorized literal mapping
-                    if lit_vals is not None:
-                        dists = (res.unsqueeze(-1) - lit_vals.unsqueeze(0)).abs()
-                        min_dist, min_idx = dists.min(dim=1)
-                        match_close = mask & (min_dist < 1e-5)
-                        best_tid = self.literal_ids[min_idx]
-                        pop[:, j-2] = torch.where(match_close, best_tid, pop[:, j-2])
-                        pop[:, j-1] = torch.where(match_close, PAD_ID, pop[:, j-1])
-                        pop[:, j] = torch.where(match_close, PAD_ID, pop[:, j])
-                        counts += match_close.long()
+                    res[m] = v1[m].pow(v2[m])
+                    applied |= m
+
+                    best_tid, match_close = self._map_values_to_literal_ids(res, applied)
+                    pop[:, j-2] = torch.where(match_close, best_tid, pop[:, j-2])
+                    pop[:, j-1] = torch.where(match_close, PAD_ID, pop[:, j-1])
+                    pop[:, j] = torch.where(match_close, PAD_ID, pop[:, j])
+                    counts += match_close.long()
         
         return pop, counts.sum().item()
 
