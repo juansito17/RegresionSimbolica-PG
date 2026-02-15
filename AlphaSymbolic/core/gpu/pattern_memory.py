@@ -41,7 +41,7 @@ class PatternMemory:
         
         self.max_pattern_len = 15  # Max subtree length to store
         self.patterns_tensor = torch.zeros(max_patterns, self.max_pattern_len, 
-                                           dtype=torch.long, device=device)
+                                           dtype=torch.uint8, device=device)
         self.patterns_hash = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_count = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_fitness = torch.full((max_patterns,), float('inf'), 
@@ -128,7 +128,7 @@ class PatternMemory:
         
         # Create padded pattern tensor
         extracted_patterns = torch.zeros(N_valid, self.max_pattern_len, 
-                                         dtype=torch.long, device=self.device)
+                                         dtype=torch.uint8, device=self.device)
         
         # Fully vectorized extraction using advanced indexing (no Python loop)
         # Build a [N_valid, max_pattern_len] index matrix
@@ -268,13 +268,13 @@ class PatternMemory:
             [N, max_pattern_len] tensor of patterns
         """
         if self.n_patterns == 0:
-            return torch.zeros(0, self.max_pattern_len, dtype=torch.long, device=self.device)
+            return torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
         
         # Filter by min_uses
         useful_mask = self.patterns_count[:self.n_patterns] >= self.min_uses
         
         if not useful_mask.any():
-            return torch.zeros(0, self.max_pattern_len, dtype=torch.long, device=self.device)
+            return torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
         
         useful_indices = useful_mask.nonzero().squeeze(1)
         
@@ -323,7 +323,7 @@ class PatternMemory:
         # Pad patterns to population max_len
         if selected_patterns.shape[1] < max_len:
             padding = torch.zeros(n_inject, max_len - selected_patterns.shape[1], 
-                                  dtype=torch.long, device=self.device)
+                                  dtype=torch.uint8, device=self.device)
             selected_patterns = torch.cat([selected_patterns, padding], dim=1)
         else:
             selected_patterns = selected_patterns[:, :max_len]

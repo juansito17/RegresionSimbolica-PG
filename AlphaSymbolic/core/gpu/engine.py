@@ -47,15 +47,16 @@ class TensorGeneticEngine:
         self.dtype = torch.float32 if GpuGlobals.USE_FLOAT32 else torch.float64
         print(f"[Engine] Precision Mode: {self.dtype}")
 
-        # --- Double Buffering Setup ---
-        # Pre-allocate 2 sets of buffers to avoid churn
-        self.pop_buffer_A = torch.full((self.pop_size, self.max_len), PAD_ID, dtype=torch.long, device=self.device)
-        self.pop_buffer_B = torch.full((self.pop_size, self.max_len), PAD_ID, dtype=torch.long, device=self.device)
-        self.const_buffer_A = torch.zeros((self.pop_size, self.max_constants), dtype=self.dtype, device=self.device)
-        self.const_buffer_B = torch.zeros((self.pop_size, self.max_constants), dtype=self.dtype, device=self.device)
-
         # --- Sub-components ---
         self.grammar = GPUGrammar(num_variables)
+        self.pop_dtype = self.grammar.dtype # uint8
+
+        # --- Double Buffering Setup ---
+        # Pre-allocate 2 sets of buffers to avoid churn
+        self.pop_buffer_A = torch.full((self.pop_size, self.max_len), PAD_ID, dtype=self.pop_dtype, device=self.device)
+        self.pop_buffer_B = torch.full((self.pop_size, self.max_len), PAD_ID, dtype=self.pop_dtype, device=self.device)
+        self.const_buffer_A = torch.zeros((self.pop_size, self.max_constants), dtype=self.dtype, device=self.device)
+        self.const_buffer_B = torch.zeros((self.pop_size, self.max_constants), dtype=self.dtype, device=self.device)
 
         
         # Pass dtype to sub-components
@@ -379,7 +380,7 @@ class TensorGeneticEngine:
                 f_norm = f.replace('**', '^') if isinstance(f, str) else f
                 tree = ExpressionTree.from_infix(f_norm)
                 if not tree.is_valid:
-                     rpn_list.append(torch.full((self.max_len,), PAD_ID, dtype=torch.long, device=self.device))
+                     rpn_list.append(torch.full((self.max_len,), PAD_ID, dtype=self.pop_dtype, device=self.device))
                      # FIX: Use self.dtype
                      const_list.append(torch.zeros(self.max_constants, dtype=self.dtype, device=self.device))
                      continue
@@ -429,14 +430,15 @@ class TensorGeneticEngine:
                 if len(const_values) > self.max_constants: const_values = const_values[:self.max_constants]
                 else: const_values += [0.0] * (self.max_constants - len(const_values))
                 
-                rpn_list.append(torch.tensor(ids, dtype=torch.long, device=self.device))
+                
+                rpn_list.append(torch.tensor(ids, dtype=self.pop_dtype, device=self.device))
                 # FIX: Use self.dtype
                 const_list.append(torch.tensor(const_values, dtype=self.dtype, device=self.device))
             except Exception as e:
                 print(f"[Engine] ERROR parsing formula '{f}': {e}")
                 # Append dummy invalid to keep shape consistency if needed, 
                 # but better to see the error first.
-                rpn_list.append(torch.full((self.max_len,), PAD_ID, dtype=torch.long, device=self.device))
+                rpn_list.append(torch.full((self.max_len,), PAD_ID, dtype=self.pop_dtype, device=self.device))
                 const_list.append(torch.zeros(self.max_constants, dtype=self.dtype, device=self.device))
                 
         if not rpn_list: return None, None
@@ -456,7 +458,7 @@ class TensorGeneticEngine:
         else:
             n_poly = 0
             n_rand = self.pop_size
-            poly_pop, poly_c = torch.empty(0, self.max_len, device=self.device, dtype=torch.long), torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
+            poly_pop, poly_c = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype), torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
             print(f"[Engine] Population Initialized: {n_rand} Random (Pure GP).")
         
         rand_pop = self.operators.generate_random_population(n_rand)

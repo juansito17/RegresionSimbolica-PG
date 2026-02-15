@@ -149,6 +149,12 @@ class GPUGrammar:
             
         self.vocab_size = self.next_id
         
+        # Token Compression: Ensure vocab fits in uint8
+        if self.vocab_size > 255:
+            raise ValueError(f"Vocabulary size {self.vocab_size} exceeds uint8 limit (255). Implementation requires < 256 tokens.")
+        
+        self.dtype = torch.uint8 # Target dtype for population
+        
         self.op_ids = {op: self.token_to_id[op] for op in self.operators}
         self.token_arity = {}
         for op in self.operators:
@@ -224,6 +230,6 @@ class GPUGrammar:
                         ids.append(tid)
         
         if len(ids) == 0:
-            return torch.zeros(1, dtype=torch.int64, device=device)  # Return dummy
-        return torch.tensor(ids, dtype=torch.int64, device=device)
+            return torch.zeros(1, dtype=self.dtype, device=device)  # Return dummy
+        return torch.tensor(ids, dtype=self.dtype, device=device)
 

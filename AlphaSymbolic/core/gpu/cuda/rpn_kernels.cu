@@ -196,7 +196,7 @@ __device__ __forceinline__ T strict_lgamma(T a, bool &error) {
 // TEMPLATED KERNEL
 template <typename scalar_t>
 __global__ void rpn_eval_kernel(
-    const int64_t* __restrict__ population,  // [B, L]
+    const unsigned char* __restrict__ population,  // [B, L] (uint8)
     const scalar_t* __restrict__ x,          // [Vars, D]
     const scalar_t* __restrict__ constants,  // [B, K]
     scalar_t* __restrict__ out_preds,        // [B, D]
@@ -233,11 +233,11 @@ __global__ void rpn_eval_kernel(
     bool error = false;
     int c_idx = 0; // Constants pointer
 
-    const int64_t* my_prog = &population[b_idx * L];
+    const unsigned char* my_prog = &population[b_idx * L];
     const scalar_t ERROR_VAL = (scalar_t)1e300; // Match Python INF_VAL for float64
 
     for (int pc = 0; pc < L; ++pc) {
-        int64_t token = my_prog[pc];
+        int64_t token = (int64_t)my_prog[pc];
         
         
         if (token == PAD_ID) break;
@@ -380,9 +380,9 @@ void launch_rpn_kernel(
     // Dispatch based on X type (float or double)
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_kernel", ([&] {
         rpn_eval_kernel<scalar_t><<<grid_size, block_size>>>(
-            population.data_ptr<int64_t>(),
+            population.data_ptr<unsigned char>(),
             x.data_ptr<scalar_t>(),
-            constants.data_ptr<scalar_t>(),
+            (constants.size(1) > 0) ? constants.data_ptr<scalar_t>() : nullptr,
             out_preds.data_ptr<scalar_t>(),
             out_sp.data_ptr<int32_t>(),
             out_error.data_ptr<uint8_t>(),
@@ -412,7 +412,7 @@ void launch_rpn_kernel(
 // --- Phase 2: Crossover & Mutation Kernels ---
 
 __global__ void find_subtree_ranges_kernel(
-    const int64_t* __restrict__ population, // [B, L]
+    const unsigned char* __restrict__ population, // [B, L] (uint8)
     const int* __restrict__ token_arities,  // [VocabSize]
     int64_t* __restrict__ out_starts,       // [B, L]
     int B, int L, int vocab_size, int PAD_ID
@@ -422,10 +422,10 @@ __global__ void find_subtree_ranges_kernel(
     
     if (b >= B || tid >= L) return;
     
-    const int64_t* my_pop = &population[b * L];
+    const unsigned char* my_pop = &population[b * L];
     int64_t* my_starts = &out_starts[b * L];
     
-    int64_t token = my_pop[tid];
+    int64_t token = (int64_t)my_pop[tid];
     
     // Default invalid
     my_starts[tid] = -1;
@@ -449,7 +449,7 @@ __global__ void find_subtree_ranges_kernel(
     int needed = arity;
     
     for (int j = tid - 1; j >= 0; --j) {
-        int64_t t = my_pop[j];
+        int64_t t = (int64_t)my_pop[j];
         if (t == PAD_ID) break; // Invalid structure if we hit PAD
         
         int a = 0;
@@ -492,7 +492,7 @@ void launch_find_subtree_ranges(
     if (L > 1024) threads.x = 1024; // Simple cap, logic assumes single block per row implies L <= threads
     
     find_subtree_ranges_kernel<<<blocks, threads>>>(
-        population.data_ptr<int64_t>(),
+        population.data_ptr<unsigned char>(),
         token_arities.data_ptr<int32_t>(),
         out_starts.data_ptr<int64_t>(),
         B, L, vocab_size, PAD_ID
@@ -505,13 +505,13 @@ void launch_find_subtree_ranges(
 }
 
 __global__ void mutation_kernel(
-    int64_t* __restrict__ population,        // [B, L]
+    unsigned char* __restrict__ population,        // [B, L] (uint8)
     const float* __restrict__ rand_floats,   // [B, L] (0..1)
     const int64_t* __restrict__ rand_ints,   // [B, L] (random integers)
     const int* __restrict__ token_arities,   // [VocabSize]
-    const int64_t* __restrict__ arity_0_ids, int n_0,
-    const int64_t* __restrict__ arity_1_ids, int n_1,
-    const int64_t* __restrict__ arity_2_ids, int n_2,
+    const unsigned char* __restrict__ arity_0_ids, int n_0,
+    const unsigned char* __restrict__ arity_1_ids, int n_1,
+    const unsigned char* __restrict__ arity_2_ids, int n_2,
     float mutation_rate,
     int B, int L, int vocab_size, int PAD_ID
 ) {
@@ -520,7 +520,7 @@ __global__ void mutation_kernel(
     if (b >= B || tid >= L) return;
     
     int idx = b * L + tid;
-    int64_t token = population[idx];
+    int64_t token = (int64_t)population[idx];
     
     if (token == PAD_ID) return;
     
@@ -538,14 +538,14 @@ __global__ void mutation_kernel(
     uint64_t rand_val = (uint64_t)rand_ints[idx]; // Use raw bits
     
     if (arity == 0 && n_0 > 0) {
-        new_token = arity_0_ids[rand_val % n_0];
+        new_token = (int64_t)arity_0_ids[rand_val % n_0];
     } else if (arity == 1 && n_1 > 0) {
-        new_token = arity_1_ids[rand_val % n_1];
+        new_token = (int64_t)arity_1_ids[rand_val % n_1];
     } else if (arity == 2 && n_2 > 0) {
-        new_token = arity_2_ids[rand_val % n_2];
+        new_token = (int64_t)arity_2_ids[rand_val % n_2];
     }
     
-    population[idx] = new_token;
+    population[idx] = (unsigned char)new_token;
 }
 
 void launch_mutation_kernel(
@@ -572,27 +572,27 @@ void launch_mutation_kernel(
     if (L > 1024) threads.x = 1024;
     
     mutation_kernel<<<blocks, threads>>>(
-        population.data_ptr<int64_t>(),
+        population.data_ptr<unsigned char>(),
         rand_floats.data_ptr<float>(),
         rand_ints.data_ptr<int64_t>(),
         token_arities.data_ptr<int32_t>(),
-        arity_0_ids.data_ptr<int64_t>(), arity_0_ids.numel(),
-        arity_1_ids.data_ptr<int64_t>(), arity_1_ids.numel(),
-        arity_2_ids.data_ptr<int64_t>(), arity_2_ids.numel(),
+        arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
+        arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
+        arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
         mutation_rate,
         B, L, vocab_size, PAD_ID
     );
 }
 
 __global__ void crossover_splicing_kernel(
-    const int64_t* __restrict__ parent1, // [N, L]
-    const int64_t* __restrict__ parent2, // [N, L]
+    const unsigned char* __restrict__ parent1, // [N, L] (uint8)
+    const unsigned char* __restrict__ parent2, // [N, L] (uint8)
     const int64_t* __restrict__ starts1, // [N]
     const int64_t* __restrict__ ends1,   // [N]
     const int64_t* __restrict__ starts2, // [N]
     const int64_t* __restrict__ ends2,   // [N]
-    int64_t* __restrict__ child1,        // [N, L]
-    int64_t* __restrict__ child2,        // [N, L]
+    unsigned char* __restrict__ child1,        // [N, L] (uint8)
+    unsigned char* __restrict__ child2,        // [N, L] (uint8)
     int N_pairs, int L, int PAD_ID
 ) {
     int n = blockIdx.x; // Pair index
@@ -611,26 +611,26 @@ __global__ void crossover_splicing_kernel(
     int64_t len_sub2 = e2 - s2 + 1;
     int64_t cut1 = len_pre1 + len_sub2;
     
-    int64_t val_c1 = PAD_ID;
+    int64_t val_c1 = (int64_t)PAD_ID;
     
     if (t < len_pre1) {
-        if (t >= 0 && t < L) val_c1 = parent1[n * L + t];
+        if (t >= 0 && t < L) val_c1 = (int64_t)parent1[n * L + t];
     } else if (t < cut1) {
         // From Sub2
         int64_t src_idx = s2 + t - len_pre1;
         if (src_idx >= 0 && src_idx < L) {
-            val_c1 = parent2[n * L + src_idx];
+            val_c1 = (int64_t)parent2[n * L + src_idx];
         }
     } else {
         // From Post1
         int64_t src_idx = e1 + 1 + t - cut1;
         if (src_idx >= 0 && src_idx < L) {
-            val_c1 = parent1[n * L + src_idx];
+            val_c1 = (int64_t)parent1[n * L + src_idx];
         } else {
-            val_c1 = PAD_ID;
+            val_c1 = (int64_t)PAD_ID;
         }
     }
-    child1[n * L + t] = val_c1;
+    child1[n * L + t] = (unsigned char)val_c1;
     
     // --- Child 2 Construction ---
     // Child 2 = P2_Pre + P1_Sub + P2_Post
@@ -638,24 +638,24 @@ __global__ void crossover_splicing_kernel(
     int64_t len_sub1 = e1 - s1 + 1;
     int64_t cut2 = len_pre2 + len_sub1;
     
-    int64_t val_c2 = PAD_ID;
+    int64_t val_c2 = (int64_t)PAD_ID;
     
     if (t < len_pre2) {
-        if (t >= 0 && t < L) val_c2 = parent2[n * L + t];
+        if (t >= 0 && t < L) val_c2 = (int64_t)parent2[n * L + t];
     } else if (t < cut2) {
         int64_t src_idx = s1 + t - len_pre2;
         if (src_idx >= 0 && src_idx < L) {
-            val_c2 = parent1[n * L + src_idx];
+            val_c2 = (int64_t)parent1[n * L + src_idx];
         }
     } else {
         int64_t src_idx = e2 + 1 + t - cut2;
         if (src_idx >= 0 && src_idx < L) {
-            val_c2 = parent2[n * L + src_idx];
+            val_c2 = (int64_t)parent2[n * L + src_idx];
         } else {
-            val_c2 = PAD_ID;
+            val_c2 = (int64_t)PAD_ID;
         }
     }
-    child2[n * L + t] = val_c2;
+    child2[n * L + t] = (unsigned char)val_c2;
 }
 
 void launch_crossover_splicing(
@@ -678,14 +678,14 @@ void launch_crossover_splicing(
     
 
     crossover_splicing_kernel<<<blocks, threads>>>(
-        parent1.data_ptr<int64_t>(),
-        parent2.data_ptr<int64_t>(),
+        parent1.data_ptr<unsigned char>(),
+        parent2.data_ptr<unsigned char>(),
         starts1.data_ptr<int64_t>(),
         ends1.data_ptr<int64_t>(),
         starts2.data_ptr<int64_t>(),
         ends2.data_ptr<int64_t>(),
-        child1.data_ptr<int64_t>(),
-        child2.data_ptr<int64_t>(),
+        child1.data_ptr<unsigned char>(),
+        child2.data_ptr<unsigned char>(),
         N, L, PAD_ID
     );
 }

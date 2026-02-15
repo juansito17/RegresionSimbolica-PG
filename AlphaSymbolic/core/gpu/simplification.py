@@ -218,25 +218,23 @@ class GPUSimplifier:
         # But Dedup runs before this. So hashes should be unique.
         
         for i, h in zip(process_indices, process_hashes):
-             new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
-             if success:
-                 pop_out[i] = new_rpn
-                 const_out[i] = new_consts
-                 n_simplified += 1
-                 
-                 # Update Cache
-                 # Store as CPU list to save GPU memory?
-                 # Or keeps GPU tensors if space allows. 
-                 # Let's verify size. 100k tensors is heavy?
-                 # 100k * 50 ints. 40MB. 
-                 # 100k small tensors -> Overhead.
-                 # Better store as Python list or bytearray.
-                 self.cache[h] = (new_rpn.tolist(), new_consts.tolist())
+             try:
+                 new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
+                 if success:
+                     pop_out[i] = new_rpn
+                     const_out[i] = new_consts
+                     n_simplified += 1
+                     
+                     # Update Cache
+                     self.cache[h] = (new_rpn.tolist(), new_consts.tolist())
+             except Exception as e:
+                 print(f"[GPUSimplifier] Error at index {i}: {e}")
+                 print(f"  pop shape: {population.shape}, const shape: {constants.shape}")
+                 print(f"  pop_out shape: {pop_out.shape}, const_out shape: {const_out.shape}")
+                 raise e
                  
         # Limit cache size
         if len(self.cache) > 100000:
-            # Clear half? Random?
-            # SimpleDict clear
             self.cache.clear()
         
         return pop_out, const_out, n_simplified
@@ -256,7 +254,7 @@ class GPUSimplifier:
              # Prepare Inputs
              if rpn_tensor.ndim == 1:
                  # Single formula
-                 pop = rpn_tensor.unsqueeze(0).long() # [1, L]
+                 pop = rpn_tensor.unsqueeze(0).to(torch.uint8) # [1, L]
                  # Constants
                  if constants is None: K=0
                  else: K = constants.numel()

@@ -127,7 +127,7 @@ class GPUSymbolicSimplifier:
             return by_id
         max_id = self._cached_val_table.size(0)
         t = token_ids.clamp(0, max_id - 1)
-        vals = self._cached_val_table[t]
+        vals = self._cached_val_table[t.long()]
         by_val = (~vals.isnan()) & (vals.abs() <= self._fold_abs_tol)
         return by_id | by_val
     
@@ -137,7 +137,7 @@ class GPUSymbolicSimplifier:
             return by_id
         max_id = self._cached_val_table.size(0)
         t = token_ids.clamp(0, max_id - 1)
-        vals = self._cached_val_table[t]
+        vals = self._cached_val_table[t.long()]
         by_val = (~vals.isnan()) & ((vals - 1.0).abs() <= self._fold_abs_tol)
         return by_id | by_val
 
@@ -150,7 +150,7 @@ class GPUSymbolicSimplifier:
         if val == 2.0: return tokens == self.CONST_2
         max_id = self._cached_val_table.size(0)
         t = tokens.clamp(0, max_id - 1)
-        vals = self._cached_val_table[t]
+        vals = self._cached_val_table[t.long()]
         return (~vals.isnan()) & ((vals - val).abs() <= self._fold_abs_tol)
 
     def _map_values_to_literal_ids(self, values: torch.Tensor, valid_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -204,7 +204,7 @@ class GPUSymbolicSimplifier:
         device = population.device
         max_id = self.arity_table.size(0)
         pop_c = population.clamp(0, max_id - 1)
-        arities = self.arity_table[pop_c]  # [B, L]
+        arities = self.arity_table[pop_c.long()]  # [B, L]
         arities[population >= max_id] = 0
         arities[population == PAD_ID] = 0
         
@@ -429,7 +429,8 @@ class GPUSymbolicSimplifier:
         # Get arities
         max_id = self.arity_table.size(0)
         pop_c = population.clamp(0, max_id - 1)
-        arities = self.arity_table[pop_c]
+        # Fix: Cast to long because uint8 is treated as mask
+        arities = self.arity_table[pop_c.long()]
         
         # PADs have arity 0 in table, but they shouldn't contribute +1 to stack like operands.
         # They should effectively be 0 change.
@@ -635,7 +636,7 @@ class GPUSymbolicSimplifier:
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
-        z_id = self.zero_ids[0] if self.zero_ids.numel() > 0 else self.CONST_0
+        z_id = self.zero_ids[0].item() if self.zero_ids.numel() > 0 else self.CONST_0
         neg_id = self.OP_NEG_IDS[0].item() if self.OP_NEG_IDS.numel() > 0 else -1
         for j in range(2, L):
             op = pop[:, j]
@@ -725,13 +726,13 @@ class GPUSymbolicSimplifier:
         B, L = population.shape
         pop = population.clone()
         n_simplified = 0
-        z_id, o_id = (self.zero_ids[0] if self.zero_ids.numel()>0 else self.CONST_0), (self.one_ids[0] if self.one_ids.numel()>0 else self.CONST_1)
+        z_id, o_id = (self.zero_ids[0].item() if self.zero_ids.numel()>0 else self.CONST_0), (self.one_ids[0].item() if self.one_ids.numel()>0 else self.CONST_1)
         for j in range(2, L):
             op = pop[:, j]
             is_matchable = (op == self.OP_MINUS) | (op == self.OP_DIV)
             # Vectorized check for single-token operands: [x, x, -] -> [0, PAD, PAD]
             arg2, arg1 = pop[:, j-1], pop[:, j-2]
-            match_single = is_matchable & (arg1 == arg2) & (self.arity_table[arg1.clamp(0)] == 0) & (arg1 != PAD_ID)
+            match_single = is_matchable & (arg1 == arg2) & (self.arity_table[arg1.clamp(0).long()] == 0) & (arg1 != PAD_ID)
             # Apply unconditionally via torch.where - no GPU sync
             is_m = match_single & (op == self.OP_MINUS)
             is_d = match_single & (op == self.OP_DIV)
@@ -816,7 +817,7 @@ class GPUSymbolicSimplifier:
                 counts += match_sqrt_p2.long()
             
             # --- Constant arg identities (no .any() sync) ---
-            is_unary = (self.arity_table[tokens.clamp(0)] == 1)
+            is_unary = (self.arity_table[tokens.clamp(0).long()] == 1)
             arg = pop[:, j-1]
             arg_is0 = is_unary & self._is_zero(arg)
             arg_is1 = is_unary & self._is_one(arg)
@@ -904,7 +905,7 @@ class GPUSymbolicSimplifier:
                 if s1 == s2 - 1 and pop[b, j-1] == self.OP_PLUS:
                     c1_tok = pop[b, s1]
                     if c1_tok >= 0 and c1_tok < self._cached_val_table.size(0):
-                        c1_val = self._cached_val_table[c1_tok].item()
+                        c1_val = self._cached_val_table[c1_tok.long()].item()
                         if not math.isnan(c1_val):
                             if starts_cache is not None:
                                 inner_s2 = int(self._get_subtree_starts_cached(starts_cache, j-2)[b].item())
@@ -925,7 +926,7 @@ class GPUSymbolicSimplifier:
                                     x_tokens = pop[b, inner_s1:inner_s2].clone()
 
                                 if c2_tok is not None and c2_tok >= 0 and c2_tok < self._cached_val_table.size(0) and x_tokens is not None and x_tokens.numel() > 0:
-                                    c2_val = self._cached_val_table[c2_tok].item()
+                                    c2_val = self._cached_val_table[c2_tok.long()].item()
                                     if not math.isnan(c2_val):
                                         new_c_tid = self._map_single_value_to_literal_id(c1_val + c2_val)
                                         if new_c_tid != -1:
@@ -935,16 +936,16 @@ class GPUSymbolicSimplifier:
                                                 torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
                                             ])
                                             if new_seg.numel() <= (j - s1 + 1):
-                                                pop[b, s1:s1+new_seg.numel()] = new_seg
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(torch.uint8)
                                                 pop[b, s1+new_seg.numel():j+1] = PAD_ID
                                                 n_simplified += 1
                                                 continue
-
+            
                 # Case B: ( ... ) + c1
                 if s2 == j - 1 and pop[b, s2-1] == self.OP_PLUS:
                     c1_tok = pop[b, s2]
                     if c1_tok >= 0 and c1_tok < self._cached_val_table.size(0):
-                        c1_val = self._cached_val_table[c1_tok].item()
+                        c1_val = self._cached_val_table[c1_tok.long()].item()
                         if not math.isnan(c1_val):
                             inner_end = s2 - 1
                             if starts_cache is not None:
@@ -966,7 +967,7 @@ class GPUSymbolicSimplifier:
                                     x_tokens = pop[b, inner_s1:inner_s2].clone()
 
                                 if c2_tok is not None and c2_tok >= 0 and c2_tok < self._cached_val_table.size(0) and x_tokens is not None and x_tokens.numel() > 0:
-                                    c2_val = self._cached_val_table[c2_tok].item()
+                                    c2_val = self._cached_val_table[c2_tok.long()].item()
                                     if not math.isnan(c2_val):
                                         new_c_tid = self._map_single_value_to_literal_id(c1_val + c2_val)
                                         if new_c_tid != -1:
@@ -976,11 +977,11 @@ class GPUSymbolicSimplifier:
                                                 torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
                                             ])
                                             if new_seg.numel() <= (j - s1 + 1):
-                                                pop[b, s1:s1+new_seg.numel()] = new_seg
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(torch.uint8)
                                                 pop[b, s1+new_seg.numel():j+1] = PAD_ID
                                                 n_simplified += 1
                                                 continue
-            
+
             # Pattern: (x + y) + z -> 2*x + y
             if self.ID_2 == -1:
                 continue
@@ -1014,13 +1015,13 @@ class GPUSymbolicSimplifier:
                 if torch.equal(x, z):
                     new = torch.cat([torch.tensor([self.ID_2], device=self.device), x, torch.tensor([self.OP_MULT], device=self.device), y, torch.tensor([self.OP_PLUS], device=self.device)])
                     if len(new) <= (j - idx_s1 + 1):
-                        pop[b, idx_s1:idx_s1+len(new)] = new
+                        pop[b, idx_s1:idx_s1+len(new)] = new.to(torch.uint8)
                         pop[b, idx_s1+len(new):j+1] = PAD_ID
                         n_simplified += 1
                 elif torch.equal(y, z):
                     new = torch.cat([torch.tensor([self.ID_2], device=self.device), y, torch.tensor([self.OP_MULT], device=self.device), x, torch.tensor([self.OP_PLUS], device=self.device)])
                     if len(new) <= (j - idx_s1 + 1):
-                        pop[b, idx_s1:idx_s1+len(new)] = new
+                        pop[b, idx_s1:idx_s1+len(new)] = new.to(torch.uint8)
                         pop[b, idx_s1+len(new):j+1] = PAD_ID
                         n_simplified += 1
 
@@ -1037,7 +1038,7 @@ class GPUSymbolicSimplifier:
             
             # --- x + x -> 2 * x (torch.where, no sync) ---
             arg2, arg1 = pop[:, j-1], pop[:, j-2]
-            is_same = (arg1 == arg2) & (self.arity_table[arg1.clamp(0)] == 0) & (arg1 != PAD_ID)
+            is_same = (arg1 == arg2) & (self.arity_table[arg1.clamp(0).long()] == 0) & (arg1 != PAD_ID)
             match_add_same = is_plus & is_same
             if self.ID_2 != -1:
                 saved_arg1 = arg1.clone()
@@ -1050,7 +1051,7 @@ class GPUSymbolicSimplifier:
             match_mult_same = is_mult & is_same
             if self.OP_POW_IDS.numel() > 0 and self.ID_2 != -1:
                 saved_arg1 = arg1.clone()
-                pop[:, j] = torch.where(match_mult_same, self.OP_POW_IDS[0], pop[:, j])
+                pop[:, j] = torch.where(match_mult_same, self.OP_POW_IDS[0].item(), pop[:, j])
                 pop[:, j-1] = torch.where(match_mult_same, self.ID_2, pop[:, j-1])
                 pop[:, j-2] = torch.where(match_mult_same, saved_arg1, pop[:, j-2])
                 counts += match_mult_same.long()
@@ -1070,8 +1071,8 @@ class GPUSymbolicSimplifier:
                     m2, m1, is_p = (val_1 == self.OP_MULT), (val_4 == self.OP_MULT), (val_0 == self.OP_PLUS)
                     
                     # Case 1: [a, x, *, b, x, *, +] -> (a+b)*x
-                    match_fact_1 = is_p & m1 & m2 & (val_5 == val_2) & (self.arity_table[val_5.clamp(0)] == 0) & (val_5 != PAD_ID)
-                    match_fact_1 &= (self.arity_table[val_6.clamp(0)] == 0) & (self.arity_table[val_3.clamp(0)] == 0)
+                    match_fact_1 = is_p & m1 & m2 & (val_5 == val_2) & (self.arity_table[val_5.clamp(0).long()] == 0) & (val_5 != PAD_ID)
+                    match_fact_1 &= (self.arity_table[val_6.clamp(0).long()] == 0) & (self.arity_table[val_3.clamp(0).long()] == 0)
                     
                     pop[:, j-6] = torch.where(match_fact_1, val_6, pop[:, j-6])  # a
                     pop[:, j-5] = torch.where(match_fact_1, val_3, pop[:, j-5])  # b
@@ -1083,8 +1084,8 @@ class GPUSymbolicSimplifier:
                     counts += match_fact_1.long()
 
                     # Case 2: [x, a, *, x, b, *, +] -> (a+b)*x
-                    match_fact_2 = is_p & m1 & m2 & (val_6 == val_3) & (self.arity_table[val_6.clamp(0)] == 0) & (val_6 != PAD_ID)
-                    match_fact_2 &= (self.arity_table[val_5.clamp(0)] == 0) & (self.arity_table[val_2.clamp(0)] == 0)
+                    match_fact_2 = is_p & m1 & m2 & (val_6 == val_3) & (self.arity_table[val_6.clamp(0).long()] == 0) & (val_6 != PAD_ID)
+                    match_fact_2 &= (self.arity_table[val_5.clamp(0).long()] == 0) & (self.arity_table[val_2.clamp(0).long()] == 0)
                     
                     pop[:, j-6] = torch.where(match_fact_2, val_5, pop[:, j-6])  # a
                     pop[:, j-5] = torch.where(match_fact_2, val_2, pop[:, j-5])  # b
@@ -1175,14 +1176,14 @@ class GPUSymbolicSimplifier:
         for j in range(1, L):
             op = pop[:, j]
             op_idx = op.clamp(0, max_id - 1)
-            arity = self.arity_table[op_idx]
+            arity = self.arity_table[op_idx.long()]
             arity[op >= max_id] = 0
             
             # --- Unary Folding (removed outer .any() sync) ---
             is_unary = (arity == 1)
             arg = pop[:, j-1]
             arg_c = arg.clamp(0, max_id - 1)
-            val = val_table[arg_c]
+            val = val_table[arg_c.long()]
             val[arg >= max_id] = float('nan')
             mask = is_unary & (~val.isnan())
             
@@ -1219,7 +1220,7 @@ class GPUSymbolicSimplifier:
             if j >= 2:
                 a1, a2 = pop[:, j-2], pop[:, j-1]
                 a1_c, a2_c = a1.clamp(0, max_id - 1), a2.clamp(0, max_id - 1)
-                v1, v2 = val_table[a1_c], val_table[a2_c]
+                v1, v2 = val_table[a1_c.long()], val_table[a2_c.long()]
                 v1[a1 >= max_id] = float('nan'); v2[a2 >= max_id] = float('nan')
                 mask = is_binary & (~v1.isnan()) & (~v2.isnan())
                 

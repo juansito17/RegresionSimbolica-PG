@@ -65,6 +65,7 @@ class GpuGlobals:
     # Stagnation & Restarts
     STAGNATION_LIMIT = 30              # Gens without local improvement before cataclysm
     GLOBAL_STAGNATION_LIMIT = 150      # Gens without global improvement before restart
+    STAGNATION_RANDOM_INJECT_PERCENT = 0.20 # Inject random individuals during stagnation
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
     CATACLYSM_ELITE_PERCENT = 0.08     # Elites survived in cataclysm
@@ -80,8 +81,8 @@ class GpuGlobals:
     #                  4. GRAMMAR & INITIALIZATION
     # ============================================================
     # Initial Population
-    USE_INITIAL_POP_CACHE = True
-    USE_INITIAL_FORMULA = True
+    USE_INITIAL_POP_CACHE = False
+    USE_INITIAL_FORMULA = False
     # Evolved Gen 16 seed (Verified < 1% error)
     INITIAL_FORMULA_STRING = "(lgamma(x0) - (x0 - sqrt((5 + (x0 + (1 / ((10 + (x2 - x0)) - sqrt(3))))))))"
 

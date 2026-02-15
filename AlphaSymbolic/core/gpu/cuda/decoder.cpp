@@ -38,7 +38,7 @@ std::vector<std::string> decode_rpn(
     auto pop_cpu = population.cpu();
     auto const_cpu = constants.cpu(); // We process string on CPU anyway, but C++ loop is faster
     
-    auto pop_ptr = pop_cpu.data_ptr<int64_t>();
+    auto pop_ptr = pop_cpu.data_ptr<unsigned char>();
     
     // Handle float/double constants
     bool is_float = (constants.dtype() == torch::kFloat32);
@@ -57,7 +57,7 @@ std::vector<std::string> decode_rpn(
         bool error = false;
         
         for (int64_t j = 0; j < L; ++j) {
-            int64_t token_id = pop_ptr[i * L + j];
+            int64_t token_id = (int64_t)pop_ptr[i * L + j];
             
             if (token_id == PAD_ID) break;
             

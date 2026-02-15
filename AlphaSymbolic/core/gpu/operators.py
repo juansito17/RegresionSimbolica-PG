@@ -24,13 +24,14 @@ class GPUOperators:
         self.grammar = grammar
         self.device = device
         self.dtype = dtype
+        self.pop_dtype = self.grammar.dtype # uint8
         self.max_len = max_len
         self.num_variables = num_variables
         self.pop_size = pop_size
         
         # Pre-allocate memory for random generation
-        self.terminal_ids = torch.tensor([self.grammar.token_to_id[t] for t in self.grammar.terminals], device=self.device)
-        self.operator_ids = torch.tensor([self.grammar.token_to_id[op] for op in self.grammar.operators], device=self.device)
+        self.terminal_ids = torch.tensor([self.grammar.token_to_id[t] for t in self.grammar.terminals], device=self.device, dtype=self.pop_dtype)
+        self.operator_ids = torch.tensor([self.grammar.token_to_id[op] for op in self.grammar.operators], device=self.device, dtype=self.pop_dtype)
         
         # Arity masks
         self._init_arity_masks()
@@ -53,9 +54,9 @@ class GPUOperators:
             if arity == 1: self.arity_1_ids.append(tid)
             elif arity == 2: self.arity_2_ids.append(tid)
             
-        self.arity_0_ids = torch.tensor(self.arity_0_ids, device=self.device)
-        self.arity_1_ids = torch.tensor(self.arity_1_ids, device=self.device)
-        self.arity_2_ids = torch.tensor(self.arity_2_ids, device=self.device)
+        self.arity_0_ids = torch.tensor(self.arity_0_ids, device=self.device, dtype=self.pop_dtype)
+        self.arity_1_ids = torch.tensor(self.arity_1_ids, device=self.device, dtype=self.pop_dtype)
+        self.arity_2_ids = torch.tensor(self.arity_2_ids, device=self.device, dtype=self.pop_dtype)
         
         # Cache int32 arities for CUDA
         self.token_arity_int = self.token_arity.to(dtype=torch.int32)
@@ -150,7 +151,7 @@ class GPUOperators:
         # ============ CUDA FAST PATH ============
         if RPN_CUDA_AVAILABLE:
             try:
-                population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+                population = torch.zeros(size, max_len, dtype=self.pop_dtype, device=device)
                 seed = random.getrandbits(62)
                 
                 # Ensure contiguous int64 tensors
@@ -176,8 +177,9 @@ class GPUOperators:
         
         # ============ PyTorch FALLBACK ============
         
+        
         # Output tensor
-        population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+        population = torch.zeros(size, max_len, dtype=self.pop_dtype, device=device)
         
         # Stack balance tracker
         stack = torch.zeros(size, dtype=torch.long, device=device)
@@ -295,7 +297,7 @@ class GPUOperators:
         """
         B, L = population.shape
         # Get arities for all tokens at once: [B, L]
-        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1)]
+        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1).long()]
         # Stack delta: terminals(arity=0) -> +1, unary(arity=1) -> 0, binary(arity=2) -> -1
         deltas = 1 - arities
         # PAD tokens should have delta 0
@@ -315,7 +317,7 @@ class GPUOperators:
         # CUDA fast path
         if RPN_CUDA_AVAILABLE:
             try:
-                population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+                population = torch.zeros(size, max_len, dtype=self.pop_dtype, device=device)
                 seed = random.getrandbits(62)
                 t_ids = self.terminal_ids.contiguous()
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
@@ -332,7 +334,7 @@ class GPUOperators:
                 pass
         
         # PyTorch fallback — same as generate_random_population_gpu but with shorter max_len
-        population = torch.zeros(size, max_len, dtype=torch.long, device=device)
+        population = torch.zeros(size, max_len, dtype=self.pop_dtype, device=device)
         stack = torch.zeros(size, dtype=torch.long, device=device)
         n_terminals = self.terminal_ids.shape[0]
         n_arity1 = self.arity_1_ids.shape[0]
@@ -442,8 +444,8 @@ class GPUOperators:
                 batch_rpn.append([PAD_ID]*self.max_len)
                 
         if not batch_rpn:
-            return torch.empty((0, self.max_len), device=self.device, dtype=torch.long)
-        return torch.tensor(batch_rpn, device=self.device, dtype=torch.long)
+            return torch.empty((0, self.max_len), device=self.device, dtype=self.pop_dtype)
+        return torch.tensor(batch_rpn, device=self.device, dtype=self.pop_dtype)
 
     def mutate_population(self, population: torch.Tensor, mutation_rate: float) -> torch.Tensor:
         """
@@ -591,8 +593,8 @@ class GPUOperators:
         if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'crossover_splicing'):
              # CUDA Fast Splicing
              # Allocate children
-             c1 = torch.full((n_pairs, L), PAD_ID, dtype=torch.long, device=self.device)
-             c2 = torch.full((n_pairs, L), PAD_ID, dtype=torch.long, device=self.device)
+             c1 = torch.full((n_pairs, L), PAD_ID, dtype=self.pop_dtype, device=self.device)
+             c2 = torch.full((n_pairs, L), PAD_ID, dtype=self.pop_dtype, device=self.device)
              
              rpn_cuda_native.crossover_splicing(
                  parents_1, parents_2,
@@ -781,7 +783,7 @@ class GPUOperators:
         max_subtree_len = min(self.max_len, GpuGlobals.MAX_TREE_DEPTH_MUTATION * 2 + 1)
         replacements_raw = self._generate_small_subtrees(n_mut, max_subtree_len)
         # Pad to full max_len for splicing
-        replacements = torch.full((n_mut, self.max_len), PAD_ID, dtype=torch.long, device=self.device)
+        replacements = torch.full((n_mut, self.max_len), PAD_ID, dtype=self.pop_dtype, device=self.device)
         replacements[:, :max_subtree_len] = replacements_raw
         # Determine actual length of replacements (until first PAD)
         repl_lengths = (replacements != PAD_ID).sum(dim=1)

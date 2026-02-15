@@ -206,7 +206,7 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
 
 template <typename scalar_t>
 __global__ void fused_pso_kernel(
-    const int64_t* __restrict__ population,  // [B, L]
+    const unsigned char* __restrict__ population,  // [B, L]
     const scalar_t* __restrict__ init_consts, // [B, K] initial guess
     const scalar_t* __restrict__ x,          // [Vars, D]
     const scalar_t* __restrict__ y_target,   // [D]
@@ -466,7 +466,7 @@ void launch_fused_pso(
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "fused_pso_kernel", ([&] {
         fused_pso_kernel<scalar_t><<<blocks, threads, smem_bytes>>>(
-            population.data_ptr<int64_t>(),
+            population.data_ptr<unsigned char>(),
             init_consts.data_ptr<scalar_t>(),
             x.data_ptr<scalar_t>(),
             y_target.data_ptr<scalar_t>(),
