@@ -114,6 +114,85 @@ __device__ __forceinline__ T safe_lgamma(T a, bool &error) {
     return res;
 }
 
+// ============================================================
+//  STRICT math functions — real math, error on domain violations
+// ============================================================
+
+template <typename T>
+__device__ __forceinline__ T strict_div(T a, T b, bool &error) {
+    if (abs(b) < (T)1e-9) { error = true; return (T)0.0; }
+    return a / b;
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_mod(T a, T b, bool &error) {
+    if (abs(b) < (T)1e-9) { error = true; return (T)0.0; }
+    T r = fmod(a, b);
+    if ((b > 0 && r < 0) || (b < 0 && r > 0)) r += b;
+    return r;
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_log(T a, bool &error) {
+    if (a <= (T)0.0) { error = true; return (T)0.0; }
+    return log(a);
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_exp(T a, bool &error) {
+    T res = exp(a);
+    if (isinf(res)) { error = true; return (T)0.0; }
+    return res;
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_sqrt(T a, bool &error) {
+    if (a < (T)0.0) { error = true; return (T)0.0; }
+    return sqrt(a);
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_pow(T a, T b, bool &error) {
+    if (a != a || b != b) { error = true; return (T)0.0; }
+    if (abs(a) < (T)1e-10 && abs(b) < (T)1e-10) return (T)1.0;
+    if (a < (T)0.0) {
+        T ib = round(b);
+        if (abs(b - ib) > (T)1e-3) { error = true; return (T)0.0; } // non-integer exp of negative base
+        b = ib;
+    }
+    T res = pow(a, b);
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    return res;
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_asin(T a, bool &error) {
+    if (a < (T)-1.0 || a > (T)1.0) { error = true; return (T)0.0; }
+    return asin(a);
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_acos(T a, bool &error) {
+    if (a < (T)-1.0 || a > (T)1.0) { error = true; return (T)0.0; }
+    return acos(a);
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_tgamma(T a, bool &error) {
+    if (a <= (T)0.0 && floor(a) == a) { error = true; return (T)0.0; }
+    T res = tgamma(a);
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    return res;
+}
+
+template <typename T>
+__device__ __forceinline__ T strict_lgamma(T a, bool &error) {
+    if (a <= (T)0.0 && floor(a) == a) { error = true; return (T)0.0; }
+    T res = lgamma(a);
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
+    return res;
+}
+
 // TEMPLATED KERNEL
 template <typename scalar_t>
 __global__ void rpn_eval_kernel(
@@ -138,7 +217,9 @@ __global__ void rpn_eval_kernel(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     // Values
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    // Strict mode: 0 = protected (search), 1 = strict (validation)
+    int strict_mode
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * D) return;
@@ -211,9 +292,9 @@ __global__ void rpn_eval_kernel(
             if (token == op_add) res = op1 + op2;
             else if (token == op_sub) res = op1 - op2;
             else if (token == op_mul) res = op1 * op2;
-            else if (token == op_div) res = safe_div(op1, op2, error);
-            else if (token == op_pow) res = safe_pow(op1, op2, error);
-            else if (token == op_mod) res = safe_mod(op1, op2, error);
+            else if (token == op_div) res = strict_mode ? strict_div(op1, op2, error) : safe_div(op1, op2, error);
+            else if (token == op_pow) res = strict_mode ? strict_pow(op1, op2, error) : safe_pow(op1, op2, error);
+            else if (token == op_mod) res = strict_mode ? strict_mod(op1, op2, error) : safe_mod(op1, op2, error);
             
             if (error) break;
 
@@ -231,18 +312,18 @@ __global__ void rpn_eval_kernel(
         else if (token == op_tan) res = tan(op1);
         else if (token == op_abs) res = abs(op1);
         else if (token == op_neg) res = -op1;
-        else if (token == op_sqrt) res = safe_sqrt(op1, error);
-        else if (token == op_log) res = safe_log(op1, error);
-        else if (token == op_exp) res = safe_exp(op1, error);
+        else if (token == op_sqrt) res = strict_mode ? strict_sqrt(op1, error) : safe_sqrt(op1, error);
+        else if (token == op_log) res = strict_mode ? strict_log(op1, error) : safe_log(op1, error);
+        else if (token == op_exp) res = strict_mode ? strict_exp(op1, error) : safe_exp(op1, error);
         else if (token == op_floor) res = floor(op1);
         else if (token == op_ceil) res = ceil(op1);
         else if (token == op_sign) res = (op1 > (scalar_t)0.0) ? (scalar_t)1.0 : ((op1 < (scalar_t)0.0) ? (scalar_t)-1.0 : (scalar_t)0.0);
-        else if (token == op_asin) res = safe_asin(op1, error);
-        else if (token == op_acos) res = safe_acos(op1, error);
+        else if (token == op_asin) res = strict_mode ? strict_asin(op1, error) : safe_asin(op1, error);
+        else if (token == op_acos) res = strict_mode ? strict_acos(op1, error) : safe_acos(op1, error);
         else if (token == op_atan) res = atan(op1);
-        else if (token == op_fact) res = safe_tgamma(op1 + (scalar_t)1.0, error);
-        else if (token == op_gamma) res = safe_tgamma(op1, error);
-        else if (token == op_lgamma) res = safe_lgamma(op1, error);
+        else if (token == op_fact) res = strict_mode ? strict_tgamma(op1 + (scalar_t)1.0, error) : safe_tgamma(op1 + (scalar_t)1.0, error);
+        else if (token == op_gamma) res = strict_mode ? strict_tgamma(op1, error) : safe_tgamma(op1, error);
+        else if (token == op_lgamma) res = strict_mode ? strict_lgamma(op1, error) : safe_lgamma(op1, error);
         else { error = true; break; }
         
         if (error) break;
@@ -276,7 +357,8 @@ void launch_rpn_kernel(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    int strict_mode
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(x);
@@ -316,7 +398,8 @@ void launch_rpn_kernel(
             op_fact, op_floor, op_ceil, op_sign,
             op_gamma, op_lgamma,
             op_asin, op_acos, op_atan,
-            pi_val, e_val
+            pi_val, e_val,
+            strict_mode
         );
     }));
     
@@ -733,7 +816,8 @@ void launch_rpn_kernel(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    int strict_mode
 );
 
 // NOTE: launch_find_subtree_ranges and launch_crossover_splicing are defined above
@@ -966,7 +1050,8 @@ std::vector<torch::Tensor> evolve_generation(
                 op_fact, op_floor, op_ceil, op_sign,
                 op_gamma, op_lgamma,
                 op_asin, op_acos, op_atan,
-                pi_val, e_val
+                pi_val, e_val,
+                0  // strict_mode=0: always protected during search
             );
             
             // RMSE Logic

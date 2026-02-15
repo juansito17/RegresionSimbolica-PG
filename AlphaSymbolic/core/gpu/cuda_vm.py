@@ -68,7 +68,7 @@ class CudaRPNVM:
         self.id_x_start = g.get(first_var, -999)
         self.num_vars = len(self.grammar.active_variables)
         
-    def eval(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor) -> tuple:
+    def eval(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor, strict_mode: int = 0) -> tuple:
         """
         Evaluates population against x.
         population: [B, L]
@@ -132,7 +132,8 @@ class CudaRPNVM:
             self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
             self.op_gamma, self.op_lgamma,
             self.op_asin, self.op_acos, self.op_atan,
-            3.14159265359, 2.718281828
+            3.14159265359, 2.718281828,
+            strict_mode
         )
         
         return out_preds, out_sp, out_error

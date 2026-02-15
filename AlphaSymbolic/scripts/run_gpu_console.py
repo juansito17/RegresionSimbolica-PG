@@ -59,6 +59,42 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
         print(f"Fitness: {best_rmse:.8f}")
         print(f"Size: {formula_size}")
         print(f"Formula: {formula_str}")
+        
+        # --- Strict Validation Check ---
+        try:
+            # Prepare Data (subset used for training)
+            # Need to match what was passed to engine.run()
+            n_targets = len(TARGETS)
+            if engine.num_variables == 1:
+                x_val_np = X_VALUES[:n_targets, 0] # [N]
+                x_val_np = x_val_np.reshape(-1, 1) # [N, 1]
+            else:
+                x_val_np = X_VALUES[:n_targets] # [N, Vars]
+            
+            # Convert to Tensor [Vars, N]
+            x_tensor = torch.tensor(x_val_np, dtype=engine.dtype, device=engine.device).T
+            
+            # Convert Y to Tensor [N]
+            y_tensor = torch.tensor(TARGETS, dtype=engine.dtype, device=engine.device)
+            if y_tensor.dim() == 1:
+                 y_tensor = y_tensor
+            
+            # Run Strict Validation
+            # population: [1, L], constants: [1, K]
+            val_res = engine.evaluator.validate_strict(
+                display_rpn.unsqueeze(0),
+                x_tensor,
+                y_tensor,
+                display_consts.unsqueeze(0)
+            )
+            
+            if not val_res['is_valid'][0].item():
+                n_err = val_res['n_errors'][0].item()
+                print(f"[STRICT MODE] WARNING: Formula has {n_err} domain errors (e.g. log(neg)). Valid on GPU-Protected only.")
+                
+        except Exception as e:
+            print(f"[STRICT MODE] Check Failed: {e}")
+
         print("Predictions vs Targets:")
         
         # Show Predictions (Top 5 rows only to avoid spam? C++ showed all X_values)

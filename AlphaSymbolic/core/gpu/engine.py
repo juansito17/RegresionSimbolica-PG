@@ -846,7 +846,7 @@ class TensorGeneticEngine:
             sub_c = candidates_c[i:end]
             
             # Use evaluate_batch_full which returns [Chunk, Cases] abs errors
-            sub_errs = self.evaluator.evaluate_batch_full(sub_pop, x, y_target, sub_c).float() # Use float32 to save memory
+            sub_errs = self.evaluator.evaluate_batch_full(sub_pop, x, y_target, sub_c, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION)).float() # Use float32 to save memory
             all_errors.append(sub_errs)
         
         flat_errs = torch.cat(all_errors, dim=0) # [n_parents*tour, N_cases]
@@ -1307,7 +1307,7 @@ class TensorGeneticEngine:
                                 population[bi:be], pop_constants[bi:be], x_t, y_t, steps=warmup_steps)
                             pop_constants[bi:be] = ref_c
                         # Report best seed after warmup
-                        seed_fit = self.evaluator.evaluate_batch(population[:n], x_t, y_t, pop_constants[:n])
+                        seed_fit = self.evaluator.evaluate_batch(population[:n], x_t, y_t, pop_constants[:n], strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                         best_seed_rmse = seed_fit.min().item()
                         print(f"[Engine] PSO warmup on {n} seeds ({warmup_steps} steps): best RMSE = {best_seed_rmse:.6f}")
                         
@@ -1323,7 +1323,10 @@ class TensorGeneticEngine:
                                 r2_threshold = 0.995 if len(sniper_formula) < 25 else 0.999
                                 if seed_r2 > r2_threshold and not has_long_decimal and len(sniper_formula) < 60:
                                     print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
-                                    return sniper_formula
+                                    if GpuGlobals.ALLOW_WARMUP_EARLY_EXIT:
+                                        return sniper_formula
+                                    else:
+                                        print("[Engine] Warmup early exit disabled (Sniper). Continuing evolution...")
                         
                         # General early exit: any seed (structural or Sniper) with near-exact PSO fit
                         if best_seed_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD * 10:  # Relaxed: 1e-5
@@ -1331,7 +1334,24 @@ class TensorGeneticEngine:
                             formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
                             formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
                             print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
-                            return formula_early
+                            
+                            # Strict Validation Check
+                            try:
+                                val_res = self.evaluator.validate_strict(
+                                    population[best_si].unsqueeze(0),
+                                    x_t, y_t,
+                                    pop_constants[best_si].unsqueeze(0)
+                                )
+                                if not val_res['is_valid'][0].item():
+                                    n_err = val_res['n_errors'][0].item()
+                                    print(f"[STRICT MODE] WARNING: Formula has {n_err} domain errors. Valid on GPU-Protected only.")
+                            except Exception:
+                                pass
+
+                            if GpuGlobals.ALLOW_WARMUP_EARLY_EXIT:
+                                return formula_early
+                            else:
+                                print("[Engine] Warmup early exit disabled. Continuing evolution...")
                         # R²-based early exit: handles noisy data where RMSE can't reach 0
                         elif best_seed_rmse < 1.0:
                             y_var = torch.var(y_t).item()
@@ -1342,7 +1362,24 @@ class TensorGeneticEngine:
                                     formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
                                     formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
                                     print(f"\n[Engine] High-R² solution found! RMSE: {best_seed_rmse:.9e}, R²: {seed_r2:.6f}")
-                                    return formula_early
+                                    
+                                    # Strict Validation Check
+                                    try:
+                                        val_res = self.evaluator.validate_strict(
+                                            population[best_si].unsqueeze(0),
+                                            x_t, y_t,
+                                            pop_constants[best_si].unsqueeze(0)
+                                        )
+                                        if not val_res['is_valid'][0].item():
+                                            n_err = val_res['n_errors'][0].item()
+                                            print(f"[STRICT MODE] WARNING: Formula has {n_err} domain errors. Valid on GPU-Protected only.")
+                                    except Exception:
+                                        pass
+
+                                    if GpuGlobals.ALLOW_WARMUP_EARLY_EXIT:
+                                        return formula_early
+                                    else:
+                                        print("[Engine] Warmup early exit disabled. Continuing evolution...")
                 else:
                     print("[DEBUG] CRITICAL: Seed loading returned None!")
                     
@@ -1373,6 +1410,10 @@ class TensorGeneticEngine:
         # --- P0-1 Optimization: Reuse fitness from C++ orchestrator ---
         cached_next_fit = None       # Fitness returned by evolve_generation_cuda
         modified_indices = None      # Indices modified after evolution (migration/inject)
+        
+        # Initial Evaluation (Full Population)
+        # Required for first generation migration/stats
+        fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
 
         start_time = time.time()
         y_var_value = torch.var(y_t).item() if y_t.numel() > 1 else 0.0
@@ -1477,18 +1518,18 @@ class TensorGeneticEngine:
                 fitness_rmse = cached_next_fit
                 abs_errors = None
                 if all_modified:
-                    fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
+                    fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 else:
                     unique_mod = modified_indices.unique()
                     partial_rmse = self.evaluator.evaluate_batch(
-                        population[unique_mod], x_t, y_t, pop_constants[unique_mod])
+                        population[unique_mod], x_t, y_t, pop_constants[unique_mod], strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                     fitness_rmse[unique_mod] = partial_rmse
             elif GpuGlobals.USE_LEXICASE_SELECTION:
 
-                abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants)
+                abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 fitness_rmse = torch.mean(abs_errors**2, dim=1).sqrt() # Approx RMSE for stats
             else:
-                fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants)
+                fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 abs_errors = None
             cached_next_fit = None  # Consumed
             
@@ -2192,6 +2233,20 @@ class TensorGeneticEngine:
              except Exception:
                  pass  # Non-fatal
              
+             # --- GPU Strict Math Validation ---
+             try:
+                 strict_result = self.evaluator.validate_strict(
+                     best_rpn.unsqueeze(0), x_t, y_t, best_consts_vec.unsqueeze(0))
+                 n_err = strict_result['n_errors'][0].item()
+                 n_tot = strict_result['n_total']
+                 is_valid = strict_result['is_valid'][0].item()
+                 if is_valid:
+                     print(f"[STRICT] Formula valid: all {n_tot} points pass strict math")
+                 else:
+                     print(f"[STRICT] Formula has {n_err}/{n_tot} domain errors (protected-only)")
+             except Exception as e:
+                 print(f"[STRICT] Validation skipped ({e})")
+
              formula = self.rpn_to_infix(best_rpn, best_consts_vec)
              # Inverse Transform if needed
              if GpuGlobals.USE_LOG_TRANSFORMATION:

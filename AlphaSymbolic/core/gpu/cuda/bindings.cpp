@@ -23,7 +23,8 @@ void launch_rpn_kernel(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    int strict_mode = 0
 );
 
 void run_rpn_cuda(
@@ -44,7 +45,8 @@ void run_rpn_cuda(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    int strict_mode
 ) {
     launch_rpn_kernel(
         population, x, constants, out_preds, out_sp, out_error,
@@ -58,7 +60,8 @@ void run_rpn_cuda(
         op_fact, op_floor, op_ceil, op_sign,
         op_gamma, op_lgamma,
         op_asin, op_acos, op_atan,
-        pi_val, e_val
+        pi_val, e_val,
+        strict_mode
     );
 }
 

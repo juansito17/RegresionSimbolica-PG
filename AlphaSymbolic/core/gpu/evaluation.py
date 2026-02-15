@@ -22,7 +22,7 @@ class GPUEvaluator:
         from .cuda_vm import CudaRPNVM
         self.vm = CudaRPNVM(grammar, device)
 
-    def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Internal VM interpreter using Native CUDA Extension.
         """
@@ -30,11 +30,11 @@ class GPUEvaluator:
         # Logic in evaluate_batch handles this, but let's double check or leave it to VM which checks.
         
         # Native Call
-        return self.vm.eval(population, x, constants)
+        return self.vm.eval(population, x, constants, strict_mode=strict_mode)
                     
 
 
-    def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
+    def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
         """
         Evaluates the RPN population on the GPU over multiple samples.
         x: [Vars, Samples]
@@ -97,7 +97,7 @@ class GPUEvaluator:
             sub_c = constants[i:end_i] if constants is not None else None
             
             # Run VM
-            f_preds, sp, err = self._run_vm(sub_pop, x_for_vm, sub_c)
+            f_preds, sp, err = self._run_vm(sub_pop, x_for_vm, sub_c, strict_mode=strict_mode)
             
             current_B = sub_pop.shape[0]
             
@@ -211,7 +211,7 @@ class GPUEvaluator:
             loss = masked_sq_err.mean(dim=1)
             return loss, preds
     
-    def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
+    def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
         B, L = population.shape
         y_flat = y_target.flatten()
         n_samples = y_flat.shape[0]
@@ -251,7 +251,7 @@ class GPUEvaluator:
             current_B = sub_pop.shape[0]
             
             # Run VM
-            final_preds, sp, has_error = self._run_vm(sub_pop, x_for_vm, sub_c)
+            final_preds, sp, has_error = self._run_vm(sub_pop, x_for_vm, sub_c, strict_mode=strict_mode)
 
             # Validity: (Stack OK) AND (No Kernel Error)
             is_valid = (sp == 1) & (has_error == 0)
@@ -279,3 +279,63 @@ class GPUEvaluator:
             # torch.cuda.empty_cache() # Optional speed vs memory trade-off
 
         return all_abs_errors
+
+    def validate_strict(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> dict:
+        """
+        Validates formulas using STRICT math (no protected operators).
+        Runs on GPU with strict_mode=1 — domain errors (log(neg), sqrt(neg), etc.)
+        are flagged via the kernel's error output.
+        
+        Returns dict per individual:
+            'rmse': RMSE (inf if any domain error)
+            'n_errors': number of data points with domain errors
+            'n_total': total data points
+            'is_valid': True if n_errors == 0
+        """
+        B, L = population.shape
+        
+        # Standardize x to [Vars, Samples]
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        if x.dim() == 2:
+            if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
+                pass
+            elif x.shape[0] == y_target.shape[0]:
+                x = x.T.contiguous()
+        
+        N_samples = x.shape[1]
+        
+        # Run VM with strict_mode=1
+        preds, sp, err = self.vm.eval(population, x, constants, strict_mode=1)
+        
+        # Reshape to [B, N]
+        preds = preds.view(B, N_samples)
+        sp = sp.view(B, N_samples)
+        err = err.view(B, N_samples)
+        
+        # A point has an error if: kernel error OR stack mismatch OR NaN/Inf
+        has_error = (err != 0) | (sp != 1) | torch.isnan(preds) | torch.isinf(preds)
+        
+        # Count errors per individual
+        n_errors = has_error.sum(dim=1)  # [B]
+        
+        # Compute RMSE only for fully valid individuals
+        y_expand = y_target.flatten().unsqueeze(0).expand_as(preds)
+        diff = preds - y_expand
+        sq_diff = diff ** 2
+        
+        # Replace error points with 0 for RMSE computation (or inf)
+        sq_diff = torch.where(has_error, self._inf_tensor, sq_diff)
+        mse = torch.mean(sq_diff, dim=1)
+        rmse = torch.sqrt(mse)
+        
+        # Mark individuals with any errors as inf RMSE
+        rmse = torch.where(n_errors > 0, self._inf_tensor, rmse)
+        
+        return {
+            'rmse': rmse,           # [B] tensor
+            'n_errors': n_errors,   # [B] tensor  
+            'n_total': N_samples,
+            'is_valid': (n_errors == 0),  # [B] bool tensor
+        }
+
