@@ -733,8 +733,9 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
 
 def create_loss_plot(losses, title):
     """Create a loss plot with dark theme."""
-    plt.close('all')
-    fig, ax = plt.subplots(figsize=(8, 4), facecolor='#1a1a2e')
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(8, 4), facecolor='#1a1a2e')
+    ax = fig.add_subplot(111)
     ax.set_facecolor('#1a1a2e')
     
     if losses and len(losses) > 0:
@@ -754,14 +755,16 @@ def create_loss_plot(losses, title):
     ax.grid(True, alpha=0.2)
     for spine in ax.spines.values():
         spine.set_color('#00d4ff')
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
 
 
 def create_selfplay_plot(losses, rmses):
     """Create dual plot for self-play results."""
-    plt.close('all')
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), facecolor='#1a1a2e')
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(12, 4), facecolor='#1a1a2e')
+    ax1 = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
     
     ax1.set_facecolor('#1a1a2e')
     if losses:
@@ -788,7 +791,7 @@ def create_selfplay_plot(losses, rmses):
         for spine in ax.spines.values():
             spine.set_color('#00d4ff')
     
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
 
 def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Progress()):
@@ -809,7 +812,8 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
         MODEL, DEVICE = get_model()
         
         MODEL.train()
-        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4, weight_decay=0.01)
+        # STABILITY FIX: Lower learning rate to prevent gradient explosion
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=3e-5, weight_decay=0.01)
         # Slower decay: T_max = iterations * 2 keeps LR higher for longer
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(iterations*2), eta_min=1e-6)
         ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
@@ -904,6 +908,17 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
             # Prepare tensors: x is (batch, points, vars), y is (batch, points, 1)
             x_tensor = torch.tensor(np.stack(x_list), dtype=torch.float32).to(DEVICE)
             y_tensor = torch.tensor(np.stack(y_list), dtype=torch.float32).to(DEVICE)
+            
+            # CUDA STABILITY FIX: Clamp AND normalize Y values to prevent gradient explosion
+            x_tensor = torch.clamp(x_tensor, -100, 100)
+            y_tensor = torch.clamp(y_tensor, -100, 100)
+            
+            # Per-sample normalization of Y to [-1, 1] range
+            y_min = y_tensor.min(dim=1, keepdim=True)[0]
+            y_max = y_tensor.max(dim=1, keepdim=True)[0]
+            y_range = (y_max - y_min).clamp(min=1e-6)  # Prevent division by zero
+            y_tensor = 2 * (y_tensor - y_min) / y_range - 1  # Normalize to [-1, 1]
+            
             if y_tensor.dim() == 2:
                 y_tensor = y_tensor.unsqueeze(-1)
             decoder_input = decoder_input.to(DEVICE)
@@ -914,8 +929,12 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
             optimizer.zero_grad()
             logits, _ = MODEL(x_tensor, y_tensor, decoder_input)
             
-            # Apply curriculum mask to prevent learning tokens not yet introduced
-            logits = logits + (1 - allowed_mask.view(1, 1, -1)) * -1e4
+            # CURRICULUM MASK DISABLED: The DataGenerator already controls which operators 
+            # are used via allowed_operators. The mask was causing NaN when targets contained
+            # tokens that the mask was trying to block (e.g., target=48 but mask[48]=-inf).
+            # Keeping the code commented for reference:
+            # disallowed = (allowed_mask == 0).view(1, 1, -1).expand_as(logits)
+            # logits = torch.where(disallowed, torch.tensor(float('-inf'), device=logits.device), logits)
             
             loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), targets.view(-1))
             
@@ -925,11 +944,25 @@ def train_supervised(iterations, batch_size=128, point_count=10, progress=gr.Pro
                 optimizer.step()
                 scheduler.step()
                 losses.append(loss.item())
+            else:
+                # Debug: Print when loss is invalid
+                if i < 10 or i % 100 == 0:
+                    print(f"⚠️ Loss is NaN/Inf at iter {i}! x_shape={x_tensor.shape}, targets_range=[{targets.min()}, {targets.max()}]")
                 
             if (i+1) % 100 == 0:
-                save_model()
+                # SAFETY: Only save if model is healthy (no NaN weights)
+                has_nan = any(torch.isnan(p).any() for p in MODEL.parameters())
+                if not has_nan:
+                    save_model()
+                else:
+                    print(f"⚠️ Skipping save at iter {i+1}: Model has NaN weights!")
                 
-        save_model()
+        # Final save only if healthy
+        has_nan = any(torch.isnan(p).any() for p in MODEL.parameters())
+        if not has_nan:
+            save_model()
+        else:
+            print("⚠️ NOT saving final model: NaN weights detected!")
         MODEL.eval()
         TRAINING_STATUS["running"] = False
         
@@ -1057,6 +1090,17 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                 try:
                     x_tensor = torch.tensor(np.stack(x_list), dtype=torch.float32).to(DEVICE)
                     y_tensor = torch.tensor(np.stack(y_list), dtype=torch.float32).to(DEVICE)
+                    
+                    # CUDA STABILITY FIX: Clamp AND normalize Y values (matches pre-training)
+                    x_tensor = torch.clamp(x_tensor, -100, 100)
+                    y_tensor = torch.clamp(y_tensor, -100, 100)
+                    
+                    # Per-sample normalization to [-1, 1]
+                    y_min = y_tensor.min(dim=1, keepdim=True)[0]
+                    y_max = y_tensor.max(dim=1, keepdim=True)[0]
+                    y_range = (y_max - y_min).clamp(min=1e-6)
+                    y_tensor = 2 * (y_tensor - y_min) / y_range - 1
+                    
                     if y_tensor.dim() == 2:
                         y_tensor = y_tensor.unsqueeze(-1)
                 except Exception as e:
@@ -1259,6 +1303,17 @@ def train_hybrid_feedback_loop(iterations, problems_per_iter=10, gp_timeout=10, 
                         
                     x_t = torch.tensor(x_padded, dtype=torch.float32).to(DEVICE)
                     y_t = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
+                    
+                    # CUDA STABILITY FIX: Clamp AND normalize Y values (matches pre-training)
+                    x_t = torch.clamp(x_t, -100, 100)
+                    y_t = torch.clamp(y_t, -100, 100)
+                    
+                    # Per-sample normalization to [-1, 1]
+                    y_min = y_t.min(dim=1, keepdim=True)[0]
+                    y_max = y_t.max(dim=1, keepdim=True)[0]
+                    y_range = (y_max - y_min).clamp(min=1e-6)
+                    y_t = 2 * (y_t - y_min) / y_range - 1
+                    
                     dec_in = dec_in.to(DEVICE)
                     targets = targets.to(DEVICE)
                     
@@ -1379,7 +1434,8 @@ def train_from_memory(epochs=10, batch_size=32, num_variables=1, progress=gr.Pro
              return "No se pudieron parsear fórmulas válidas del CSV.", None
              
         # Training Setup
-        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=1e-4)
+        # STABILITY FIX: Use same LR as other modes
+        optimizer = torch.optim.AdamW(MODEL.parameters(), lr=3e-5)
         ce_loss = torch.nn.CrossEntropyLoss(ignore_index=-1)
         VOCAB_SIZE = len(VOCABULARY)
         SOS_ID = VOCAB_SIZE
@@ -1432,11 +1488,26 @@ def train_from_memory(epochs=10, batch_size=32, num_variables=1, progress=gr.Pro
                 x_t = torch.tensor(np.array(x_list), dtype=torch.float32).to(DEVICE)
                 y_t = torch.tensor(np.array(y_list), dtype=torch.float32).to(DEVICE)
                 
+                # CUDA STABILITY FIX: Clamp AND normalize Y values
+                x_t = torch.clamp(x_t, -100, 100)
+                y_t = torch.clamp(y_t, -100, 100)
+                
+                # Per-sample normalization to [-1, 1]
+                if y_t.numel() > 0:
+                    y_min = y_t.min(dim=1, keepdim=True)[0]
+                    y_max = y_t.max(dim=1, keepdim=True)[0]
+                    y_range = (y_max - y_min).clamp(min=1e-6)
+                    y_t = 2 * (y_t - y_min) / y_range - 1
+                
+                if y_t.dim() == 2:
+                    y_t = y_t.unsqueeze(-1)
+                
                 optimizer.zero_grad()
                 logits, _ = MODEL(x_t, y_t, dec_in)
                 loss = ce_loss(logits.view(-1, VOCAB_SIZE + 1), tgt.view(-1))
                 
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(MODEL.parameters(), 1.0)
                 optimizer.step()
                 
                 epoch_loss += loss.item()

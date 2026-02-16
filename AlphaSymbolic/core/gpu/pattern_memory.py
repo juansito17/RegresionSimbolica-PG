@@ -16,16 +16,17 @@ class PatternMemory:
     """
     
     def __init__(self, device: torch.device, operators, max_patterns: int = 100, 
-                 fitness_threshold: float = 10.0, min_uses: int = 3):
+                 fitness_threshold: float = 10.0, min_uses: int = 3, dtype=None):
         """
         Args:
             device: Torch device
             operators: GPUOperators instance
             max_patterns: Maximum number of patterns to store
-            fitness_threshold: Only record patterns from individuals with fitness below this
             min_uses: Minimum uses before a pattern is considered "useful"
+            dtype: Floating point dtype for fitness (default float64)
         """
         self.device = device
+        self.dtype = dtype if dtype is not None else torch.float64
         self.operators = operators
         self.max_patterns = max_patterns
         self.fitness_threshold = fitness_threshold
@@ -40,11 +41,11 @@ class PatternMemory:
         
         self.max_pattern_len = 15  # Max subtree length to store
         self.patterns_tensor = torch.zeros(max_patterns, self.max_pattern_len, 
-                                           dtype=torch.long, device=device)
+                                           dtype=torch.uint8, device=device)
         self.patterns_hash = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_count = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_fitness = torch.full((max_patterns,), float('inf'), 
-                                           dtype=torch.float64, device=device)
+                                           dtype=self.dtype, device=device)
         self.patterns_len = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.n_patterns = 0  # Current number of stored patterns
         
@@ -127,19 +128,17 @@ class PatternMemory:
         
         # Create padded pattern tensor
         extracted_patterns = torch.zeros(N_valid, self.max_pattern_len, 
-                                         dtype=torch.long, device=self.device)
+                                         dtype=torch.uint8, device=self.device)
         
-        # Vectorized extraction using gather
-        for i in range(self.max_pattern_len):
-            # For each position i, extract from (start_idx + i) if i < length
-            src_idx = start_indices + i
-            in_range = (i < pattern_lengths) & (src_idx < L)
-            # Clamp to valid range
-            src_idx = src_idx.clamp(0, L - 1)
-            # Gather values
-            values = good_pop[row_indices, src_idx]
-            # Only keep if in range
-            extracted_patterns[:, i] = torch.where(in_range, values, torch.zeros_like(values))
+        # Fully vectorized extraction using advanced indexing (no Python loop)
+        # Build a [N_valid, max_pattern_len] index matrix
+        offsets = torch.arange(self.max_pattern_len, device=self.device).unsqueeze(0)  # [1, MPL]
+        src_indices = start_indices.unsqueeze(1) + offsets  # [N_valid, MPL]
+        in_range_mask = (offsets < pattern_lengths.unsqueeze(1)) & (src_indices < L)  # [N_valid, MPL]
+        src_indices_clamped = src_indices.clamp(0, L - 1)
+        # Gather all values at once
+        all_values = good_pop[row_indices.unsqueeze(1).expand_as(src_indices_clamped), src_indices_clamped]
+        extracted_patterns = torch.where(in_range_mask, all_values, torch.zeros_like(all_values))
         
         # 5. Compute hashes for extracted patterns
         pattern_hashes = self._compute_pattern_hash(extracted_patterns)
@@ -269,13 +268,13 @@ class PatternMemory:
             [N, max_pattern_len] tensor of patterns
         """
         if self.n_patterns == 0:
-            return torch.zeros(0, self.max_pattern_len, dtype=torch.long, device=self.device)
+            return torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
         
         # Filter by min_uses
         useful_mask = self.patterns_count[:self.n_patterns] >= self.min_uses
         
         if not useful_mask.any():
-            return torch.zeros(0, self.max_pattern_len, dtype=torch.long, device=self.device)
+            return torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
         
         useful_indices = useful_mask.nonzero().squeeze(1)
         
@@ -293,17 +292,25 @@ class PatternMemory:
                                 grammar, percent: float = 0.05) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
         Inject useful patterns into the population. GPU-native.
+        LEGACY: Returns (pop, const, count). Use inject_into_population_inplace instead.
+        """
+        inject_positions = self.inject_into_population_inplace(population, constants, grammar, percent)
+        n_injected = inject_positions.numel() if inject_positions is not None else 0
+        return population, constants, n_injected
+    
+    def inject_into_population_inplace(self, population: torch.Tensor, constants: torch.Tensor,
+                                        grammar, percent: float = 0.05):
+        """
+        Inject useful patterns into the population IN-PLACE. No clones.
+        Returns: inject_positions tensor (or None if nothing injected).
         """
         patterns = self.get_useful_patterns(20)
         if patterns.shape[0] == 0:
-            return population, constants, 0
+            return None
         
         pop_size, max_len = population.shape
         n_inject = max(1, int(pop_size * percent))
         n_inject = min(n_inject, patterns.shape[0] * 2)
-        
-        pop_out = population.clone()
-        const_out = constants.clone()
         
         # Inject at random positions (avoid elites at front)
         inject_start = int(pop_size * 0.1)
@@ -316,17 +323,18 @@ class PatternMemory:
         # Pad patterns to population max_len
         if selected_patterns.shape[1] < max_len:
             padding = torch.zeros(n_inject, max_len - selected_patterns.shape[1], 
-                                  dtype=torch.long, device=self.device)
+                                  dtype=torch.uint8, device=self.device)
             selected_patterns = torch.cat([selected_patterns, padding], dim=1)
         else:
             selected_patterns = selected_patterns[:, :max_len]
         
-        # Inject
-        pop_out[inject_positions] = selected_patterns
-        const_out[inject_positions] = torch.randn_like(const_out[inject_positions]) * 0.5
+        # Inject in-place (no clone)
+        population[inject_positions] = selected_patterns
+        constants[inject_positions] = torch.randn(n_inject, constants.shape[1],
+                                                   device=self.device, dtype=constants.dtype) * 0.5
         
         self.total_injected += n_inject
-        return pop_out, const_out, n_inject
+        return inject_positions
     
     def get_stats(self) -> dict:
         """Get pattern memory statistics."""

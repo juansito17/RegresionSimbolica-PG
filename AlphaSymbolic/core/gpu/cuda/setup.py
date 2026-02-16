@@ -8,12 +8,24 @@ import torch
 base_path = os.path.dirname(os.path.abspath(__file__))
 
 setup(
-    name='rpn_cuda_final',
+    name='rpn_cuda_native',
     ext_modules=[
-        CUDAExtension('rpn_cuda_final', [
-            os.path.join(base_path, 'rpn_kernels.cu'),
-            os.path.join(base_path, 'bindings.cpp'),
-        ])
+        CUDAExtension(
+            name='rpn_cuda_native',
+            sources=[
+                'bindings.cpp',
+                'rpn_kernels.cu',
+                'pso_kernels.cu',
+                'fused_pso_kernels.cu',
+                'decoder.cpp',
+                'simplify_kernels.cu',
+                'genrand_kernels.cu'
+            ],
+            extra_compile_args={
+                'cxx': ['/O2', '/std:c++17'],
+                'nvcc': ['-O3']
+            }
+        )
     ],
     cmdclass={
         'build_ext': BuildExtension

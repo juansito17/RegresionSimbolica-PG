@@ -3,34 +3,30 @@ import numpy as np
 
 class GpuGlobals:
     # ============================================================
-    #                  PARÁMETROS GLOBALES
+    #                  1. SYSTEM & HARDWARE
     # ============================================================
+    USE_FLOAT32 = False            # Optimization: Float32 (10x speedup vs Float64)
+    FORCE_CPU_MODE = False         # Force CPU even if CUDA is available
+    USE_CUDA_ORCHESTRATOR = True   # Use C++ Orchestrator for evolution loop
+    INF = float('inf')
 
-    # ----------------------------------------
-    # Datos del Problema (Regresión Simbólica)
-    # ----------------------------------------
-    USE_FLOAT32 = False # Optimización: Float32 (10x velocidad)
-    USE_LOG_TRANSFORMATION = True # Default False for general usage (User can enable it)
+    # ============================================================
+    #                  2. DATASET CONFIGURATION
+    # ============================================================
+    # Target Sequence: OEIS A000170 (N-Queens)
+    _PROBLEM_Y_RAW = np.array([
+        1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,
+        14772512,95815104,666090624,4968057848,39029188884,314666222712,
+        2691008701644,24233937684440,227514171973736,2207893435808352
+    ], dtype=np.float64)
 
-    # DATASET CENTRALIZADO (N-Reinas)
-    # x0 = n
-    # x1 = n % 6
-    # x2 = n % 2
-    # Targets: OEIS A000170
-    _PROBLEM_Y_RAW = np.array([1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,14772512,95815104,666090624,4968057848,39029188884,314666222712,2691008701644,24233937684440,227514171973736,2207893435808352], dtype=np.float64)
-    # _PROBLEM_Y_RAW = np.array([1, 2, 6, 24, 120, 144, 28, 1408, 2025, 86400, 1782, 1092096, 4186, 31360, 241920000, 23953408, 140692, 114108912, 1092690], dtype=np.float64)
-    
-    # Coefficients optimized for n=8..27 (User Note).
-    # We must skip N < 8 because the (8/n)^26 term explodes.
+    # Range and Filter
     PROBLEM_X_START = 8
-    # PROBLEM_X_END = 25 # Inclusive
-    PROBLEM_X_END = 24 # Inclusive
-    
-    DATA_FILTER_TYPE = "ALL" # Options: "ALL", "ODD", "EVEN"
+    PROBLEM_X_END = 24            # Inclusive
+    DATA_FILTER_TYPE = "ALL"      # Options: "ALL", "ODD", "EVEN"
 
-    # Filter Logic
+    # Filter Logic (Computed)
     _indices_raw = np.arange(PROBLEM_X_START, PROBLEM_X_END + 1)
-    
     if DATA_FILTER_TYPE == "ODD":
         _mask = _indices_raw % 2 != 0
     elif DATA_FILTER_TYPE == "EVEN":
@@ -39,83 +35,98 @@ class GpuGlobals:
         _mask = np.ones(len(_indices_raw), dtype=bool)
 
     PROBLEM_X_FILTERED = _indices_raw[_mask]
-    # Slice Y to match the X range (N=1 at index 0)
+    # Slice Y to match the X range (N=1 at index 0 corresponds to raw index 0)
     PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[(PROBLEM_X_START - 1) : PROBLEM_X_END][_mask]
-    
-    # Legacy/Direct Access Alias (pointing to FILTERED data to ensure usage)
-    PROBLEM_Y_FULL = PROBLEM_Y_FILTERED 
-    
-    VAR_MOD_X1 = 6 # n % 6
-    VAR_MOD_X2 = 2 # n % 2 (Paridad)
+    PROBLEM_Y_FULL = PROBLEM_Y_FILTERED  # Alias
 
-    # ----------------------------------------
-    # Configuración General del Algoritmo Genético
-    # ----------------------------------------
+    # Input Transformations
+    USE_LOG_TRANSFORMATION = True  # Transform Y to log(Y) for high-magnitude data
+    VAR_MOD_X1 = 6                 # x1 = n % 6
+    VAR_MOD_X2 = 2                 # x2 = n % 2
 
-    # ----------------------------------------
-    # Configuración General del Algoritmo Genético
-    # ----------------------------------------
-    FORCE_CPU_MODE = False # Si es True, usa CPU aunque CUDA esté disponible
-    
-    # Tamaño de población - MÁXIMO para RTX 3050 (4GB VRAM)
-    # Analysis (Optimized Engine 2025-01-12):
-    # - With Chunked Reproduction: 4.0M Population is STABLE.
-    # - Peak VRAM: ~3.65 GB (Cycle) / 2.75 GB (Eval).
-    # - Island Migration limit hit at 5.0M.
-    # Recommended: 100,000 (General) | 4,000,000 (Hard Benchmarks)
+    # ============================================================
+    #                  3. SEARCH STRATEGY (ISLAND MODEL)
+    # ============================================================
+    # Population Size
+    # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
     POP_SIZE = 1_000_000
-    GENERATIONS = 500  
-    NUM_ISLANDS = 50 # 1M / 50 = 100k pop per island
+    GENERATIONS = 1_000_000
+    
+    # Islands
+    NUM_ISLANDS = 25              # 1M / 25 = 40k per island
     MIN_POP_PER_ISLAND = 20
-
-    # --- Fórmula Inicial ---
-    USE_INITIAL_FORMULA = False
-    #INITIAL_FORMULA_STRING = "(cos(sqrt(abs(((((5 + floor((x1 + x0))) / (lgamma(x0) - x0)) - (1.09359063 * x0)) - 5.31499599)))) + (lgamma((-0.09963219 + x0)) + (5 - x0)))"
-    # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "((lgamma(x0) + sqrt(((x0 + (cos(((x0 + 5) + x1)) / x0)) + (cos(gamma((7.00021942 - x0))) % (5 + log(log(5))))))) - (x0 - 0.45850736))"
-
-    # ----------------------------------------
-    # Parámetros del Modelo de Islas
-    # ----------------------------------------
-    MIGRATION_INTERVAL = 100
+    
+    # Migration
+    MIGRATION_INTERVAL = 10            # Standard migration interval
+    MIGRATION_INTERVAL_STAGNATION = 20 # Slower migration during stagnation (preserve diversity)
+    MIGRATION_STAGNATION_THRESHOLD = 10
     MIGRATION_SIZE = 50
 
-    # ----------------------------------------
-    # Parámetros de Generación Inicial de Árboles
-    # ----------------------------------------
-    MAX_TREE_DEPTH_INITIAL = 8
-    TERMINAL_VS_VARIABLE_PROB = 0.75
+    # Stagnation & Restarts
+    STAGNATION_LIMIT = 30              # Gens without local improvement before cataclysm
+    GLOBAL_STAGNATION_LIMIT = 150      # Gens without global improvement before restart
+    STAGNATION_RANDOM_INJECT_PERCENT = 0.20 # Inject random individuals during stagnation
+    
+    USE_ISLAND_CATACLYSM = True        # Local restart of island
+    CATACLYSM_ELITE_PERCENT = 0.08     # Elites survived in cataclysm
+    
+    SOFT_RESTART_ENABLED = True        # Global soft restart
+    SOFT_RESTART_ELITE_RATIO = 0.10    # Elites survived in global restart
+    
+    USE_STRUCTURAL_RESTART_INJECTION = False
+    STRUCTURAL_RESTART_INJECTION_RATIO = 0.25
+    HARD_RESTART_ELITE_RATIO = 0.12
+
+    # ============================================================
+    #                  4. GRAMMAR & INITIALIZATION
+    # ============================================================
+    # Initial Population
+    USE_INITIAL_POP_CACHE = False
+    USE_INITIAL_FORMULA = True
+    # Evolved Gen 16 seed (Verified < 1% error)
+    INITIAL_FORMULA_STRING = "(sqrt((sqrt((5 + (3 + x0))) + x0)) + (lgamma(x0) - (x0 / (x0**(exp(4)**(4 - (((-((x2 - 2.8508))) + x0) - 6)))))))"
+
+    USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
+
+    # Tree Constraints
+    MAX_TREE_DEPTH_INITIAL = 5
+    USE_HARD_DEPTH_LIMIT = True
+    MAX_TREE_DEPTH_HARD_LIMIT = 60
+    MAX_TREE_DEPTH_MUTATION = 6
+
+    # Constants
+    MAX_CONSTANTS = 15
     CONSTANT_MIN_VALUE = -10.0
     CONSTANT_MAX_VALUE = 10.0
     CONSTANT_INT_MIN_VALUE = -10
     CONSTANT_INT_MAX_VALUE = 10
-    USE_HARD_DEPTH_LIMIT = True
-    MAX_TREE_DEPTH_HARD_LIMIT = 30  # MÁXIMO - expresiones muy complejas
-    MAX_CONSTANTS = 50 # Increased to 50 to guarantee ANY generated formula (size < 30) fits as a seed without truncation.
+    FORCE_INTEGER_CONSTANTS = False # Force int constants in PSO
+    CONSTANT_PRECISION = 8          # Number of decimal places to show in formulas (Console)
 
-    # ----------------------------------------
-    # Parámetros de Operadores Genéticos (Configuración de Operadores)
-    # ----------------------------------------
+    # Operators Config
     USE_OP_PLUS     = True
     USE_OP_MINUS    = True
     USE_OP_MULT     = True
     USE_OP_DIV      = True
     USE_OP_POW      = True
-    USE_OP_MOD      = True
-    USE_OP_SIN      = True
-    USE_OP_COS      = True
+    USE_OP_MOD      = False
+    USE_OP_SIN      = False
+    USE_OP_COS      = False
+    USE_OP_TAN      = False
     USE_OP_LOG      = True
     USE_OP_EXP      = True
     USE_OP_FACT     = True
-    USE_OP_FLOOR    = True
+    USE_OP_FLOOR    = False
     USE_OP_GAMMA    = True
-    USE_OP_ASIN     = True
-    USE_OP_ACOS     = True
-    USE_OP_ATAN     = True
-    USE_OP_CEIL     = True
-    USE_OP_SIGN     = True
+    USE_OP_ASIN     = False
+    USE_OP_ACOS     = False
+    USE_OP_ATAN     = False
+    USE_OP_CEIL     = False
+    USE_OP_SIGN     = False
+    USE_OP_SQRT     = True
+    USE_OP_ABS      = False
 
-    # Pesos de Operadores (Order: +, -, *, /, ^, %, s, c, l, e, !, _, g, S, C, T)
+    # Operator Weights (Probabilities)
     OPERATOR_WEIGHTS = [
         0.20 * (1.0 if USE_OP_PLUS else 0.0),
         0.20 * (1.0 if USE_OP_MINUS else 0.0),
@@ -125,6 +136,7 @@ class GpuGlobals:
         0.02 * (1.0 if USE_OP_MOD else 0.0),
         0.10 * (1.0 if USE_OP_SIN else 0.0),
         0.10 * (1.0 if USE_OP_COS else 0.0),
+        0.10 * (1.0 if USE_OP_TAN else 0.0),
         0.05 * (1.0 if USE_OP_LOG else 0.0),
         0.05 * (1.0 if USE_OP_EXP else 0.0),
         0.01 * (1.0 if USE_OP_FACT else 0.0),
@@ -134,81 +146,127 @@ class GpuGlobals:
         0.01 * (1.0 if USE_OP_ACOS else 0.0),
         0.01 * (1.0 if USE_OP_ATAN else 0.0),
         0.005 * (1.0 if USE_OP_CEIL else 0.0),
-        0.005 * (1.0 if USE_OP_SIGN else 0.0)
+        0.005 * (1.0 if USE_OP_SIGN else 0.0),
+        0.10 * (1.0 if USE_OP_SQRT else 0.0),
+        0.05 * (1.0 if USE_OP_ABS else 0.0)
     ]
 
-    # ----------------------------------------
-    # Parámetros de Operadores Genéticos (Mutación, Cruce, Selección)
-    # ----------------------------------------
-    BASE_MUTATION_RATE = 0.40
-    BASE_ELITE_PERCENTAGE = 0.10
-    DEFAULT_CROSSOVER_RATE = 0.50
-    DEFAULT_TOURNAMENT_SIZE = 8
-    MAX_TREE_DEPTH_MUTATION = 12
-    MUTATE_INSERT_CONST_PROB = 0.5
-    MUTATE_INSERT_CONST_INT_MIN = 1
-    MUTATE_INSERT_CONST_INT_MAX = 5
-    MUTATE_INSERT_CONST_FLOAT_MIN = 0.5
-    MUTATE_INSERT_CONST_FLOAT_MAX = 5.0
+    # ============================================================
+    #                  5. GENETIC OPERATORS
+    # ============================================================
+    # Rates
+    BASE_MUTATION_RATE = 0.15
+    DEFAULT_CROSSOVER_RATE = 0.60
+    
+    # Adaptive Mutation
+    MUTATION_RATE_CAP = 0.70
+    MUTATION_RAMP_PER_GEN = 0.015
+    MUTATION_STAGNATION_TRIGGER = 5
+    
+    # Selection
+    DEFAULT_TOURNAMENT_SIZE = 5
+    TOURNAMENT_SIZE_FLOOR = 3
+    TOURNAMENT_ADAPTIVE_DIVISOR = 6
+    BASE_ELITE_PERCENTAGE = 0.12
+    
+    # Generation
+    TERMINAL_VS_VARIABLE_PROB = 0.50
+    DEDUPLICATION_INTERVAL = 50
+    PREVENT_DUPLICATES = True
+    
+    # Mutation Bank
+    MUTATION_BANK_SIZE = 2000
+    MUTATION_BANK_REFRESH_INTERVAL = 50
 
-    # ----------------------------------------
-    # Parámetros de Fitness y Evaluación
-    # ----------------------------------------
-    COMPLEXITY_PENALTY = 0.0001 # Reduced to allow growth
-    LOSS_FUNCTION = 'RMSE' # Changed from RMSLE because USE_LOG_TRANSFORMATION=True. 
-                           # RMSE on Log(y) == RMSLE on y. Avoids double log.
-    USE_RMSE_FITNESS = True
-    FITNESS_ORIGINAL_POWER = 1.3
-    FITNESS_PRECISION_THRESHOLD = 0.001
-    FITNESS_PRECISION_BONUS = 0.0001
-    FITNESS_EQUALITY_TOLERANCE = 1e-9
-    EXACT_SOLUTION_THRESHOLD = 1e-8
-
-    # ----------------------------------------
-    # Fitness Ponderado (Weighted Fitness)
-    # ----------------------------------------
+    # ============================================================
+    #                  6. EVALUATION & FITNESS
+    # ============================================================
+    LOSS_FUNCTION = 'RMSE'
+    
+    # Validation
+    FORCE_STRICT_VALIDATION = True     # Strict math Mode (No protected operators)
+    
+    # Penalties
+    COMPLEXITY_PENALTY = 0.02
+    TRIVIAL_FORMULA_PENALTY = 1.5
+    NO_VARIABLE_PENALTY = 2.5
+    TRIVIAL_FORMULA_MAX_TOKENS = 2
+    TRIVIAL_FORMULA_ALLOW_RMSE = 1e-3
+    
+    # Diversity (Disabled)
+    VAR_DIVERSITY_PENALTY = 0.0
+    VAR_FORCE_SEED_PERCENT = 0.0
+    
+    # Weighted Fitness
     USE_WEIGHTED_FITNESS = False
     WEIGHTED_FITNESS_EXPONENT = 0.25
 
-    # ----------------------------------------
-    # Parámetros de Características Avanzadas
-    # ----------------------------------------
-    STAGNATION_LIMIT = 50
-    GLOBAL_STAGNATION_LIMIT = 100
-    STAGNATION_RANDOM_INJECT_PERCENT = 0.1
-    PARAM_MUTATE_INTERVAL = 50
-    PATTERN_RECORD_FITNESS_THRESHOLD = 10.0
-    PATTERN_MEM_MIN_USES = 3
-    PATTERN_INJECT_INTERVAL = 10
-    PATTERN_INJECT_PERCENT = 0.05
-    PARETO_MAX_FRONT_SIZE = 50
+    # ============================================================
+    #                  7. OPTIMIZATION (PSO & SIMPLIFICATION)
+    # ============================================================
+    # Particle Swarm Optimization (PSO)
+    USE_NANO_PSO = True
+    PSO_INTERVAL = 2
+    PSO_PARTICLES = 30
+    PSO_STEPS_NORMAL = 20
+    PSO_STEPS_STAGNATION = 30
+    PSO_K_NORMAL = 300            # Top K individuals to optimize
+    PSO_K_STAGNATION = 600
+    PSO_STAGNATION_THRESHOLD = 10
     
+    # Simplification
+    USE_SIMPLIFICATION = True
+    USE_SYMPY = False             # Heavy symbolic simplification (Slow)
+    USE_CONSOLE_BEST_SIMPLIFICATION = False
+    SIMPLIFICATION_INTERVAL = 10
+    K_SIMPLIFY = 50
     SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9
     SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9
-    LOCAL_SEARCH_ATTEMPTS = 30
     
-    USE_SIMPLIFICATION = True
-    K_SIMPLIFY = 20                # Number of top formulas to simplify per island
-    SIMPLIFICATION_INTERVAL = 20    # Simplify every N generations
-    USE_ISLAND_CATACLYSM = True
-    USE_LEXICASE_SELECTION = True
-    USE_PARETO_SELECTION = True  # Disabled for stronger fitness pressure on simple problems
-    USE_WEIGHTED_FITNESS = False  # Enable to weight fitness cases (e.g., by difficulty)
-    USE_NANO_PSO = True # Enable Particle Swarm Optimization for constants
-    
-    USE_SNIPER = True             # Enable Linear/Geometric/Log-Linear detection
-    USE_RESIDUAL_BOOSTING = True  # Enable finding f(x)+g(x) using Sniper on residuals
-    USE_NEURAL_FLASH = False      # Enable Neural Inspiration (Beam Search injection)
-    USE_ALPHA_MCTS = False        # Enable Alpha Mode (MCTS Refinement)
-    USE_PATTERN_MEMORY = True     # Optimized: GPU-Based Pattern Extraction
+    # Residual Boosting
+    USE_RESIDUAL_BOOSTING = True
+    RESIDUAL_BOOST_INTERVAL = 20
 
-    # ----------------------------------------
-    # Otros Parámetros
-    # ----------------------------------------
-    PROGRESS_REPORT_INTERVAL = 100
-    FORCE_INTEGER_CONSTANTS = False
+    # ============================================================
+    #                  8. ADVANCED FEATURES
+    # ============================================================
+    # Selection Strategies
+    USE_LEXICASE_SELECTION = True
+    USE_PARETO_SELECTION = True
+    PARETO_INTERVAL = 5
+    PARETO_MAX_FRONT_SIZE = 30
     
-    # Control de Duplicados
-    PREVENT_DUPLICATES = True
-    DUPLICATE_RETRIES = 10
-    INF = float('inf')
+    # Pattern Memory
+    USE_PATTERN_MEMORY = True
+    PATTERN_RECORD_INTERVAL = 20
+    PATTERN_INJECT_INTERVAL = 10
+    PATTERN_INJECT_PERCENT = 0.05
+    PATTERN_RECORD_FITNESS_THRESHOLD = 10.0
+    PATTERN_MEM_MIN_USES = 3
+    PATTERN_MIN_SIZE = 3
+    PATTERN_MAX_SIZE = 12
+    PATTERN_MAX_PATTERNS = 100
+    
+    # Neural / MCTS / Sniper (Disabled/Experimental)
+    USE_SNIPER = False
+    USE_NEURAL_FLASH = False
+    NEURAL_FLASH_INTERVAL = 50
+    NEURAL_FLASH_INJECT_PERCENT = 0.10
+    USE_ALPHA_MCTS = False
+    ALPHA_MCTS_INTERVAL = 100
+    ALPHA_MCTS_N_SIMULATIONS = 50
+
+    # ============================================================
+    #                  9. REPORTING & EXIT
+    # ============================================================
+    PROGRESS_REPORT_INTERVAL = 100
+    
+    # Early Exit
+    EXACT_SOLUTION_THRESHOLD = 1e-6
+    FITNESS_EQUALITY_TOLERANCE = 1e-9
+    ALLOW_WARMUP_EARLY_EXIT = False
+    
+    # Good Enough Exit
+    GOOD_ENOUGH_RMSE = -1.0        # Disabled
+    GOOD_ENOUGH_R2 = 0.995
+    GOOD_ENOUGH_MIN_SECONDS = 4.0

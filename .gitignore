@@ -13,6 +13,7 @@
 *.a
 *.pdb
 *.ilk
+*.pyd
 
 # CMake & Ninja
 CMakeCache.txt
@@ -66,6 +67,20 @@ AlphaSymbolic/data/*.json
 pattern_memory.json
 hh.py
 comparison_results.txt
+build_log_v2.txt
+
+# GPU / CUDA specific
+AlphaSymbolic/core/gpu/cache/
+AlphaSymbolic/core/gpu/cuda/build/
+AlphaSymbolic/core/gpu/cuda/dist/
+AlphaSymbolic/core/gpu/cuda/temp_build/
+AlphaSymbolic/core/gpu/cuda/*.egg-info/
+AlphaSymbolic/core/gpu/cuda/*.log
+AlphaSymbolic/core/gpu/cuda/*.txt
+AlphaSymbolic/core/gpu/cuda/*.pyd
+**/*.pt
+**/*.pt.tmp
+**/*.pyd
 
 # OS generated
 .DS_Store

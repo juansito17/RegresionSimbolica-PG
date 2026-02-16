@@ -33,19 +33,13 @@ OPERATORS = {
     'sign': 1,
     'floor': 1,
     'ceil': 1,
+    'fact': 1,
     'mod': 2,
     '%': 2,     # Alias for mod
     'gamma': 1,
     'lgamma': 1,
     
-    # === C++ / GPU Specific Aliases ===
-    'e': 1,     # Alias for exp
-    '!': 1,     # Alias for gamma/factorial
-    'g': 1,     # Alias for lgamma
-    '_': 1,     # Alias for floor
-    'S': 1,     # Alias for asin
-    'C': 1,     # Alias for acos
-    'T': 1,     # Alias for atan
+    # === C++ / GPU Specific Aliases REMOVED (Collision Risk) ===
 }
 
 # Operator groups for curriculum control
@@ -61,7 +55,7 @@ OPERATOR_STAGES = {
 # Terminal tokens
 VARIABLES = ['x' + str(i) for i in range(10)] # x0, x1, ..., x9
 # 'C' is a placeholder for learnable constants
-CONSTANTS = ['C', '0', '1', '2', '3', '5', '10', 'pi', 'e']
+CONSTANTS = ['C', '0', '1', '2', '3', '4', '5', '10', 'pi', 'e']
 
 # Full Vocabulary
 VOCABULARY = list(OPERATORS.keys()) + VARIABLES + CONSTANTS
@@ -228,36 +222,20 @@ class ExpressionTree:
             # Functions like sin(x)
             func_id = node.func.id
             # Allow both standard names and GPU short tokens
-            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial', 'pow',
-                           'S', 'C', 'T', 'e', 'g', '_', '!']: 
+            if func_id in ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'exp', 'log', 'sqrt', 'abs', 'floor', 'ceil', 'gamma', 'lgamma', 'sign', 'neg', 'fact', 'factorial', 'pow']: 
                 
-                # Map back to short tokens if used by engine
-                # We assume engine uses short tokens for S, C, T, e, !, _, g
                 token = func_id
-                # Only map critical C++ aliases if absolutely needed, but prefer standard tokens
-                # if func_id == 'asin': token = 'S'  <-- S risks conflict? No, but let's be explicit
-                # if func_id == 'acos': token = 'C'  <-- C conflicts with Constant C!
-                # if func_id == 'atan': token = 'T'  <-- T risks conflict?
-                if func_id == 'exp': token = 'e'     # e is also constant e (2.71)?
-                # Check 'e'. CONSTANTS has 'e'. OPERATORS has 'e'.
-                # COLLISION on 'e'!
-                # exp(x) arity 1. e constant arity 0.
-                # Must fix 'e' too. Use 'exp'.
+                if func_id == 'fact' or func_id == 'factorial': token = 'fact' 
+                if func_id == 'lgamma': token = 'lgamma'
                 
-                if func_id == 'fact' or func_id == 'factorial': token = '!' 
-                if func_id == 'floor': token = '_'
-                if func_id == 'lgamma': token = 'g' # g is safe?
-                
-                # Force standard names to avoid collisions with Constants (C, e)
+                # Standardize
                 if func_id == 'exp': token = 'exp'
                 if func_id == 'acos': token = 'acos' 
                 if func_id == 'asin': token = 'asin'
                 if func_id == 'atan': token = 'atan'
-                if func_id == 'floor': token = '_'
-                if func_id == 'lgamma': token = 'g'
-                # func_id == 'gamma' stays 'gamma' (True Gamma)
+                if func_id == 'floor': token = 'floor'
                 
-                # Special Handle for 'gamma' -> If it maps to !, it's factorial. 
+                # Special Handle for 'gamma'
                 # If we want PRECISE Gamma, we must ensure engine supports 'gamma' token.
                 # Looking at OPERATORS dict, 'gamma' is a valid token.
                 
@@ -391,31 +369,34 @@ class ExpressionTree:
             if val == '-': return args[0] - args[1]
             if val == '*': return args[0] * args[1]
             if val == '/': 
-                return np.divide(args[0], args[1], out=np.zeros(n_samples, dtype=np.float64), where=args[1]!=0)
+                return np.divide(args[0], args[1], out=np.full(n_samples, np.nan, dtype=np.float64), where=args[1]!=0)
             if val == 'pow':
-                # Power logic in CUDA is standard pow(a, b)
-                return np.power(args[0], args[1])
+                # STABILITY: Handle negative bases with float (integer-valued) powers
+                # (Numpy power returns NaN for negative^float, but CUDA pow is more permissive)
+                with np.errstate(invalid='ignore'):
+                    res = np.power(args[0], args[1])
+                    if np.any(np.isnan(res)):
+                         # Fallback using complex domain for negative bases
+                         c_res = np.power(args[0].astype(complex), args[1].astype(complex))
+                         # If the imaginary part is negligible, the result is practically real
+                         res = np.where(np.isnan(res), np.where(np.abs(c_res.imag) < 1e-6, c_res.real, np.nan), res)
+                    return res
             if val == 'mod':
-                # Python-style mod to match safe_mod in CUDA
-                # CUDA: r = fmod(a, b); if ((b > 0 && r < 0) || (b < 0 && r > 0)) r += b;
-                # This is exactly what np.mod does by default.
-                # However, we must handle the case where b is near zero as 0.0 to match CUDA's safe_mod.
-                return torch.where(torch.abs(args[1]) < 1e-9, torch.zeros_like(args[0]), np.mod(args[0], args[1])).numpy() if hasattr(args[1], 'device') else np.where(np.abs(args[1]) < 1e-9, 0.0, np.mod(args[0], args[1]))
+                # Strict: Return NaN if divisor is zero
+                return np.where(np.abs(args[1]) < 1e-9, np.nan, np.mod(args[0], args[1]))
             if val == 'sin': return np.sin(args[0])
             if val == 'cos': return np.cos(args[0])
             if val == 'tan': return np.tan(args[0])
             
             if val == 'asin' or val == 'S': 
-                # Match safe_asin: clip to [-1, 1] then asin, no extra epsilon
-                return np.arcsin(np.clip(args[0], -1.0, 1.0))
+                return np.arcsin(args[0])
             if val == 'acos' or val == 'C': 
-                # Match safe_acos: clip to [-1, 1] then acos, no extra epsilon
-                return np.arccos(np.clip(args[0], -1.0, 1.0))
+                return np.arccos(args[0])
             if val == 'atan' or val == 'T': return np.arctan(args[0])
             
             if val == 'exp' or val == 'e': 
-                # CUDA safe_exp clamps at [-80, 80]
-                return np.exp(np.clip(args[0], -80.0, 80.0))
+                # Match CUDA safe_exp: return 0 if very negative, else let it overflow to Inf
+                return np.where(args[0] < -100.0, 0.0, np.exp(args[0]))
             if val == 'log': 
                 # CUDA safe_log returns NaN if <= 0
                 return np.log(args[0])
@@ -430,22 +411,26 @@ class ExpressionTree:
                 return np.ceil(args[0])
             
             if val == '!':
-                # CUDA safe_fact uses tgamma(arg + 1) with overflow check
+                # CUDA safe_fact uses tgamma(arg + 1)
                 arg = args[0] + 1.0
-                clipped = np.clip(arg, -30.0, 30.0) # match safe_tgamma clamp
-                res = scipy_gamma(clipped)
-                # If original was > 30, return 1e30 to match GPU
-                return np.where(np.abs(arg) > 30.0, 1e30, res)
+                return np.where(arg <= 0.0, np.nan, scipy_gamma(arg))
+            if val == 'fact':
+                # Alias of factorial for parser compatibility (fact(x) -> gamma(x+1))
+                arg = args[0] + 1.0
+                return np.where(arg <= 0.0, np.nan, scipy_gamma(arg))
                 
             if val == 'gamma':
-                # CUDA safe_tgamma: clamp at 30
-                clipped = np.clip(args[0], -30.0, 30.0)
-                res = scipy_gamma(clipped)
-                return np.where(np.abs(args[0]) > 30.0, 1e30, res)
+                # CUDA safe_tgamma: return NaN for poles (0 and negative integers)
+                res = scipy_gamma(args[0])
+                # poles are where gamma goes to Inf/NaN. scipy_gamma handles this but we want to be explicit.
+                is_pole = (args[0] <= 0.0) & (np.floor(args[0]) == args[0])
+                return np.where(is_pole, np.nan, res)
 
             if val == 'lgamma' or val == 'g':
-                # CUDA safe_lgamma: standard lgamma
-                return gammaln(args[0])
+                # CUDA safe_lgamma: return NaN for poles
+                # poles are 0 and negative integers
+                is_pole = (args[0] <= 0.0) & (np.floor(args[0]) == args[0])
+                return np.where(is_pole, np.nan, gammaln(args[0]))
             if val == 'neg':
                 return -args[0]
             if val == 'sign':

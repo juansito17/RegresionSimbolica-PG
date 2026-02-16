@@ -62,8 +62,19 @@ class BeamSearch:
         norm_x = norm_x_list[0]
         norm_y = norm_y_list[0]
         
-        x_tensor = torch.tensor(norm_x, dtype=torch.float32).unsqueeze(0).to(self.device) # [1, points, vars] or [1, points] if 1D-normalized
-        y_tensor = torch.tensor(norm_y, dtype=torch.float32).unsqueeze(0).to(self.device) # [1, points]
+        x_tensor = torch.tensor(norm_x, dtype=torch.float32).unsqueeze(0).to(self.device) 
+        y_tensor = torch.tensor(norm_y, dtype=torch.float32).unsqueeze(0).to(self.device) 
+        
+        # STABILITY FIX: Match training logic (Clamp + Normalize)
+        # 1. Clamp to training range
+        x_tensor = torch.clamp(x_tensor, -100, 100)
+        y_tensor = torch.clamp(y_tensor, -100, 100)
+        
+        # 2. Per-sample normalization to [-1, 1]
+        y_min = y_tensor.min(dim=1, keepdim=True)[0]
+        y_max = y_tensor.max(dim=1, keepdim=True)[0]
+        y_range = (y_max - y_min).clamp(min=1e-6)
+        y_tensor = 2 * (y_tensor - y_min) / y_range - 1
         
         # Each element in beams is just the sequence of tokens (list of strings)
         # We track scores and open branches in parallel lists or a list of dicts

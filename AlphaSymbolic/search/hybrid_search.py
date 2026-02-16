@@ -162,11 +162,24 @@ def hybrid_solve(
                 # (Engine already checked target compliance, but we need the number for return dict)
                 try:
                     tree = ExpressionTree.from_infix(best_formula_str)
-                    y_pred = tree.evaluate(x_values)
+                    
+                    # STABILITY FIX: Clamp inputs on CPU too to match GPU stability
+                    x_safe = np.clip(x_values, -100, 100)
+                    y_pred = tree.evaluate(x_safe)
+                    
+                    # Handle NaNs in prediction
+                    if np.any(np.isnan(y_pred)) or np.any(np.isinf(y_pred)):
+                        print("[Phase 2] WARNING: CPU Eval produced NaN/Inf. GPU Result might be unstable.")
+                        y_pred = np.nan_to_num(y_pred, nan=0.0, posinf=1e9, neginf=-1e9)
+                        
                     mse = np.mean((y_values - y_pred)**2)
                     rmse = np.sqrt(mse)
+                    
+                    if np.isnan(rmse): rmse = 1e9 # Penalize but keep
+                    
                     results.append({'formula': best_formula_str, 'rmse': rmse, 'status': 'success'})
-                except:
+                except Exception as e:
+                    print(f"[Phase 2] Eval Error: {e}")
                     results.append({'formula': best_formula_str, 'rmse': 999.0, 'status': 'eval_error'})
             else:
                  print("[Phase 2] GPU Engine returned no valid formula.")
@@ -176,36 +189,7 @@ def hybrid_solve(
             import traceback
             traceback.print_exc()
 
-    else:
-        print("[Phase 2] TensorGeneticEngine not available. Falling back to CPU.")
-        # Fallback to CPU workers if GPU not imported
-        # chunks logic
-        if not seeds:
-             # If no seeds, generating from scratch? 
-             # GP Engine (C++) generates random population if seeds are empty.
-             # We just pass empty lists to workers.
-             # But we need at least 1 chunk per worker to trigger it.
-             chunk_list = [[] for _ in range(max_workers)]
-        else:
-             # Split seeds
-             k, m = divmod(len(seeds), max_workers)
-             chunk_list = [seeds[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(max_workers)]
-             
-        cpu_chunks = chunk_list 
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
-            for chunk in cpu_chunks:
-                args = (x_list, y_list, chunk, gp_timeout, gp_binary_path)
-                futures.append(executor.submit(_run_gp_worker, args))
-                
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    res = future.result()
-                    if res['status'] == 'success' or res['status'] == 'eval_error':
-                        res['worker'] = 'CPU'
-                        results.append(res)
-                except Exception as e:
-                    print(f"Worker exception: {e}")
+# ... (Worker fallback ignored) ...
 
     total_time = time.time() - start_time
 
@@ -214,8 +198,11 @@ def hybrid_solve(
     best_rmse = float('inf')
     
     for res in results:
-        if res['formula'] and res['rmse'] < best_rmse:
-            best_rmse = res['rmse']
+        r = res['rmse']
+        if np.isnan(r): r = 1e9
+        
+        if res['formula'] and r < best_rmse:
+            best_rmse = r
             best_result = res['formula']
             
     if best_result:

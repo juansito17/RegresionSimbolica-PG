@@ -34,8 +34,24 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
     # But RPN decoding is simple if we have the method.
     # We will use the global 'engine' instance defined below.
     
-    formula_str = engine.rpn_to_infix(best_rpn_tensor, best_consts_tensor)
-    formula_size = engine.get_tree_size(best_rpn_tensor) 
+    display_rpn = best_rpn_tensor
+    display_consts = best_consts_tensor
+    if GpuGlobals.USE_CONSOLE_BEST_SIMPLIFICATION:
+        try:
+            simp_pop, simp_consts, _ = engine.gpu_simplifier.simplify_batch(
+                best_rpn_tensor.unsqueeze(0),
+                best_consts_tensor.unsqueeze(0),
+                max_passes=10
+            )
+            if simp_pop is not None and simp_pop.shape[0] > 0:
+                display_rpn = simp_pop[0]
+                if simp_consts is not None and simp_consts.shape[0] > 0:
+                    display_consts = simp_consts[0]
+        except Exception:
+            pass
+
+    formula_str = engine.rpn_to_infix(display_rpn, display_consts)
+    formula_size = engine.get_tree_size(display_rpn)
 
     if is_new_best:
         print(f"\n========================================")
@@ -43,46 +59,71 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
         print(f"Fitness: {best_rmse:.8f}")
         print(f"Size: {formula_size}")
         print(f"Formula: {formula_str}")
+        
+        # --- Strict Validation Check ---
+        try:
+            # Prepare Data (subset used for training)
+            # Need to match what was passed to engine.run()
+            n_targets = len(TARGETS)
+            if engine.num_variables == 1:
+                x_val_np = X_VALUES[:n_targets, 0] # [N]
+                x_val_np = x_val_np.reshape(-1, 1) # [N, 1]
+            else:
+                x_val_np = X_VALUES[:n_targets] # [N, Vars]
+            
+            # Convert to Tensor [Vars, N]
+            x_tensor = torch.tensor(x_val_np, dtype=engine.dtype, device=engine.device).T
+            
+            # Convert Y to Tensor [N]
+            y_tensor = torch.tensor(TARGETS, dtype=engine.dtype, device=engine.device)
+            if y_tensor.dim() == 1:
+                 y_tensor = y_tensor
+            
+            # Run Strict Validation
+            # population: [1, L], constants: [1, K]
+            val_res = engine.evaluator.validate_strict(
+                display_rpn.unsqueeze(0),
+                x_tensor,
+                y_tensor,
+                display_consts.unsqueeze(0)
+            )
+            
+            if not val_res['is_valid'][0].item():
+                n_err = val_res['n_errors'][0].item()
+                print(f"[STRICT MODE] WARNING: Formula has {n_err} domain errors (e.g. log(neg)). Valid on GPU-Protected only.")
+                
+        except Exception as e:
+            print(f"[STRICT MODE] Check Failed: {e}")
+
         print("Predictions vs Targets:")
         
         # Show Predictions (Top 5 rows only to avoid spam? C++ showed all X_values)
         # C++ showed all. Let's show all if small, or top 10.
         # Recalculate predictions
+        # Use GPU for vectorized predictions
+        # X_VALUES: [N, Vars] -> engine.predict_individual expects x as [D] or [N, D] handled by engine or evaluator?
+        # engine.predict_individual(rpn, consts, x) wraps as batch of 1 and returns preds for all x.
+        # We convert X_VALUES to tensor first.
         try:
-            # We need to run evaluate on the best formula for single points
-            # Or just use the batch evaluator on CPU for display?
-            # Actually engine has 'rpn_to_infix', we can use ExpressionTree to eval?
-            # Or engine.evaluate_batch?
-            # engine.evaluate_batch expects a population.
-            # Let's use ExpressionTree for clean single-point eval if possible.
-            from core.grammar import ExpressionTree
-            tree = ExpressionTree.from_infix(formula_str)
+            x_tensor = torch.tensor(X_VALUES, dtype=engine.dtype, device=engine.device)
+            preds_tensor = engine.predict_individual(display_rpn, display_consts, x_tensor)
+            preds = preds_tensor.detach().cpu().numpy().flatten()
             
             # Determine display targets
             display_targets = TARGETS
             if GpuGlobals.USE_LOG_TRANSFORMATION:
-                 # Parity with engine filtering if needed, but here we just trans for display
-                 # However, to be safe and match engine, we filter too
                  mask = TARGETS > 1e-9
-                 display_targets = np.log(np.where(mask, TARGETS, 1.0)) # Safe log for display
+                 display_targets = np.log(np.where(mask, TARGETS, 1.0))
             
             for i in range(len(X_VALUES)):
-                val = tree.evaluate(X_VALUES[i])
-                
-                # Ensure val is scalar
-                if isinstance(val, np.ndarray):
-                    val = val.item() if val.size == 1 else val[0]
-
+                val = preds[i]
                 target = display_targets[i] if i < len(display_targets) else float('nan')
                 diff = abs(val - target)
                 
-                # Format: x=(...): Pred=..., Target=..., Diff=... 
-                # (Same as C++)
                 x_str = ",".join([f"{x:.1f}" for x in X_VALUES[i]])
-                
                 print(f"  x=({x_str}): Pred={val:12.4f}, Target={target:12.4f}, Diff={diff:12.4f}")
         except Exception as e:
-            print(f"  (Error calculating detailed predictions for display: {e})")
+            print(f"  (Error calculating vectorized predictions on GPU: {e})")
         
         print("========================================")
         sys.stdout.flush()

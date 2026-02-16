@@ -20,6 +20,19 @@ except ImportError:
     
 from .grammar import PAD_ID, GPUGrammar
 
+try:
+    from sys import path as sys_path
+    from os import path as os_path
+    # Ensure CUDA module is reachable
+    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
+    if cuda_path not in sys_path: sys_path.append(cuda_path)
+    
+    import rpn_cuda_native
+    RPN_CUDA_AVAILABLE = True
+except ImportError:
+    RPN_CUDA_AVAILABLE = False
+    print("[GPUSimplifier] Warning: rpn_cuda_native not found. Using slow Python decoding.")
+
 class GPUSimplifier:
     def __init__(self, grammar: GPUGrammar, device, max_constants=5):
         self.grammar = grammar
@@ -28,7 +41,7 @@ class GPUSimplifier:
         self.num_variables = len(self.grammar.active_variables)
 
     def simplify_expression(self, rpn_tensor: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, bool]:
-        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION:
+        if not SYMPY_AVAILABLE or not GpuGlobals.USE_SIMPLIFICATION or not GpuGlobals.USE_SYMPY:
             return rpn_tensor, constants, False
         
         try:
@@ -151,13 +164,14 @@ class GPUSimplifier:
         pop_out = population.clone()
         const_out = constants.clone()
         
+        # Batch transfer hashes to CPU in ONE call instead of K individual .item() calls
+        hashes_cpu = hashes.tolist()  # Single GPU->CPU transfer
+        
         process_indices = []
         process_hashes = []
         
-        # Process only cache hits on GPU, defer SymPy to rare cases
-        # Convert hashes to Python only for cache lookup (minimal CPU touch)
         for i in range(min(top_k, population.shape[0])):
-            h = hashes[i].item()  # Single scalar transfer, not full array
+            h = hashes_cpu[i]  # Pure Python access, no GPU sync
             if h in self.cache:
                 # Cache Hit
                 cached_rpn, cached_consts = self.cache[h]
@@ -204,25 +218,23 @@ class GPUSimplifier:
         # But Dedup runs before this. So hashes should be unique.
         
         for i, h in zip(process_indices, process_hashes):
-             new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
-             if success:
-                 pop_out[i] = new_rpn
-                 const_out[i] = new_consts
-                 n_simplified += 1
-                 
-                 # Update Cache
-                 # Store as CPU list to save GPU memory?
-                 # Or keeps GPU tensors if space allows. 
-                 # Let's verify size. 100k tensors is heavy?
-                 # 100k * 50 ints. 40MB. 
-                 # 100k small tensors -> Overhead.
-                 # Better store as Python list or bytearray.
-                 self.cache[h] = (new_rpn.tolist(), new_consts.tolist())
+             try:
+                 new_rpn, new_consts, success = self.simplify_expression(population[i], constants[i])
+                 if success:
+                     pop_out[i] = new_rpn
+                     const_out[i] = new_consts
+                     n_simplified += 1
+                     
+                     # Update Cache
+                     self.cache[h] = (new_rpn.tolist(), new_consts.tolist())
+             except Exception as e:
+                 print(f"[GPUSimplifier] Error at index {i}: {e}")
+                 print(f"  pop shape: {population.shape}, const shape: {constants.shape}")
+                 print(f"  pop_out shape: {pop_out.shape}, const_out shape: {const_out.shape}")
+                 raise e
                  
         # Limit cache size
         if len(self.cache) > 100000:
-            # Clear half? Random?
-            # SimpleDict clear
             self.cache.clear()
         
         return pop_out, const_out, n_simplified
@@ -237,6 +249,48 @@ class GPUSimplifier:
 
     @staticmethod
     def rpn_to_infix_static(rpn_tensor, constants, grammar) -> str:
+        # Fast Path: C++ Decoder
+        if RPN_CUDA_AVAILABLE:
+             # Prepare Inputs
+             if rpn_tensor.ndim == 1:
+                 # Single formula
+                 pop = rpn_tensor.unsqueeze(0).to(torch.uint8) # [1, L]
+                 # Constants
+                 if constants is None: K=0
+                 else: K = constants.numel()
+                 
+                 consts = constants.unsqueeze(0) if constants is not None else torch.empty((1,0))
+                 if consts.ndim == 1: consts = consts.unsqueeze(0)
+                 
+                 # Vocab & Arities
+                 # Ideally we cache these, but grammar is passed here.
+                 # Reconstruct minimal inputs
+                 vocab_list = [grammar.id_to_token.get(i, "") for i in range(len(grammar.id_to_token))]
+                 # Pad vocab if needed? No, decoder checks range.
+                 # Ensure strict size
+                 max_id = max(grammar.id_to_token.keys())
+                 if len(vocab_list) <= max_id:
+                      # Fill gaps
+                      new_vocab = [""] * (max_id + 1)
+                      for k,v in grammar.id_to_token.items(): new_vocab[k] = v
+                      vocab_list = new_vocab
+                 
+                 # Arities
+                 arities = [0] * len(vocab_list)
+                 for k,v in grammar.id_to_token.items():
+                     arities[k] = grammar.token_arity.get(v, 0)
+                     
+                 # Decode
+                 # PAD_ID is global
+                 try:
+                     result = rpn_cuda_native.decode_rpn(pop, consts, vocab_list, arities, PAD_ID, GpuGlobals.CONSTANT_PRECISION)
+                     if result and len(result) > 0:
+                         return result[0]
+                 except Exception as e:
+                     print(f"[GPUSimplifier] C++ Decode Error: {e}")
+                     # Fallback to python
+        
+        # Slow Path: Python Decoder
         # Inline logic from engine
         from .formatting import format_const
         
@@ -255,7 +309,7 @@ class GPUSimplifier:
                 arity = grammar.token_arity.get(token, 2)
                 if arity == 1:
                     if not stack: 
-                        print(f"[DEBUG] Stack Underflow for Unary {token}")
+                        # print(f"[DEBUG] Stack Underflow for Unary {token}")
                         return "Invalid"
                     a = stack.pop()
                     if token == 's' or token == 'sin': stack.append(f"sin({a})")
@@ -264,7 +318,7 @@ class GPUSimplifier:
                     elif token == 'e' or token == 'exp': stack.append(f"exp({a})")
                     elif token == 'q' or token == 'sqrt': stack.append(f"sqrt({a})")
                     elif token == 'a' or token == 'abs': stack.append(f"abs({a})")
-                    elif token == 'neg': stack.append(f"neg({a})")
+                    elif token == 'neg': stack.append(f"(-{a})")
                     elif token == '_' or token == 'floor': stack.append(f"floor({a})")
                     elif token == '!' or token == 'gamma': stack.append(f"gamma({a})")
                     elif token == 'g' or token == 'lgamma': stack.append(f"lgamma({a})")
@@ -274,7 +328,7 @@ class GPUSimplifier:
                     else: stack.append(f"{token}({a})")
                 else: 
                     if len(stack) < 2: 
-                        print(f"[DEBUG] Stack Underflow for Binary {token}")
+                        # print(f"[DEBUG] Stack Underflow for Binary {token}")
                         return "Invalid"
                     b = stack.pop()
                     a = stack.pop()
@@ -285,8 +339,8 @@ class GPUSimplifier:
                          stack.append(f"({a} + {b[1:]})")
                     elif token == '-' and a == "0":
                          stack.append(f"(-{b})")
-                    elif token == 'pow':
-                         stack.append(f"({a} ^ {b})")
+                    elif token == 'pow' or token == '^':
+                         stack.append(f"({a} ** {b})")
                     elif token == '%':
                          stack.append(f"({a} % {b})")
                     else:
@@ -296,7 +350,7 @@ class GPUSimplifier:
                 if constants is not None and const_idx < len(constants):
                     val = constants[const_idx].item()
                     const_idx += 1
-                stack.append(format_const(val))
+                stack.append(format_const(val, GpuGlobals.CONSTANT_PRECISION))
             elif token.startswith('x'):
                 if token == 'x': stack.append("x0")
                 else: stack.append(token)
@@ -306,6 +360,5 @@ class GPUSimplifier:
         if len(stack) == 1:
             return stack[0]
         else:
-            # DEBUG: Leftover stack
-            print(f"[DEBUG] Invalid Stack Size: {len(stack)}. Top: {stack[-1] if stack else 'Empty'}")
+            print(f"[Decoder] Invalid Stack Size: {len(stack)}. Stack: {stack}")
             return "Invalid"

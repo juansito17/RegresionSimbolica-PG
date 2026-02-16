@@ -43,6 +43,18 @@ AlphaSymbolic es una inteligencia artificial autónoma capaz de **descubrir fór
     pip install gradio scipy numpy matplotlib sympy
     ```
 
+### ⚡ Aceleración por GPU (CUDA)
+El motor genético utiliza una extensión en C++/CUDA para máxima velocidad. Al clonar el repositorio, debes compilarla manualmente:
+
+1.  **Requisitos**: NVIDIA CUDA Toolkit y Visual Studio 2022 (con soporte para C++).
+2.  **Compilar**:
+    ```bash
+    cd AlphaSymbolic/core/gpu/cuda
+    ./build_extension.bat
+    ```
+> [!NOTE]
+> Si el script falla, asegúrate de que la ruta a `vcvars64.bat` en el archivo `.bat` coincida con tu instalación de Visual Studio.
+
 3.  **Ejecutar**:
     ```bash
     python app.py
