@@ -1,5 +1,5 @@
 
-def format_const(val: float) -> str:
+def format_const(val: float, precision: int = 8) -> str:
     """
     Format a constant float to string matching CPU engine rules:
     - Integer-like values -> "3"
@@ -8,6 +8,6 @@ def format_const(val: float) -> str:
     """
     if abs(val - round(val)) < 1e-9:
         return str(int(round(val)))
-    s = f"{val:.8f}"
+    s = f"{val:.{precision}f}"
     s = s.rstrip('0').rstrip('.')
     return s if s else "0"

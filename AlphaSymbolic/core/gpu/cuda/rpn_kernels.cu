@@ -786,6 +786,7 @@ __global__ void tournament_selection_kernel(
     const int64_t* __restrict__ rand_idx,   // [PopSize, TourSize]
     const int* __restrict__ rand_cases,     // [PopSize] or nullptr
     int64_t* __restrict__ selected_idx,     // [PopSize]
+    const int* __restrict__ lengths,        // [PopSize] or nullptr (NEW)
     int pop_size, int tour_size, int n_data
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -796,25 +797,42 @@ __global__ void tournament_selection_kernel(
     
     int64_t best_idx = my_candidates[0];
     float best_val;
+    int best_len = 1000000;
     
     if (case_idx >= 0 && errors != nullptr) {
         best_val = errors[best_idx * n_data + case_idx];
     } else {
         best_val = fitness[best_idx];
     }
+    if (lengths != nullptr) {
+        best_len = lengths[best_idx];
+    }
     
     for (int k = 1; k < tour_size; ++k) {
         int64_t candidate = my_candidates[k];
         float val;
+        int len = 1000000;
+        
         if (case_idx >= 0 && errors != nullptr) {
             val = errors[candidate * n_data + case_idx];
         } else {
             val = fitness[candidate];
         }
+        if (lengths != nullptr) {
+            len = lengths[candidate];
+        }
         
+        bool improve = false;
         if (val < best_val) {
+            improve = true;
+        } else if (lengths != nullptr && val == best_val && len < best_len) {
+            improve = true; // Parsimony Pressure
+        }
+        
+        if (improve) {
             best_val = val;
             best_idx = candidate;
+            best_len = len;
         }
     }
     
@@ -826,7 +844,8 @@ void launch_tournament_selection(
     const torch::Tensor& errors,
     const torch::Tensor& rand_idx,
     const torch::Tensor& rand_cases,
-    torch::Tensor& selected_idx
+    torch::Tensor& selected_idx,
+    const torch::Tensor& lengths
 ) {
     // fitness: [B]
     // rand_idx: [B, K]
@@ -848,12 +867,15 @@ void launch_tournament_selection(
     const float* errors_ptr = (errors.numel() > 0) ? errors.data_ptr<float>() : nullptr;
     const int* cases_ptr = (rand_cases.numel() > 0) ? rand_cases.data_ptr<int>() : nullptr;
 
+    const int* lengths_ptr = (lengths.numel() > 0) ? lengths.data_ptr<int>() : nullptr;
+
     tournament_selection_kernel<<<blocks, threads>>>(
         fitness.data_ptr<float>(),
         errors_ptr,
         rand_idx.data_ptr<int64_t>(),
         cases_ptr,
         selected_idx.data_ptr<int64_t>(),
+        lengths_ptr,
         B, K, n_data
     );
      
@@ -918,6 +940,7 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor abs_errors,     // [B, N_data] or Empty
     torch::Tensor X,               // [Vars, N_data] (Transposed for RPN kernel)
     torch::Tensor Y_target,        // [N_data]
+    torch::Tensor lengths,         // [B] int32 (for parsimony)
     torch::Tensor token_arities,   // [VocabSize] int32
     torch::Tensor arity_0_ids,     // [n0] int64
     torch::Tensor arity_1_ids,     // [n1] int64
@@ -992,7 +1015,7 @@ std::vector<torch::Tensor> evolve_generation(
     auto fit_f32 = fitness.to(torch::kFloat32);
     auto err_f32 = abs_errors.numel() > 0 ? abs_errors.to(torch::kFloat32) : torch::empty({0}, float_opt);
     
-    launch_tournament_selection(fit_f32, err_f32, rand_idx, rand_cases, winner_idx);
+    launch_tournament_selection(fit_f32, err_f32, rand_idx, rand_cases, winner_idx, lengths);
     
     // --- Elitism: Preserve the best individual at index 0 ---
     auto best_idx = torch::argmin(fit_f32);

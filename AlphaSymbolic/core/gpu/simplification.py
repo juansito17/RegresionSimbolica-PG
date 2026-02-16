@@ -283,7 +283,7 @@ class GPUSimplifier:
                  # Decode
                  # PAD_ID is global
                  try:
-                     result = rpn_cuda_native.decode_rpn(pop, consts, vocab_list, arities, PAD_ID)
+                     result = rpn_cuda_native.decode_rpn(pop, consts, vocab_list, arities, PAD_ID, GpuGlobals.CONSTANT_PRECISION)
                      if result and len(result) > 0:
                          return result[0]
                  except Exception as e:
@@ -350,7 +350,7 @@ class GPUSimplifier:
                 if constants is not None and const_idx < len(constants):
                     val = constants[const_idx].item()
                     const_idx += 1
-                stack.append(format_const(val))
+                stack.append(format_const(val, GpuGlobals.CONSTANT_PRECISION))
             elif token.startswith('x'):
                 if token == 'x': stack.append("x0")
                 else: stack.append(token)

@@ -677,7 +677,7 @@ class TensorGeneticEngine:
     
     def evolve_generation_cuda(self, population, constants, fitness, abs_errors, x_t, y_t, mutation_bank,
                                 mutation_rate=0.1, crossover_rate=0.5, 
-                                tournament_size=3, pso_steps=10, pso_particles=20):
+                                tournament_size=3, pso_steps=10, pso_particles=20, lengths=None):
         """
         Full C++ CUDA Orchestrator: Selection + Crossover + Mutation + PSO.
         Calls the native rpn_cuda_native.evolve_generation function.
@@ -745,6 +745,12 @@ class TensorGeneticEngine:
         elif not mutation_bank.is_contiguous():
             mutation_bank = mutation_bank.contiguous()
 
+        # Ensure lengths are passed
+        if lengths is None:
+            lengths = (population != vm.PAD_ID).sum(dim=1).int()
+        else:
+            lengths = lengths.int()
+
         result = rpn_cuda.evolve_generation(
             population,
             _f32c(constants),
@@ -752,6 +758,8 @@ class TensorGeneticEngine:
             _f32c(abs_errors),
             x_in,
             y_in,
+            lengths.contiguous(), # Passed to C++
+
             token_arities,
             arity_0_ids,
             arity_1_ids,
@@ -1430,6 +1438,8 @@ class TensorGeneticEngine:
             # Only exit with non-trivial formulas and high explained variance.
             if best_rpn is not None and elapsed >= GpuGlobals.GOOD_ENOUGH_MIN_SECONDS and best_rmse < GpuGlobals.GOOD_ENOUGH_RMSE:
                 tree_size = self.get_tree_size(best_rpn)
+        
+
                 has_var_token = True
                 if self._single_var_ids:
                     has_var_token = False
@@ -2021,7 +2031,8 @@ class TensorGeneticEngine:
                     crossover_rate=GpuGlobals.DEFAULT_CROSSOVER_RATE,
                     tournament_size=effective_tournament,
                     pso_steps=0, # Disable global PSO to avoid OOM
-                    pso_particles=GpuGlobals.PSO_PARTICLES
+                    pso_particles=GpuGlobals.PSO_PARTICLES,
+                    lengths=lengths # Pass lengths for Parsimony Pressure
                 )
                 
                 if next_pop is not None:

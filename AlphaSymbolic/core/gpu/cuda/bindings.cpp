@@ -71,7 +71,8 @@ std::vector<std::string> decode_rpn(
     torch::Tensor constants, 
     const std::vector<std::string>& vocab,
     const std::vector<int>& arities,
-    int PAD_ID
+    int PAD_ID,
+    int precision
 );
 
 // --- Phase 2 Forward Declarations ---
@@ -112,7 +113,8 @@ void launch_tournament_selection(
     const torch::Tensor& errors,
     const torch::Tensor& rand_idx,
     const torch::Tensor& rand_cases,
-    torch::Tensor& selected_idx
+    torch::Tensor& selected_idx,
+    const torch::Tensor& lengths
 );
 
 void launch_pso_update(
@@ -141,6 +143,7 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor abs_errors,     // [B, N_data] or Empty
     torch::Tensor X,               // [Vars, N_data]
     torch::Tensor Y_target,        // [N_data]
+    torch::Tensor lengths,         // [B] int32 (for parsimony)
     torch::Tensor token_arities,   // [VocabSize] int32
     torch::Tensor arity_0_ids,     // [n0] int64
     torch::Tensor arity_1_ids,     // [n1] int64
@@ -226,7 +229,8 @@ void launch_generate_random_rpn(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
-    m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)");
+    m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)",
+        py::arg("population"), py::arg("constants"), py::arg("vocab"), py::arg("arities"), py::arg("PAD_ID"), py::arg("precision") = 4);
     
     // Phase 2
     m.def("find_subtree_ranges", &launch_find_subtree_ranges, "Find Subtree Ranges (CUDA)");
@@ -234,14 +238,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)");
     
     // Phase 3
-    m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)");
+    m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)",
+        py::arg("fitness"), py::arg("errors"), py::arg("rand_idx"), py::arg("rand_cases"), py::arg("selected_idx"), py::arg("lengths"));
     m.def("pso_update", &launch_pso_update, "PSO Update (CUDA)");
     m.def("pso_update_bests", &launch_pso_update_bests, "PSO Update Bests (CUDA)");
 
     // Phase 4
     m.def("evolve_generation", &evolve_generation, "Full Evolution Generation (C++)",
         py::arg("population"), py::arg("constants"), py::arg("fitness"), py::arg("abs_errors"),
-        py::arg("X"), py::arg("Y_target"),
+        py::arg("X"), py::arg("Y_target"), py::arg("lengths"), // Added lengths
         py::arg("token_arities"), py::arg("arity_0_ids"), py::arg("arity_1_ids"), py::arg("arity_2_ids"),
         py::arg("mutation_bank"),
         py::arg("mutation_rate"), py::arg("crossover_rate"),

@@ -5,7 +5,7 @@ class GpuGlobals:
     # ============================================================
     #                  1. SYSTEM & HARDWARE
     # ============================================================
-    USE_FLOAT32 = True             # Optimization: Float32 (10x speedup vs Float64)
+    USE_FLOAT32 = False            # Optimization: Float32 (10x speedup vs Float64)
     FORCE_CPU_MODE = False         # Force CPU even if CUDA is available
     USE_CUDA_ORCHESTRATOR = True   # Use C++ Orchestrator for evolution loop
     INF = float('inf')
@@ -82,9 +82,9 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = False
+    USE_INITIAL_FORMULA = True
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "(lgamma(x0) - (x0 - sqrt((5 + (x0 + (1 / ((10 + (x2 - x0)) - sqrt(3))))))))"
+    INITIAL_FORMULA_STRING = "(sqrt((sqrt((5 + (3 + x0))) + x0)) + (lgamma(x0) - (x0 / (x0**(exp(4)**(4 - (((-((x2 - 2.8508))) + x0) - 6)))))))"
 
     USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
 
@@ -101,6 +101,7 @@ class GpuGlobals:
     CONSTANT_INT_MIN_VALUE = -10
     CONSTANT_INT_MAX_VALUE = 10
     FORCE_INTEGER_CONSTANTS = False # Force int constants in PSO
+    CONSTANT_PRECISION = 8          # Number of decimal places to show in formulas (Console)
 
     # Operators Config
     USE_OP_PLUS     = True
@@ -123,7 +124,7 @@ class GpuGlobals:
     USE_OP_CEIL     = False
     USE_OP_SIGN     = False
     USE_OP_SQRT     = True
-    USE_OP_ABS      = True
+    USE_OP_ABS      = False
 
     # Operator Weights (Probabilities)
     OPERATOR_WEIGHTS = [

@@ -7,16 +7,26 @@
 #include <iomanip>
 
 // Helper to format float constants
-std::string format_const(double val) {
-    std::ostringstream oss;
-    if (std::abs(val) < 1e-4 || std::abs(val) > 1e4) {
-        oss << std::scientific << std::setprecision(4) << val;
-    } else {
-        oss << std::fixed << std::setprecision(4) << val;
+std::string format_const(double val, int precision) {
+    if (std::abs(val - std::round(val)) < 1e-9) {
+        return std::to_string((int64_t)std::round(val));
     }
+    
+    std::ostringstream oss;
+    // For very small or very large, use scientific if it helps, 
+    // but the user asked for decimal control mostly.
+    // To match Python's .rstrip behavior:
+    oss << std::fixed << std::setprecision(precision) << val;
     std::string s = oss.str();
-    // Remove trailing zeros? logic could be more complex but this is fine for now
-    return s;
+    
+    // Remove trailing zeros
+    if (s.find('.') != std::string::npos) {
+        s.erase(s.find_last_not_of('0') + 1, std::string::npos);
+        if (s.back() == '.') {
+            s.pop_back();
+        }
+    }
+    return s.empty() ? "0" : s;
 }
 
 std::vector<std::string> decode_rpn(
@@ -24,7 +34,8 @@ std::vector<std::string> decode_rpn(
     torch::Tensor constants, 
     const std::vector<std::string>& vocab,
     const std::vector<int>& arities,
-    int PAD_ID
+    int PAD_ID,
+    int precision
 ) {
     // population: [B, L] (Long)
     // constants: [B, K] (Float/Double)
@@ -36,7 +47,7 @@ std::vector<std::string> decode_rpn(
     
     // Ensure CPU
     auto pop_cpu = population.cpu();
-    auto const_cpu = constants.cpu(); // We process string on CPU anyway, but C++ loop is faster
+    auto const_cpu = constants.cpu(); 
     
     auto pop_ptr = pop_cpu.data_ptr<unsigned char>();
     
@@ -79,7 +90,7 @@ std::vector<std::string> decode_rpn(
                         const_double_ptr[i * K + const_idx];
                     const_idx++;
                 }
-                stack.push_back(format_const(val));
+                stack.push_back(format_const(val, precision));
             } else if (arity > 0) {
                 // Operator
                 if (arity == 1) {
