@@ -690,6 +690,94 @@ void launch_crossover_splicing(
     );
 }
 
+// --- Hoist Mutation Kernel ---
+__global__ void hoist_mutation_kernel(
+    unsigned char* __restrict__ population, // [B, L]
+    const int64_t* __restrict__ starts,     // [B, L] (starts of subtree ending at i)
+    const float* __restrict__ rand_floats,  // [B]
+    const int64_t* __restrict__ rand_ints,  // [B]
+    float hoist_rate,
+    int B, int L, int PAD_ID
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+    
+    // 1. Check Probability
+    if (rand_floats[b] >= hoist_rate) return;
+    
+    // 2. Select a Random Valid Subtree (Reservoir Sampling)
+    int selected_end = -1;
+    int count = 0;
+    
+    // Simple LCG 
+    uint64_t rng = (uint64_t)rand_ints[b];
+    
+    for (int i = 0; i < L; ++i) {
+        if (starts[b*L + i] != -1) {
+            count++;
+            rng = rng * 6364136223846793005ULL + 1;
+            if ((rng % count) == 0) {
+                selected_end = i;
+            }
+        }
+    }
+    
+    if (selected_end == -1) return;
+    
+    int start_idx = (int)starts[b*L + selected_end];
+    int end_idx = selected_end;
+    int subtree_len = end_idx - start_idx + 1;
+    
+    // 3. Hoist (Move [start, end] to [0, len])
+    unsigned char* row = &population[b*L];
+    
+    // Create temp buffer to avoid overwrite issues during shift?
+    // Case: shift left [start, end] -> [0, len].
+    // start >= 0. So target index i is always <= source index start_idx + i.
+    // Safe to copy forward directly.
+    
+    for (int i = 0; i < subtree_len; ++i) {
+        row[i] = row[start_idx + i];
+    }
+    
+    // 4. Pad Remainder
+    for (int i = subtree_len; i < L; ++i) {
+        row[i] = (unsigned char)PAD_ID;
+    }
+}
+
+void launch_hoist_mutation(
+    torch::Tensor& population,
+    const torch::Tensor& starts,
+    const torch::Tensor& rand_floats,
+    const torch::Tensor& rand_ints,
+    float hoist_rate,
+    int PAD_ID
+) {
+    int B = population.size(0);
+    int L = population.size(1);
+    
+    CHECK_INPUT(population);
+    CHECK_INPUT(starts);
+    CHECK_INPUT(rand_floats);
+    CHECK_INPUT(rand_ints);
+    
+    // One block per individual, 1 thread
+    hoist_mutation_kernel<<<B, 1>>>(
+        population.data_ptr<unsigned char>(),
+        starts.data_ptr<int64_t>(),
+        rand_floats.data_ptr<float>(),
+        rand_ints.data_ptr<int64_t>(),
+        hoist_rate,
+        B, L, PAD_ID
+    );
+    
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in hoist_mutation: %s\n", cudaGetErrorString(err));
+    }
+}
+
 // --- Phase 3: Tournament Selection ---
 
 __global__ void tournament_selection_kernel(
@@ -853,7 +941,8 @@ std::vector<torch::Tensor> evolve_generation(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    int n_islands
 ) {
     // Full Orchestrator: Selection + Crossover + Mutation + PSO
     
@@ -868,7 +957,28 @@ std::vector<torch::Tensor> evolve_generation(
     auto byte_opt = torch::TensorOptions().dtype(torch::kUInt8).device(device);
     
     // 1. Selection (Tournament / Lexicase-Approx)
-    auto rand_idx = torch::randint(0, B, {B, tournament_size}, long_opt);
+    // --- ISLAND MODEL RESTORATION ---
+    // Instead of global random indices, we generate indices relative to each island.
+    // island_size = B / n_islands
+    // ranges = [0, 0, 0...], [100, 100, 100...]
+    // rand = ranges + randint(0, island_size)
+    
+    torch::Tensor rand_idx;
+    if (n_islands > 1) {
+        int island_size = B / n_islands;
+        if (island_size < 1) island_size = 1; // Safety
+        
+        auto arange = torch::arange(B, long_opt);
+        // Fixed: Use explicit floor division to stay in integer domain
+        auto island_base = torch::div(arange, island_size, "floor") * island_size; 
+        
+        auto rand_offsets = torch::randint(0, island_size, {B, tournament_size}, long_opt);
+        rand_idx = (island_base.unsqueeze(1) + rand_offsets).to(torch::kInt64).clamp(0, B-1).contiguous();
+    } else {
+        // Panmictic (Global)
+        rand_idx = torch::randint(0, B, {B, tournament_size}, long_opt);
+    }
+    
     auto winner_idx = torch::empty({B}, long_opt);
     
     // Lexicase Approximation: If abs_errors provided, each tournament picks a random test case.
@@ -891,7 +1001,7 @@ std::vector<torch::Tensor> evolve_generation(
     auto parents = population.index_select(0, winner_idx);
     auto parent_consts = constants.index_select(0, winner_idx);
     
-    // 2. Crossover (Proper Subtree Crossover)
+    // 2. Crossover (Proper Subtree Crossover with SAFETY CHECKS)
     int n_pairs = B / 2;
     auto parents1 = parents.slice(0, 0, 2*n_pairs, 2).contiguous();
     auto parents2 = parents.slice(0, 1, 2*n_pairs, 2).contiguous();
@@ -903,7 +1013,7 @@ std::vector<torch::Tensor> evolve_generation(
     launch_find_subtree_ranges(parents1, token_arities, all_starts1, PAD_ID);
     launch_find_subtree_ranges(parents2, token_arities, all_starts2, PAD_ID);
     
-    // Pick random crossover points (ends) that are NOT PAD
+    // Actual lengths (used for safety check)
     auto lengths1 = (parents1 != PAD_ID).sum(1).to(torch::kLong);
     auto lengths2 = (parents2 != PAD_ID).sum(1).to(torch::kLong);
     
@@ -915,22 +1025,45 @@ std::vector<torch::Tensor> evolve_generation(
     auto s1 = all_starts1.gather(1, e1.unsqueeze(1)).squeeze(1);
     auto s2 = all_starts2.gather(1, e2.unsqueeze(1)).squeeze(1);
     
+    // --- Length Safety Check ---
+    // P1 new: P1_Pre + P2_Sub + P1_Post
+    // P2 new: P2_Pre + P1_Sub + P2_Post
+    
+    auto len_pre1 = s1;
+    auto len_sub2 = e2 - s2 + 1;
+    auto len_post1 = lengths1 - (e1 + 1);
+    auto new_len1 = len_pre1 + len_sub2 + len_post1;
+    
+    auto len_pre2 = s2;
+    auto len_sub1 = e1 - s1 + 1;
+    auto len_post2 = lengths2 - (e2 + 1);
+    auto new_len2 = len_pre2 + len_sub1 + len_post2;
+    
+    // Mask of valid crossovers (outcome <= L)
+    auto safe_mask = (new_len1 <= L) & (new_len2 <= L);
+    
     // Create children
     auto child1 = torch::full_like(parents1, PAD_ID);
     auto child2 = torch::full_like(parents2, PAD_ID);
     
-    // Splice!
+    // Splice! (Only efficient to do all, then revert unsafe ones)
     launch_crossover_splicing(parents1, parents2, s1, e1, s2, e2, child1, child2, PAD_ID);
     
-    // Apply crossover rate mask
-    auto cx_mask = (torch::rand({n_pairs, 1}, float_opt) < crossover_rate);
+    // Apply crossover rate mask AND Safety Mask
+    // If unsafe, we treat it as "crossover failed" -> keep parents
+    auto cx_prob = torch::rand({n_pairs, 1}, float_opt);
+    auto cx_mask = (cx_prob < crossover_rate) & safe_mask.unsqueeze(1);
+    
     auto final_c1 = torch::where(cx_mask, child1, parents1);
     auto final_c2 = torch::where(cx_mask, child2, parents2);
     
-    auto offspring = torch::cat({final_c1, final_c2}, 0);
+    // Fixed: Interleave back to original order [0, 1, 2, 3...]
+    // cat gives [0, 2, 4...] followed by [1, 3, 5...] which scrambles islands!
+    auto offspring = torch::stack({final_c1, final_c2}, 1).reshape({B, L});
+    
     auto consts1 = parent_consts.slice(0, 0, 2*n_pairs, 2);
     auto consts2 = parent_consts.slice(0, 1, 2*n_pairs, 2);
-    auto offspring_consts = torch::cat({consts1, consts2}, 0);
+    auto offspring_consts = torch::stack({consts1, consts2}, 1).reshape({B, K});
     
     // Elitism Check: Ensure first row of offspring is the global best from previous generation
     offspring.index_put_({0}, parents.index({0}));
@@ -942,20 +1075,41 @@ std::vector<torch::Tensor> evolve_generation(
         offspring = torch::cat({offspring, last_p}, 0);
         offspring_consts = torch::cat({offspring_consts, last_c}, 0);
     }
-    // Trim if somehow larger
     if (offspring.size(0) > B) {
         offspring = offspring.slice(0, 0, B);
         offspring_consts = offspring_consts.slice(0, 0, B);
     }
     
-    // 3. Mutation (50% Point, 50% Structural)
-    auto mut_type = torch::rand({B}, float_opt);
-    auto point_mask = (mut_type >= 0.5) | (mutation_bank.numel() == 0);
-    auto struct_mask = (mut_type < 0.5) & (mutation_bank.numel() > 0);
+    // 3. Mutation 
+    // Types: Point (Standard), Structural (Bank), Hoist (New)
+    // Budget Split:
+    // If Bank > 0: 50% Point, 30% Structural, 20% Hoist
+    // Else:        80% Point,                20% Hoist
     
-    // Point Mutation Path
+    auto mut_rand = torch::rand({B}, float_opt);
+    bool has_bank = (mutation_bank.numel() > 0);
+    torch::Tensor point_mask, struct_mask, hoist_mask;
+    
+    if (has_bank) {
+        point_mask = (mut_rand < 0.5);
+        struct_mask = (mut_rand >= 0.5) & (mut_rand < 0.8);
+        hoist_mask = (mut_rand >= 0.8);
+    } else {
+        point_mask = (mut_rand < 0.8);
+        struct_mask = torch::zeros({B}, torch::TensorOptions().dtype(torch::kBool).device(device));
+        hoist_mask = (mut_rand >= 0.8);
+    }
+    
+    // Apply mutation rate to masks? No, we apply rate INSIDE the kernels usually,
+    // OR we filter here.
+    // The original code passed `mutation_rate` to kernels.
+    // Let's keep passing `mutation_rate` to Point and Structural.
+    // For Hoist, we can handle it similarly.
+    
+    // A. Point Mutation Path
     if (point_mask.any().item<bool>()) {
-        auto point_pop = offspring.index_select(0, torch::nonzero(point_mask).squeeze(1));
+        auto point_idx = torch::nonzero(point_mask).squeeze(1);
+        auto point_pop = offspring.index_select(0, point_idx);
         auto r_floats = torch::rand({point_pop.size(0), L}, float_opt);
         auto r_ints = torch::randint(0, 1000000, {point_pop.size(0), L}, long_opt);
         
@@ -963,27 +1117,24 @@ std::vector<torch::Tensor> evolve_generation(
                         arity_0_ids, arity_1_ids, arity_2_ids,
                         mutation_rate, PAD_ID);
         
-        offspring.index_copy_(0, torch::nonzero(point_mask).squeeze(1), point_pop);
+        offspring.index_copy_(0, point_idx, point_pop);
     }
     
-    // Structural Mutation Path (Grafting from Bank)
+    // B. Structural Mutation Path (Grafting from Bank)
     if (struct_mask.any().item<bool>()) {
         int n_struct = struct_mask.sum().item<int>();
         auto struct_idx = torch::nonzero(struct_mask).squeeze(1);
         auto struct_pop = offspring.index_select(0, struct_idx);
         
-        // Pick random from bank
         int bank_size = mutation_bank.size(0);
         auto bank_indices = torch::randint(0, bank_size, {n_struct}, long_opt);
         auto bank_trees = mutation_bank.index_select(0, bank_indices);
         
-        // Find ranges
         auto starts_pop = torch::zeros({n_struct, L}, long_opt);
         auto starts_bank = torch::zeros({n_struct, L}, long_opt);
         launch_find_subtree_ranges(struct_pop, token_arities, starts_pop, PAD_ID);
         launch_find_subtree_ranges(bank_trees, token_arities, starts_bank, PAD_ID);
         
-        // Pick random splice points
         auto len_pop = (struct_pop != PAD_ID).sum(1).to(torch::kLong);
         auto len_bank = (bank_trees != PAD_ID).sum(1).to(torch::kLong);
         
@@ -994,15 +1145,32 @@ std::vector<torch::Tensor> evolve_generation(
         auto s_bank = starts_bank.gather(1, e_bank.unsqueeze(1)).squeeze(1);
         
         auto child = torch::full_like(struct_pop, PAD_ID);
-        auto dummy_child = torch::full_like(struct_pop, PAD_ID); // Same size as struct_pop
+        auto dummy_child = torch::full_like(struct_pop, PAD_ID); 
         
         launch_crossover_splicing(struct_pop, bank_trees, s_pop, e_pop, s_bank, e_bank, child, dummy_child, PAD_ID);
         
-        // Apply only if mutated (use mutation_rate as individual prob for structural)
         auto m_mask = (torch::rand({n_struct}, float_opt) < mutation_rate);
         auto final_struct = torch::where(m_mask.unsqueeze(1), child, struct_pop);
         
         offspring.index_copy_(0, struct_idx, final_struct);
+    }
+
+    // C. Hoist Mutation Path (NEW)
+    if (hoist_mask.any().item<bool>()) {
+        auto hoist_idx = torch::nonzero(hoist_mask).squeeze(1);
+        auto hoist_pop = offspring.index_select(0, hoist_idx);
+        
+        // Find subtree ranges for hoist candidates
+        auto starts_hoist = torch::zeros({hoist_pop.size(0), L}, long_opt);
+        launch_find_subtree_ranges(hoist_pop, token_arities, starts_hoist, PAD_ID);
+        
+        auto r_floats = torch::rand({hoist_pop.size(0)}, float_opt);
+        auto r_ints = torch::randint(0, 1000000, {hoist_pop.size(0)}, long_opt);
+        
+        // Pass mutation_rate to kernel to decide if we hoist
+        launch_hoist_mutation(hoist_pop, starts_hoist, r_floats, r_ints, mutation_rate, PAD_ID);
+        
+        offspring.index_copy_(0, hoist_idx, hoist_pop);
     }
     
     // 4. NanoPSO (Constant Optimization)

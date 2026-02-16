@@ -775,7 +775,8 @@ class TensorGeneticEngine:
             vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
             vm.op_gamma, vm.op_lgamma,
             vm.op_asin, vm.op_acos, vm.op_atan,
-            3.14159265359, 2.718281828
+            3.14159265359, 2.718281828,
+            self.n_islands
         )
         
         new_pop, new_consts, new_fit = result[0], result[1], result[2]

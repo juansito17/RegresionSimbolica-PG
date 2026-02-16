@@ -164,7 +164,8 @@ std::vector<torch::Tensor> evolve_generation(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    int n_islands = 1
 );
 
 // --- Phase 6 Forward Declaration: Fused PSO ---
@@ -238,7 +239,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("pso_update_bests", &launch_pso_update_bests, "PSO Update Bests (CUDA)");
 
     // Phase 4
-    m.def("evolve_generation", &evolve_generation, "Full Evolution Generation (C++)");
+    m.def("evolve_generation", &evolve_generation, "Full Evolution Generation (C++)",
+        py::arg("population"), py::arg("constants"), py::arg("fitness"), py::arg("abs_errors"),
+        py::arg("X"), py::arg("Y_target"),
+        py::arg("token_arities"), py::arg("arity_0_ids"), py::arg("arity_1_ids"), py::arg("arity_2_ids"),
+        py::arg("mutation_bank"),
+        py::arg("mutation_rate"), py::arg("crossover_rate"),
+        py::arg("tournament_size"),
+        py::arg("pso_steps"), py::arg("pso_particles"),
+        py::arg("pso_w"), py::arg("pso_c1"), py::arg("pso_c2"),
+        py::arg("PAD_ID"),
+        py::arg("id_x_start"), 
+        py::arg("id_C"), py::arg("id_pi"), py::arg("id_e"),
+        py::arg("id_0"), py::arg("id_1"), py::arg("id_2"), py::arg("id_3"), py::arg("id_4"), py::arg("id_5"), py::arg("id_6"), py::arg("id_10"),
+        py::arg("op_add"), py::arg("op_sub"), py::arg("op_mul"), py::arg("op_div"), py::arg("op_pow"), py::arg("op_mod"),
+        py::arg("op_sin"), py::arg("op_cos"), py::arg("op_tan"),
+        py::arg("op_log"), py::arg("op_exp"),
+        py::arg("op_sqrt"), py::arg("op_abs"), py::arg("op_neg"),
+        py::arg("op_fact"), py::arg("op_floor"), py::arg("op_ceil"), py::arg("op_sign"),
+        py::arg("op_gamma"), py::arg("op_lgamma"),
+        py::arg("op_asin"), py::arg("op_acos"), py::arg("op_atan"),
+        py::arg("pi_val"), py::arg("e_val"),
+        py::arg("n_islands") = 1
+    );
 
     // Phase 5: Simplifier + Generator Kernels
     m.def("simplify_batch", &launch_simplify_batch, "Batch Simplification (CUDA)");
