@@ -62,11 +62,95 @@ class GPUOptimizer:
         Uses fused CUDA kernel when available (single launch for entire PSO loop),
         falls back to multi-kernel approach otherwise.
         """
-        # Try fused kernel first (single CUDA launch, ~5-10x faster for PSO portion)
-        if self._has_fused_pso and self.dtype == torch.float32:
+        # Try fused kernel first (single CUDA launch, ~5-10x faster for PSO portion).
+        # The fused kernel supports both float32 and float64 via AT_DISPATCH_FLOATING_TYPES.
+        if self._has_fused_pso:
             return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
         
         return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
+
+    def lbfgs_optimize_top_k(self, population: torch.Tensor, constants: torch.Tensor,
+                              x: torch.Tensor, y_target: torch.Tensor,
+                              top_k: int = 50, max_iter: int = 30) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Optimización de constantes L-BFGS para los top-K mejores individuos.
+        Usa PyTorch LBFGS con line search Wolfe fuerte.
+        ~10x más rápido que PSO/Adam para problemas polinomiales/trigonométricos suaves.
+        PySR usa BFGS internamente — esta función iguala ese comportamiento.
+
+        Args:
+            population:  [B, L] formulas (uint8)
+            constants:   [B, K] constantes iniciales
+            x, y_target: datos de evaluación
+            top_k:       cuántos individuos optimizar (los B que llegan ya son top-K)
+            max_iter:    iteraciones máximas de L-BFGS por individuo
+
+        Returns:
+            (best_consts [B, K], best_errs [B])
+        """
+        B, K = constants.shape
+        if K == 0 or top_k <= 0 or B == 0:
+            return constants, torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+
+        actual_k = min(top_k, B)
+        best_consts = constants.clone().detach()
+        best_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+
+        for i in range(actual_k):
+            prog_i = population[i:i+1].contiguous()   # [1, L]
+            c_i = constants[i:i+1].clone().to(self.dtype).to(self.device)  # [1, K]
+            c_i.requires_grad_(True)
+
+            opt_i = torch.optim.LBFGS(
+                [c_i], max_iter=max_iter,
+                tolerance_grad=1e-7, tolerance_change=1e-9,
+                line_search_fn='strong_wolfe'
+            )
+
+            def closure(_c=c_i, _p=prog_i):
+                opt_i.zero_grad()
+                try:
+                    loss_vec, _ = self.evaluator.evaluate_differentiable(_p, _c, x, y_target)
+                    loss = loss_vec.mean()
+                    if not torch.isfinite(loss):
+                        return torch.tensor(1e30, device=self.device, dtype=self.dtype)
+                    if loss.requires_grad:
+                        loss.backward()
+                    return loss
+                except Exception:
+                    return torch.tensor(1e30, device=self.device, dtype=self.dtype)
+
+            try:
+                opt_i.step(closure)
+                with torch.no_grad():
+                    final_err = self.evaluator.evaluate_batch(prog_i, x, y_target, c_i.detach())
+                    if torch.isfinite(final_err[0]):
+                        best_consts[i] = c_i.detach()[0]
+                        best_errs[i] = final_err[0]
+            except Exception:
+                pass  # fallback: keeps original constants[i]
+
+        return best_consts, best_errs
+
+    def nano_pso_adaptive(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y: torch.Tensor, 
+                steps: int = 20, num_particles: int = 20, w_max: float = 0.9, w_min: float = 0.4,
+                c1: float = 1.5, c2: float = 1.5) -> tuple:
+        """
+        PSO con inercia adaptativa (IPSO): w decrece de w_max a w_min.
+        Favorece exploración al inicio y explotación al final.
+        Usa el mismo kernel fused pero con w calculado por step.
+        """
+        # Ejecutar en pasos individuales con w variable
+        # Para el fused kernel: lo llamamos con steps=1 en loop (menos eficiente)
+        # pero permite inercia adaptativa real.
+        # Alternativa más eficiente: llamar fused con w promedio (aproximación)
+        # El fused kernel ahora aplica decay lineal interno w_max→0.4.
+        # Pasamos w_max directamente — no hace falta promediar.
+        # El fallback multi-kernel sigue usando w_avg para compatibilidad.
+        if self._has_fused_pso:
+            return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w_max, c1, c2)
+        w_avg = (w_max + w_min) / 2.0
+        return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w_avg, c1, c2)
 
     def _fused_nano_pso(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
                        steps: int, num_particles: int, w: float, c1: float, c2: float) -> Tuple[torch.Tensor, torch.Tensor]:

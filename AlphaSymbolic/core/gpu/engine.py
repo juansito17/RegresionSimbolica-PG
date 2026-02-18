@@ -1617,6 +1617,29 @@ class TensorGeneticEngine:
                     refined_consts = refined_consts.round()
                 pop_constants[top_idx] = refined_consts
                 fitness_rmse[top_idx] = refined_mse
+
+            # L-BFGS-B Constant Optimization (2nd orden — complementa PSO)
+            # Corre cada BFGS_INTERVAL generaciones sobre los top-K mejores individuos.
+            # PySR usa BFGS internamente — esto cierra el gap en problemas poly/trig.
+            _bfgs_interval = getattr(GpuGlobals, 'BFGS_INTERVAL', 5)
+            if (getattr(GpuGlobals, 'USE_BFGS_OPTIMIZER', False) and
+                    generations % _bfgs_interval == 0):
+                _bfgs_k = min(getattr(GpuGlobals, 'BFGS_TOP_K', 50), self.pop_size)
+                _bfgs_iters = getattr(GpuGlobals, 'BFGS_MAX_ITER', 30)
+                _, _bfgs_top_idx = torch.topk(fitness_rmse, _bfgs_k, largest=False)
+                _bfgs_pop = population[_bfgs_top_idx]
+                _bfgs_consts = pop_constants[_bfgs_top_idx]
+                try:
+                    _bfgs_consts_new, _bfgs_errs = self.optimizer.lbfgs_optimize_top_k(
+                        _bfgs_pop, _bfgs_consts, x_t, y_t, top_k=_bfgs_k, max_iter=_bfgs_iters)
+                    # Solo aplicar mejoras (nunca empeorar)
+                    _bfgs_improved = _bfgs_errs < fitness_rmse[_bfgs_top_idx]
+                    if _bfgs_improved.any():
+                        _gi = _bfgs_top_idx[_bfgs_improved]
+                        pop_constants[_gi] = _bfgs_consts_new[_bfgs_improved]
+                        fitness_rmse[_gi] = _bfgs_errs[_bfgs_improved]
+                except Exception:
+                    pass  # Non-fatal: BFGS puede fallar en fórmulas no diferenciables
             
             # Best Tracking — only consider formulas using ALL variables (if multi-var mode)
             if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
@@ -1991,21 +2014,21 @@ class TensorGeneticEngine:
                 selection_metric.mul_(fitness_rmse)
                 selection_metric.add_(lengths, alpha=1e-6)
 
-                # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate
+                # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate.
+                # OPTIMIZED: removed .any() CPU syncs — always apply penalty (mul by mask = same result,
+                # no sync needed since penalty is 0 when mask is False via float conversion).
                 trivial_mask = lengths <= float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS)
-                if trivial_mask.any():
-                    low_quality_trivial = trivial_mask & (fitness_rmse > GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE)
-                    if low_quality_trivial.any():
-                        selection_metric.add_(low_quality_trivial.float(), alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
+                low_quality_trivial = trivial_mask & (fitness_rmse > GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE)
+                selection_metric.add_(low_quality_trivial.float(), alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
 
-                # Penalize constant-only formulas in single-variable problems
+                # Penalize constant-only formulas in single-variable problems.
+                # OPTIMIZED: removed .any() CPU sync — penalty is 0 for formulas WITH variables.
                 if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
                     has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
                     for vid in self._single_var_ids:
                         has_var |= (population == vid).any(dim=1)
                     no_var = ~has_var
-                    if no_var.any():
-                        selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
+                    selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
                 
                 # 1b. Variable Diversity Penalty (ADDITIVE): penalize formulas missing variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
@@ -2165,9 +2188,10 @@ class TensorGeneticEngine:
             
             # --- SIMPLIFICATION ---
             # Repair invalid RPNs produced by crossover/mutation to avoid collapse to trivial survivors.
-            next_pop, next_c, n_repaired = self.operators.repair_invalid_population(next_pop, next_c)
-            if n_repaired > 0:
-                cached_next_fit = None
+            # Repair invalids — always invalidate cache (repair puede cambiar individuos).
+            # Eliminado n_repaired > 0 check: evita sync GPU→CPU con .item().
+            next_pop, next_c, _ = self.operators.repair_invalid_population(next_pop, next_c)
+            cached_next_fit = None
 
             # --- SIMPLIFICATION ---
             if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
