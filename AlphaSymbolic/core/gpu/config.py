@@ -67,7 +67,7 @@ class GpuGlobals:
 
     # Stagnation & Restarts
     STAGNATION_LIMIT = 15              # OPTIMIZED: balance entre exploración y escape (was 20→15)
-    GLOBAL_STAGNATION_LIMIT = 50       # FIX: restart más frecuente → más exploración (era 80→50)
+    GLOBAL_STAGNATION_LIMIT = 80       # FIX Bug3: con elite siempre en pop, podemos dar más tiempo sin restarts prematuros (era 50)
     STAGNATION_RANDOM_INJECT_PERCENT = 0.05  # FIX: 5% para no destruir elites durante cooldown (era 0.50)
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
@@ -199,11 +199,11 @@ class GpuGlobals:
     TRIVIAL_FORMULA_MAX_TOKENS = 2
     TRIVIAL_FORMULA_ALLOW_RMSE = 1e-3
     
-    # Diversity — forzar uso de x1/x2 para evitar convergencia prematura a lgamma(x0)
-    # FIX: 0.05 da ventaja selectiva a fórmulas multi-variable sin dominar el fitness.
-    # Con RMSE_best=0.11 y size=15: selección_lgamma = 0.11*1.3 + 0.05*2 = 0.24
-    # Una fórmula x0+x1+x2 con RMSE<0.187 bate a lgamma en torneos.
-    VAR_DIVERSITY_PENALTY = 0.05
+    # Diversity — ya no necesario: el algoritmo encontró fórmulas con x1/x2 por sí solo.
+    # FIX: 0.0 elimina el overhead de escanear 1M fórmulas por var token cada gen,
+    # y evita penalizar sub-fórmulas en crossover que momentáneamente no tienen todas las vars.
+    # El best tracking ahora usa raw RMSE → acepta cualquier mejora estructural.
+    VAR_DIVERSITY_PENALTY = 0.0
     VAR_FORCE_SEED_PERCENT = 0.25   # FIX: 25% de individuos nuevos deben contener x1 o x2 (era 0.0)
     
     # Weighted Fitness
@@ -220,7 +220,7 @@ class GpuGlobals:
     PSO_STEPS_NORMAL = 40          # OPTIMIZED: más pasos por individuo (was 25→40)
     PSO_STEPS_STAGNATION = 80      # FIX: más pasos para escapar mínimo local (was 40→60→80)
     PSO_K_NORMAL = 400             # OPTIMIZED: menos individuos, más profundidad (was 800→400)
-    PSO_K_STAGNATION = 2500        # FIX: cubrir más candidatos en estancamiento (was 1600→1200→2500)
+    PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
     PSO_STAGNATION_THRESHOLD = 10
 
     # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)

@@ -2110,10 +2110,12 @@ class TensorGeneticEngine:
                     cached_next_fit = next_fit[:self.pop_size] if next_fit is not None else None
                     # Global Elite Injection: preserve best formula en posición 0.
                     # SIEMPRE activa — protege el global best de ser destruido por crossover.
-                    # Solo el cooldown de MIGRACIÓN bloquea la contaminación entre islas.
-                    # Durante global stagnation extendida: inyectar solo cada 10 gens
-                    # para no anclar todas las islas (pero pos 0 SIEMPRE protegida).
-                    _elite_ok = (global_stagnation <= 1) or (generations % 10 == 0)
+                    # FIX Bug 3: _elite_ok siempre True. La condición anterior
+                    # (global_stagnation <= 1) or (gen % 10 == 0) dejaba la elite FUERA
+                    # de la población el 90% del tiempo durante estancamiento, impidiendo
+                    # que sus genes contribuyeran al crossover → plateau estructural.
+                    # Posición 0 = isla 0 única → no contamina otras islas.
+                    _elite_ok = True
                     if best_rpn is not None and _elite_ok:
                         best_size = self.get_tree_size(best_rpn)
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
