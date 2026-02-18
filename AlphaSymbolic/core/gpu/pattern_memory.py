@@ -44,7 +44,9 @@ class PatternMemory:
                                            dtype=torch.uint8, device=device)
         self.patterns_hash = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.patterns_count = torch.zeros(max_patterns, dtype=torch.long, device=device)
-        self.patterns_fitness = torch.full((max_patterns,), float('inf'), 
+        # FIX N6: Usar valor finito grande (1e30) en lugar de inf para evitar
+        # comportamiento impredecible en torch.topk cuando todos los valores son inf.
+        self.patterns_fitness = torch.full((max_patterns,), 1e30, 
                                            dtype=self.dtype, device=device)
         self.patterns_len = torch.zeros(max_patterns, dtype=torch.long, device=device)
         self.n_patterns = 0  # Current number of stored patterns

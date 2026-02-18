@@ -51,12 +51,12 @@ class GpuGlobals:
     # ============================================================
     # Population Size
     # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
-    POP_SIZE = 1_000_000
+    POP_SIZE = 4_000_000
     GENERATIONS = 1_000_000
     
     # Islands
-    NUM_ISLANDS = 50              # OPTIMIZED: 50 islas de 20k c/u → más diversidad (era 25)
-    MIN_POP_PER_ISLAND = 20
+    NUM_ISLANDS = 50              # OPTIMIZED: 50 islas de 80k c/u → más diversidad (era 25)
+    MIN_POP_PER_ISLAND = 80
     
     # Migration
     MIGRATION_INTERVAL = 30                    # OPTIMIZED: más aislamiento (era 15)
@@ -86,9 +86,9 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = False
+    USE_INITIAL_FORMULA = True
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "(lgamma((2 + x0)) - (((2.53611302 - (x1 / 3))**(lgamma((-2.84694982 + x0)) / (-(gamma((lgamma((x0 / log(5.42997837))) - x2)))))) + (0.00517457 + x0)))"
+    INITIAL_FORMULA_STRING = "log(((2.39036274 * (x0 * (((x0 / fact(3.13972592))**x0) + log(((10 + (6.7144866**x2))**(pi**(x2**x1))))))) - lgamma(fact((x1 * x2)))))"
 
     USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
 

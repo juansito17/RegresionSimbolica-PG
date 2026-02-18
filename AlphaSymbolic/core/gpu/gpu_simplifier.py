@@ -185,11 +185,36 @@ class GPUSymbolicSimplifier:
         return token_ids, matched
 
     def _map_single_value_to_literal_id(self, value: float) -> int:
-        vals = torch.tensor([value], device=self.device, dtype=self.dtype)
-        mask = torch.tensor([True], device=self.device, dtype=torch.bool)
-        token_ids, matched = self._map_values_to_literal_ids(vals, mask)
-        if matched[0].item():
-            return int(token_ids[0].item())
+        """
+        Map a single numeric value to a grammar literal token ID.
+        
+        FIX N8: Versión optimizada sin crear tensores GPU.
+        Usa búsqueda directa en los literales cacheados (CPU) para evitar
+        asignaciones de memoria GPU en cada llamada dentro de bucles.
+        """
+        # Fast path: valores comunes hardcoded
+        if self.ID_0 != -1 and abs(value) <= self._fold_abs_tol:
+            return self.ID_0
+        if self.ID_1 != -1 and abs(value - 1.0) <= self._fold_abs_tol:
+            return self.ID_1
+        if self.ID_2 != -1 and abs(value - 2.0) <= self._fold_abs_tol:
+            return self.ID_2
+        if self.ID_PI != -1 and abs(value - math.pi) <= self._fold_abs_tol:
+            return self.ID_PI
+        if self.ID_E != -1 and abs(value - math.e) <= self._fold_abs_tol:
+            return self.ID_E
+        
+        # Buscar en literales cacheados (sin crear tensores GPU)
+        if self._cached_lit_vals is not None and self.literal_ids.numel() > 0:
+            tol = self._fold_abs_tol + self._fold_rel_tol * abs(value)
+            # Acceder a valores CPU directamente
+            lit_vals_cpu = self._cached_lit_vals.cpu().numpy() if self._cached_lit_vals.is_cuda else self._cached_lit_vals.numpy()
+            lit_ids_cpu = self.literal_ids.cpu().numpy() if self.literal_ids.is_cuda else self.literal_ids.numpy()
+            
+            for i, lit_val in enumerate(lit_vals_cpu):
+                if abs(value - lit_val) <= tol:
+                    return int(lit_ids_cpu[i])
+        
         return -1
 
     def _precompute_all_subtree_starts(self, population: torch.Tensor) -> torch.Tensor:
