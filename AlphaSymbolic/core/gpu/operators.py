@@ -725,7 +725,10 @@ class GPUOperators:
         else:
              weights = self.dedup_weights
              
-        hashes = (population * weights).sum(dim=1)
+        # FIX N4: population is uint8; multiplying by int64 weights in uint8 causes
+        # silent overflow (e.g. 200*256 mod 256 = 0), producing false hash collisions.
+        # Cast to long() first so the full int64 range is used for hashing.
+        hashes = (population.long() * weights).sum(dim=1)
         
         # 2. Unique on Hashes (1D is fast)
         # return_inverse gives indices such that hashes = unique[inverse]

@@ -61,7 +61,10 @@ class GPUEvaluator:
             if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
                 # Matches [Vars, Samples] - Do nothing
                 pass
-            elif x.shape[0] == y_target.shape[0]:
+            elif x.shape[0] == y_target.shape[0] and x.shape[0] != x.shape[1]:
+                # FIX N3: added `x.shape[0] != x.shape[1]` guard.
+                # Without it, square matrices (num_vars == num_samples) were
+                # incorrectly transposed, corrupting the evaluation entirely.
                 # Matches [Samples, Vars] -> Transpose
                 x = x.T.contiguous()
         
@@ -300,7 +303,10 @@ class GPUEvaluator:
         if x.dim() == 2:
             if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
                 pass
-            elif x.shape[0] == y_target.shape[0]:
+            elif x.shape[0] == y_target.shape[0] and x.shape[0] != x.shape[1]:
+                # FIX N3: guard against square matrices (num_vars == num_samples).
+                # Without it, x[V,V] was incorrectly transposed even though it was
+                # already in [Vars, Samples] format.
                 x = x.T.contiguous()
         
         N_samples = x.shape[1]
