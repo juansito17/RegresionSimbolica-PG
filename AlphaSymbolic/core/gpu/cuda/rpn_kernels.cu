@@ -377,7 +377,7 @@ void launch_rpn_kernel(
     int K = constants.size(1);
     
     int total_threads = B * D;
-    const int block_size = 256;
+    const int block_size = 512;   // OPTIMIZED: mayor ocupación en RTX 3050 (era 256)
     const int grid_size = (total_threads + block_size - 1) / block_size;
     
     // Dispatch based on X type (float or double)
@@ -702,7 +702,8 @@ __global__ void hoist_mutation_kernel(
     float hoist_rate,
     int B, int L, int PAD_ID
 ) {
-    int b = blockIdx.x;
+    // OPTIMIZED: 128 threads/block en vez de 1 → mejor ocupación SM (era <<<B,1>>>)
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
     
     // 1. Check Probability
@@ -765,8 +766,10 @@ void launch_hoist_mutation(
     CHECK_INPUT(rand_floats);
     CHECK_INPUT(rand_ints);
     
-    // One block per individual, 1 thread
-    hoist_mutation_kernel<<<B, 1>>>(
+    // OPTIMIZED: 128 threads/block → 128x mejor ocupación de SM (era <<<B,1>>>)
+    const int hoist_threads = 128;
+    const int hoist_blocks = (B + hoist_threads - 1) / hoist_threads;
+    hoist_mutation_kernel<<<hoist_blocks, hoist_threads>>>(
         population.data_ptr<unsigned char>(),
         starts.data_ptr<int64_t>(),
         rand_floats.data_ptr<float>(),

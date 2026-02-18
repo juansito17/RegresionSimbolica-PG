@@ -55,22 +55,22 @@ class GpuGlobals:
     GENERATIONS = 1_000_000
     
     # Islands
-    NUM_ISLANDS = 25              # 1M / 25 = 40k per island
+    NUM_ISLANDS = 50              # OPTIMIZED: 50 islas de 20k c/u → más diversidad (era 25)
     MIN_POP_PER_ISLAND = 20
     
     # Migration
-    MIGRATION_INTERVAL = 10            # Standard migration interval
-    MIGRATION_INTERVAL_STAGNATION = 20 # Slower migration during stagnation (preserve diversity)
+    MIGRATION_INTERVAL = 15            # OPTIMIZED: menos frecuente → islas desarrollan más antes de compartir (era 10)
+    MIGRATION_INTERVAL_STAGNATION = 25 # Slower migration during stagnation (preserve diversity)
     MIGRATION_STAGNATION_THRESHOLD = 10
-    MIGRATION_SIZE = 50
+    MIGRATION_SIZE = 80                # OPTIMIZED: más individuos por migración (era 50)
 
     # Stagnation & Restarts
-    STAGNATION_LIMIT = 12              # OPTIMIZED: restarts locales más rápidos (was 20→12)
+    STAGNATION_LIMIT = 15              # OPTIMIZED: balance entre exploración y escape (was 20→15)
     GLOBAL_STAGNATION_LIMIT = 200      # OPTIMIZED: más tiempo para converger (was 80)
     STAGNATION_RANDOM_INJECT_PERCENT = 0.20 # Inject random individuals during stagnation
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
-    CATACLYSM_ELITE_PERCENT = 0.08     # Elites survived in cataclysm
+    CATACLYSM_ELITE_PERCENT = 0.12     # OPTIMIZED: más élites sobreviven cataclismo (era 0.08)
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
     SOFT_RESTART_ELITE_RATIO = 0.15    # OPTIMIZED: preserve more diversity (was 0.10→0.15)
@@ -159,7 +159,7 @@ class GpuGlobals:
     #                  5. GENETIC OPERATORS
     # ============================================================
     # Rates
-    BASE_MUTATION_RATE = 0.15
+    BASE_MUTATION_RATE = 0.18      # OPTIMIZED: más exploración estructural (era 0.15)
     DEFAULT_CROSSOVER_RATE = 0.60
     
     # Adaptive Mutation
@@ -174,7 +174,7 @@ class GpuGlobals:
     BASE_ELITE_PERCENTAGE = 0.12
     
     # Generation
-    TERMINAL_VS_VARIABLE_PROB = 0.50
+    TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
     DEDUPLICATION_INTERVAL = 50
     PREVENT_DUPLICATES = True
     
@@ -221,8 +221,8 @@ class GpuGlobals:
     # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)
     # PySR usa BFGS internamente — esta es la clave para superarlo en poly/trig.
     USE_BFGS_OPTIMIZER = True
-    BFGS_INTERVAL = 3              # OPTIMIZED: más frecuente (was 5→3)
-    BFGS_TOP_K = 200               # OPTIMIZED: 4x más cobertura de precisión (was 50→200)
+    BFGS_INTERVAL = 5              # Cada N generaciones (revertido — BFGS es caro en Python)
+    BFGS_TOP_K = 75                # OPTIMIZED: balance overhead/cobertura (was 50→75)
     BFGS_MAX_ITER = 30             # Max iteraciones L-BFGS-B por individuo
     
     # Simplification
@@ -258,7 +258,7 @@ class GpuGlobals:
     PATTERN_MEM_MIN_USES = 3
     PATTERN_MIN_SIZE = 3
     PATTERN_MAX_SIZE = 12
-    PATTERN_MAX_PATTERNS = 100
+    PATTERN_MAX_PATTERNS = 200     # OPTIMIZED: más memoria genética (era 100)
     
     # Neural / MCTS / Sniper (Disabled/Experimental)
     USE_SNIPER = False

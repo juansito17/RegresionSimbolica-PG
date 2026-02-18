@@ -159,8 +159,20 @@ class GPUOperators:
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
                 
+                # OPTIMIZED: calcular pesos de categoría desde OPERATOR_WEIGHTS (bug fix: antes 1.0 fijo)
+                _op_w = GpuGlobals.OPERATOR_WEIGHTS
+                _bin_sum = sum(_op_w[:6])           # +,-,*,/,**,%
+                _una_sum = sum(_op_w[6:])           # sin,cos,tan,log,exp,fact,...,sqrt,abs
+                _op_sum = max(_bin_sum + _una_sum, 1e-6)
+                _t_frac = float(GpuGlobals.TERMINAL_VS_VARIABLE_PROB)
+                _o_frac = 1.0 - _t_frac
+                _gen_term_w  = _t_frac
+                _gen_unary_w = float(_o_frac * _una_sum / _op_sum)
+                _gen_bin_w   = float(_o_frac * _bin_sum / _op_sum)
+
                 rpn_cuda_native.generate_random_rpn(
-                    population, t_ids, u_ids, b_ids, seed
+                    population, t_ids, u_ids, b_ids, seed,
+                    _gen_term_w, _gen_unary_w, _gen_bin_w
                 )
                 
                 # Quick validation
@@ -322,7 +334,19 @@ class GPUOperators:
                 t_ids = self.terminal_ids.contiguous()
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
-                rpn_cuda_native.generate_random_rpn(population, t_ids, u_ids, b_ids, seed)
+                # OPTIMIZED: mismos pesos de categoría que generate_random_population_gpu
+                _op_w = GpuGlobals.OPERATOR_WEIGHTS
+                _bin_sum = sum(_op_w[:6])
+                _una_sum = sum(_op_w[6:])
+                _op_sum = max(_bin_sum + _una_sum, 1e-6)
+                _t_frac = float(GpuGlobals.TERMINAL_VS_VARIABLE_PROB)
+                _o_frac = 1.0 - _t_frac
+                rpn_cuda_native.generate_random_rpn(
+                    population, t_ids, u_ids, b_ids, seed,
+                    _t_frac,
+                    float(_o_frac * _una_sum / _op_sum),
+                    float(_o_frac * _bin_sum / _op_sum)
+                )
                 valid = self._validate_rpn_batch_custom(population, max_len)
                 invalid = ~valid
                 if invalid.any():

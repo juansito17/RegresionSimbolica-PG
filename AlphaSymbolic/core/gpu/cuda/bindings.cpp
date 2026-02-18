@@ -224,7 +224,10 @@ void launch_generate_random_rpn(
     const torch::Tensor& terminal_ids,
     const torch::Tensor& unary_ids,
     const torch::Tensor& binary_ids,
-    uint64_t seed
+    uint64_t seed,
+    float term_weight,   // OPTIMIZED: peso categoria terminal
+    float unary_weight,  // OPTIMIZED: peso categoria unaria
+    float bin_weight     // OPTIMIZED: peso categoria binaria
 );
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
