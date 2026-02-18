@@ -88,7 +88,7 @@ class GpuGlobals:
     USE_INITIAL_POP_CACHE = False
     USE_INITIAL_FORMULA = False
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "log(((fact(x1) / (2 - ((x1 / pi) + x2))) - (-((x0 * ((6**(lgamma((x0 / 2)) - 0.861121)) + (2 + (x2 + 4))))))))"
+    INITIAL_FORMULA_STRING = "(lgamma((2 + x0)) - (((2.53611302 - (x1 / 3))**(lgamma((-2.84694982 + x0)) / (-(gamma((lgamma((x0 / log(5.42997837))) - x2)))))) + (0.00517457 + x0)))"
 
     USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
 

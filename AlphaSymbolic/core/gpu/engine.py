@@ -1283,10 +1283,9 @@ class TensorGeneticEngine:
                     print("[GPU Engine] Saved.")
                 except Exception as e:
                     print(f"[GPU Engine] Warning: Could not save cache ({e})")
-        elif GpuGlobals.USE_STRUCTURAL_SEEDS:
-            # Re-inject polynomial basis even if loaded from cache to ensure structural variety
-            # This is critical for discovering complex formulas like poly-4
-                print(f"[GPU Engine] Warning: Could not save cache: {e}")
+        # FIX B4: Se eliminó el bloque 'elif GpuGlobals.USE_STRUCTURAL_SEEDS' que contenía
+        # 'print(f"... {e}")' donde 'e' no estaba en scope (era variable de un except superior).
+        # Habría lanzado NameError si USE_STRUCTURAL_SEEDS=True y la cache era cargada sin error.
 
         # 4. Inject structural seeds (post-init overwrite)
         if seeds:

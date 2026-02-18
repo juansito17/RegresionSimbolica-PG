@@ -936,7 +936,9 @@ class GPUSymbolicSimplifier:
                                                 torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
                                             ])
                                             if new_seg.numel() <= (j - s1 + 1):
-                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(torch.uint8)
+                                                # FIX B5: se usaba .to(torch.uint8) hardcoded.
+                                                # Si pop.dtype no es uint8 (ej: int64), trunca IDs > 255.
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(pop.dtype)
                                                 pop[b, s1+new_seg.numel():j+1] = PAD_ID
                                                 n_simplified += 1
                                                 continue
@@ -977,7 +979,8 @@ class GPUSymbolicSimplifier:
                                                 torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
                                             ])
                                             if new_seg.numel() <= (j - s1 + 1):
-                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(torch.uint8)
+                                                # FIX B5 (Case B): mismo bug que Case A.
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(pop.dtype)
                                                 pop[b, s1+new_seg.numel():j+1] = PAD_ID
                                                 n_simplified += 1
                                                 continue
@@ -1015,13 +1018,15 @@ class GPUSymbolicSimplifier:
                 if torch.equal(x, z):
                     new = torch.cat([torch.tensor([self.ID_2], device=self.device), x, torch.tensor([self.OP_MULT], device=self.device), y, torch.tensor([self.OP_PLUS], device=self.device)])
                     if len(new) <= (j - idx_s1 + 1):
-                        pop[b, idx_s1:idx_s1+len(new)] = new.to(torch.uint8)
+                        # FIX B5 (Pattern section): usar pop.dtype en vez de uint8 hardcoded
+                        pop[b, idx_s1:idx_s1+len(new)] = new.to(pop.dtype)
                         pop[b, idx_s1+len(new):j+1] = PAD_ID
                         n_simplified += 1
                 elif torch.equal(y, z):
                     new = torch.cat([torch.tensor([self.ID_2], device=self.device), y, torch.tensor([self.OP_MULT], device=self.device), x, torch.tensor([self.OP_PLUS], device=self.device)])
                     if len(new) <= (j - idx_s1 + 1):
-                        pop[b, idx_s1:idx_s1+len(new)] = new.to(torch.uint8)
+                        # FIX B5 (Pattern section): usar pop.dtype en vez de uint8 hardcoded
+                        pop[b, idx_s1:idx_s1+len(new)] = new.to(pop.dtype)
                         pop[b, idx_s1+len(new):j+1] = PAD_ID
                         n_simplified += 1
 
@@ -1249,11 +1254,18 @@ class GPUSymbolicSimplifier:
         return pop, counts.sum().item()
 
     def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        # FIX B6: El count anterior era is_pad.any(dim=1).sum(), que equivale al numero de
+        # filas con ALGUN PAD (practicamente todas las formulas cortas). Eso hacia que
+        # n_pass nunca fuera 0, evitando el early-exit del bucle de simplificacion y
+        # ejecutando pasadas innecesarias.
+        # Ahora count = filas que realmente cambiaron (tenian huecos internos).
         B, L = population.shape
         is_pad = (population == PAD_ID)
         sort_key = is_pad.long() * L + torch.arange(L, device=self.device).unsqueeze(0)
         _, idx = torch.sort(sort_key, dim=1, stable=True)
-        return torch.gather(population, 1, idx), (is_pad.any(dim=1).sum().item())
+        compacted = torch.gather(population, 1, idx)
+        n_changed = int((compacted != population).any(dim=1).sum().item())
+        return compacted, n_changed
 
     def _get_subtree_starts(self, population: torch.Tensor, end_indices) -> torch.Tensor:
         B, L = population.shape

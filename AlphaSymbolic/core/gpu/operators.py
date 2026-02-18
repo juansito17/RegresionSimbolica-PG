@@ -535,7 +535,9 @@ class GPUOperators:
         Calculates the start index of the subtree ending at each position.
         Returns tensor [B, L] where value is start_index, or -1 if invalid/padding.
         """
-        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'find_subtree_ranges'):
+        # FIX CUDA-CPU: Solo usar el kernel CUDA si el tensor está en dispositivo CUDA.
+        # Antes, el kernel se llamaba incluso con tensores CPU, causando RuntimeError.
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'find_subtree_ranges') and population.is_cuda:
             B, L = population.shape
             starts = torch.full((B, L), -1, dtype=torch.long, device=self.device)
             # Ensure token_arity_int exists (legacy safety)
@@ -551,7 +553,9 @@ class GPUOperators:
         # 1. Compute Stack Delta for each token
         # terminals: +1, arity1: 0, arity2: -1
         token_net_change = 1 - self.token_arity
-        arities = token_net_change[population]
+        # FIX B1-idx: Si population es uint8, PyTorch lo interpreta como mascara booleana
+        # en lugar de indices. Castear a long() garantiza indexacion correcta.
+        arities = token_net_change[population.long()]
         arities[population == PAD_ID] = 0
         
         # 2. Compute Stack Depths at each position
@@ -581,6 +585,10 @@ class GPUOperators:
         return subtree_starts
 
     def crossover_population(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
+        # FIX B1: Clonar entrada para evitar mutacion in-place del tensor original.
+        # Si 'parents' es una vista de la poblacion principal (ej. population[sub_idx]),
+        # escribir en ella corrompe los individuos originales que no participaron en el cruce.
+        parents = parents.clone()
         B, L = parents.shape
         n_pairs = int(B * 0.5 * crossover_rate)
         if n_pairs == 0: return parents.clone()
@@ -707,7 +715,12 @@ class GPUOperators:
              # Resize or re-init?
              # Just slice if smaller, or re-init if larger
              if curr_L > self.dedup_weights.shape[0]:
-                 self.dedup_weights = torch.randint(..., curr_L) # reinit
+                 # FIX B3: Se usaba '...' (Ellipsis) como argumento de torch.randint,
+                 # lo que lanza TypeError en tiempo de ejecucion. Corregido con argumentos validos.
+                 self.dedup_weights = torch.randint(
+                     -9223372036854775807, 9223372036854775807,
+                     (curr_L,), device=self.device, dtype=torch.long
+                 )
              weights = self.dedup_weights[:curr_L]
         else:
              weights = self.dedup_weights
@@ -734,9 +747,24 @@ class GPUOperators:
             return population, constants, 0
             
         # In-place replacement — no need to clone entire 1M population
-        # Generate replacements
+        # Generate replacements (ancho = self.max_len, puede diferir de curr_L)
         fresh_pop = self.generate_random_population(n_dups)
-        
+
+        # FIX B3-shape: generate_random_population devuelve ancho self.max_len.
+        # Si curr_L != self.max_len (e.g. poblacion con L extendido), hay que
+        # ajustar fresh_pop para que sea asignable a population[dup_indices].
+        if fresh_pop.shape[1] != curr_L:
+            if fresh_pop.shape[1] < curr_L:
+                # Padear con PAD_ID hasta curr_L
+                pad = torch.full(
+                    (n_dups, curr_L - fresh_pop.shape[1]), PAD_ID,
+                    dtype=fresh_pop.dtype, device=self.device
+                )
+                fresh_pop = torch.cat([fresh_pop, pad], dim=1)
+            else:
+                # Truncar (no deberia ocurrir normalmente)
+                fresh_pop = fresh_pop[:, :curr_L]
+
         # Constants for replacements - use integer range if FORCE_INTEGER_CONSTANTS
         K = constants.shape[1]
         if GpuGlobals.FORCE_INTEGER_CONSTANTS:
