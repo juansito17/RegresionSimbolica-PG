@@ -157,6 +157,16 @@ class GPUOptimizer:
         """Fused PSO: entire PSO loop in a single CUDA kernel launch."""
         B, K = constants.shape
         
+        # FIX: El kernel CUDA espera x en formato [Vars, D] (variables × datos).
+        # El engine pasa x como [D, Vars] (datos × variables) → transponer.
+        # Detectar por comparación con y.numel() (= número de puntos D).
+        D_expected = y.numel()
+        if x.ndim == 2 and x.shape[0] == D_expected and x.shape[1] != D_expected:
+            # x es [D, Vars] → transponer a [Vars, D]
+            x = x.T.contiguous()
+        elif not x.is_contiguous():
+            x = x.contiguous()
+        
         # Pre-allocate outputs
         gbest_pos = torch.empty((B, K), device=self.device, dtype=self.dtype)
         gbest_err = torch.empty((B,), device=self.device, dtype=self.dtype)

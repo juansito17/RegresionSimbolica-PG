@@ -59,23 +59,25 @@ class GpuGlobals:
     MIN_POP_PER_ISLAND = 20
     
     # Migration
-    MIGRATION_INTERVAL = 15            # OPTIMIZED: menos frecuente → islas desarrollan más antes de compartir (era 10)
-    MIGRATION_INTERVAL_STAGNATION = 25 # Slower migration during stagnation (preserve diversity)
+    MIGRATION_INTERVAL = 30                    # OPTIMIZED: más aislamiento (era 15)
+    MIGRATION_INTERVAL_STAGNATION = 25         # Slower migration during island stagnation
+    MIGRATION_INTERVAL_GLOBAL_STAGNATION = 300 # NEW: durante global stagnation > 20 → casi no migrar para mantener islas aisladas
     MIGRATION_STAGNATION_THRESHOLD = 10
     MIGRATION_SIZE = 80                # OPTIMIZED: más individuos por migración (era 50)
 
     # Stagnation & Restarts
     STAGNATION_LIMIT = 15              # OPTIMIZED: balance entre exploración y escape (was 20→15)
-    GLOBAL_STAGNATION_LIMIT = 200      # OPTIMIZED: más tiempo para converger (was 80)
-    STAGNATION_RANDOM_INJECT_PERCENT = 0.20 # Inject random individuals during stagnation
+    GLOBAL_STAGNATION_LIMIT = 50       # FIX: restart más frecuente → más exploración (era 80→50)
+    STAGNATION_RANDOM_INJECT_PERCENT = 0.05  # FIX: 5% para no destruir elites durante cooldown (era 0.50)
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
-    CATACLYSM_ELITE_PERCENT = 0.12     # OPTIMIZED: más élites sobreviven cataclismo (era 0.08)
+    CATACLYSM_ELITE_PERCENT = 0.06     # FIX: cataclismos más agresivos — menos elites = más diversidad (era 0.12)
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
-    SOFT_RESTART_ELITE_RATIO = 0.15    # OPTIMIZED: preserve more diversity (was 0.10→0.15)
+    SOFT_RESTART_ELITE_RATIO = 0.04    # FIX: muy pocos elites en restart → fuerza diversidad estructural (era 0.15)
+    ESCALATE_RESTART_LIMIT = 2         # NEW: después de N soft restarts sin mejora → true hard restart (1 elite)
     
-    USE_STRUCTURAL_RESTART_INJECTION = False
+    USE_STRUCTURAL_RESTART_INJECTION = False  # Sin bias de estructura — búsqueda completamente aleatoria
     STRUCTURAL_RESTART_INJECTION_RATIO = 0.25
     HARD_RESTART_ELITE_RATIO = 0.12
 
@@ -86,7 +88,7 @@ class GpuGlobals:
     USE_INITIAL_POP_CACHE = False
     USE_INITIAL_FORMULA = False
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "((pi + (lgamma(x0) - x0))**(2**(3 / ((x0 * 4.61006586) - (pi + (10 + (x0 / ((x2 + (lgamma(-0.25083341) - x0)) + fact(pi)))))))))"
+    INITIAL_FORMULA_STRING = "log(((fact(x1) / (2 - ((x1 / pi) + x2))) - (-((x0 * ((6**(lgamma((x0 / 2)) - 0.861121)) + (2 + (x2 + 4))))))))"
 
     USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
 
@@ -197,9 +199,12 @@ class GpuGlobals:
     TRIVIAL_FORMULA_MAX_TOKENS = 2
     TRIVIAL_FORMULA_ALLOW_RMSE = 1e-3
     
-    # Diversity (Disabled)
-    VAR_DIVERSITY_PENALTY = 0.0
-    VAR_FORCE_SEED_PERCENT = 0.0
+    # Diversity — forzar uso de x1/x2 para evitar convergencia prematura a lgamma(x0)
+    # FIX: 0.05 da ventaja selectiva a fórmulas multi-variable sin dominar el fitness.
+    # Con RMSE_best=0.11 y size=15: selección_lgamma = 0.11*1.3 + 0.05*2 = 0.24
+    # Una fórmula x0+x1+x2 con RMSE<0.187 bate a lgamma en torneos.
+    VAR_DIVERSITY_PENALTY = 0.05
+    VAR_FORCE_SEED_PERCENT = 0.25   # FIX: 25% de individuos nuevos deben contener x1 o x2 (era 0.0)
     
     # Weighted Fitness
     USE_WEIGHTED_FITNESS = False
@@ -213,17 +218,17 @@ class GpuGlobals:
     PSO_INTERVAL = 2
     PSO_PARTICLES = 30
     PSO_STEPS_NORMAL = 40          # OPTIMIZED: más pasos por individuo (was 25→40)
-    PSO_STEPS_STAGNATION = 60      # OPTIMIZED: más agresivo en estancamiento (was 40→60)
+    PSO_STEPS_STAGNATION = 80      # FIX: más pasos para escapar mínimo local (was 40→60→80)
     PSO_K_NORMAL = 400             # OPTIMIZED: menos individuos, más profundidad (was 800→400)
-    PSO_K_STAGNATION = 1200        # OPTIMIZED: más cobertura bajo estancamiento (was 1600→1200)
+    PSO_K_STAGNATION = 2500        # FIX: cubrir más candidatos en estancamiento (was 1600→1200→2500)
     PSO_STAGNATION_THRESHOLD = 10
 
     # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)
     # PySR usa BFGS internamente — esta es la clave para superarlo en poly/trig.
     USE_BFGS_OPTIMIZER = True
-    BFGS_INTERVAL = 5              # Cada N generaciones (revertido — BFGS es caro en Python)
-    BFGS_TOP_K = 75                # OPTIMIZED: balance overhead/cobertura (was 50→75)
-    BFGS_MAX_ITER = 30             # Max iteraciones L-BFGS-B por individuo
+    BFGS_INTERVAL = 15             # FIX velocidad: 15 gens (era 5→demasiado frecuente con PSO ya funcionando)
+    BFGS_TOP_K = 40               # FIX velocidad: 40 top-K (era 120→~72s/100gens overhead; PSO cubre el resto)
+    BFGS_MAX_ITER = 20             # FIX velocidad: 20 iter (era 30; suficiente para refinamiento fino)
     
     # Simplification
     USE_SIMPLIFICATION = True

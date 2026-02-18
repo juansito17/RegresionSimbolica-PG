@@ -1417,6 +1417,13 @@ class TensorGeneticEngine:
         generations = 0
         current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
         COMPLEXITY_PENALTY = GpuGlobals.COMPLEXITY_PENALTY
+        # --- Escalating restart tracking ---
+        _consecutive_restarts = 0            # Cuántos soft restarts seguidos sin mejorar
+        _best_rmse_at_last_restart = float('inf')  # RMSE en el momento del último restart
+        # --- Post-restart isolation cooldown ---
+        # Después de un TRUE HARD restart, aislar la población por N gens:
+        # NO migrar y NO inyectar el global best → la población fresca se desarrolla sola.
+        _post_restart_cooldown = 0
         
         # --- P0-1 Optimization: Reuse fitness from C++ orchestrator ---
         cached_next_fit = None       # Fitness returned by evolve_generation_cuda
@@ -1466,8 +1473,18 @@ class TensorGeneticEngine:
             # Migration (track modified indices for fitness cache invalidation)
             all_modified = False  # Flag instead of 1M-element tensor
             modified_indices = None
-            # Reduce migration during stagnation to preserve island diversity
-            mig_interval = GpuGlobals.MIGRATION_INTERVAL_STAGNATION if stagnation > GpuGlobals.MIGRATION_STAGNATION_THRESHOLD else GpuGlobals.MIGRATION_INTERVAL
+            # Reduce migration during stagnation to preserve island diversity.
+            # During GLOBAL stagnation > 20 gens: almost stop migration completely so islands
+            # can develop independent structures without lgamma contamination.
+            if _post_restart_cooldown > 0:
+                mig_interval = 999999  # Sin migración durante aislamiento post-restart
+                _post_restart_cooldown -= 1
+            elif global_stagnation > 20:
+                mig_interval = getattr(GpuGlobals, 'MIGRATION_INTERVAL_GLOBAL_STAGNATION', 300)
+            elif stagnation > GpuGlobals.MIGRATION_STAGNATION_THRESHOLD:
+                mig_interval = GpuGlobals.MIGRATION_INTERVAL_STAGNATION
+            else:
+                mig_interval = GpuGlobals.MIGRATION_INTERVAL
             if self.n_islands > 1 and generations % mig_interval == 0:
                  population, pop_constants = self.migrate_islands(population, pop_constants, 
                      fitness_rmse if cached_next_fit is None else cached_next_fit)
@@ -1821,27 +1838,47 @@ class TensorGeneticEngine:
             # Global Stagnation — total or soft restart
             if global_stagnation >= GpuGlobals.GLOBAL_STAGNATION_LIMIT:
                 if GpuGlobals.SOFT_RESTART_ENABLED:
-                     # Soft Restart: Keep top N% elites, randomize rest
-                     n_keep = int(self.pop_size * GpuGlobals.SOFT_RESTART_ELITE_RATIO)
+                     # --- Escalating Restart: track consecutive failed restarts ---
+                     # Después de N soft restarts sin mejora → true hard restart (1 elite).
+                     # Elimina la convergencia estructural (e.g. lgamma(x0) fijo para siempre)
+                     # sin perder la mejor fórmula encontrada hasta el momento.
+                     _escalate_limit = getattr(GpuGlobals, 'ESCALATE_RESTART_LIMIT', 2)
+                     if best_rmse >= _best_rmse_at_last_restart - 1e-9:
+                         _consecutive_restarts += 1
+                     else:
+                         _consecutive_restarts = 0
+                     _best_rmse_at_last_restart = best_rmse
+
+                     if _consecutive_restarts >= _escalate_limit:
+                         # TRUE HARD RESTART: solo 1 elite (la mejor fórmula del algoritmo)
+                         n_keep = 1
+                         _consecutive_restarts = 0
+                         restart_label = "TRUE HARD"
+                         _post_restart_cooldown = 50  # 50 gens sin migrar ni inyectar elite
+                     else:
+                         n_keep = int(self.pop_size * GpuGlobals.SOFT_RESTART_ELITE_RATIO)
+                         restart_label = "Soft"
+
                      n_random = self.pop_size - n_keep
-                     print(f"[Engine] Global stagnation ({global_stagnation} gens). Soft Restart (Keeping top {n_keep} elites).")
-                     
+                     print(f"[Engine] Global stagnation ({global_stagnation} gens). {restart_label} Restart "
+                           f"(Keeping top {n_keep} elites, streak={_consecutive_restarts}/{_escalate_limit}).")
+
                      # Identify elites
                      _, indices = torch.topk(fitness_rmse, n_keep, largest=False)
                      elites = population[indices]
                      elite_c = pop_constants[indices]
-                     
+
+                     # Siempre garantizar que la mejor fórmula ocupe el slot 0
+                     if best_rpn is not None and n_keep >= 1:
+                         elites[0] = best_rpn
+                         elite_c[0] = best_consts_vec
+
                      # Generate randoms
                      rand_pop = self.operators.generate_random_population(n_random)
                      rand_c = torch.empty(n_random, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
                      
                      # Combine (write to buffers if exist)
                      if self.pop_buffer_A is not None:
-                         # Decide which buffer is current 'population'
-                         # Actually, we just overwrite 'population' variable and then write to both buffers to be safe?
-                         # No, we should write to the active buffer.
-                         # Assuming 'population' points to one of the buffers or is a distinct tensor.
-                         # Let's rebuild 'population' first.
                          population = torch.cat([elites, rand_pop])
                          pop_constants = torch.cat([elite_c, rand_c])
                          
@@ -1966,16 +2003,20 @@ class TensorGeneticEngine:
                              self.const_buffer_B[0] = best_consts_vec
                 
                 # --- Stagnation Random Injection ---
-                # Inyectar individuos aleatorios durante estancamiento para mantener diversidad
-                if GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT > 0 and stagnation % 10 == 0:
+                # Inyectar individuos aleatorios durante estancamiento para mantener diversidad.
+                # IMPORTANTE: reemplazar posiciones ALEATORIAS (no las peores) para que los nuevos
+                # árboles tengan oportunidad de estar en zonas competitivas de la población.
+                if GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT > 0 and stagnation % 10 == 0 and _post_restart_cooldown <= 0:
                     n_inject = int(self.pop_size * GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT)
                     if n_inject > 0:
                         inject_pop = self.operators.generate_random_population(n_inject)
                         inject_c = torch.empty(n_inject, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
-                        # Reemplazar los peores individuos
-                        _, worst_idx = torch.topk(fitness_rmse, n_inject, largest=True)
-                        population[worst_idx] = inject_pop
-                        pop_constants[worst_idx] = inject_c
+                        # FIX: Reemplazar posiciones ALEATORIAS, no los peores.
+                        # Antes: los lgamma elites estaban "protegidos" y los nuevos iban al fondo.
+                        # Ahora: lgamma variants tienen 50% de probabilidad de ser reemplazados.
+                        inject_positions = torch.randint(0, self.pop_size, (n_inject,), device=self.device)
+                        population[inject_positions] = inject_pop
+                        pop_constants[inject_positions] = inject_c
                          
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
@@ -2040,8 +2081,11 @@ class TensorGeneticEngine:
                     # Additive: selection_metric += PENALTY * n_missing
                     selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
-                # Adaptive tournament size: reduce during stagnation to allow more diversity
-                effective_tournament = max(GpuGlobals.TOURNAMENT_SIZE_FLOOR, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - stagnation // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
+                # Adaptive tournament size: reduce during stagnation to allow more diversity.
+                # Durante global stagnation extendida (>20 gens), bajar floor a 2 para
+                # reducir presión de selección y dar tiempo a estructuras nuevas de crecer.
+                _tour_floor = 2 if global_stagnation > 20 else GpuGlobals.TOURNAMENT_SIZE_FLOOR
+                effective_tournament = max(_tour_floor, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - (stagnation + global_stagnation // 5) // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
                 # Refresh Mutation Bank periodically for structural innovation
@@ -2064,8 +2108,13 @@ class TensorGeneticEngine:
                     next_c = next_c[:self.pop_size]
                     # P0-1: Cache the fitness from C++ for reuse in next iteration
                     cached_next_fit = next_fit[:self.pop_size] if next_fit is not None else None
-                    # Global Elite Injection: preserve best formula in position 0
-                    if best_rpn is not None:
+                    # Global Elite Injection: preserve best formula en posición 0.
+                    # SIEMPRE activa — protege el global best de ser destruido por crossover.
+                    # Solo el cooldown de MIGRACIÓN bloquea la contaminación entre islas.
+                    # Durante global stagnation extendida: inyectar solo cada 10 gens
+                    # para no anclar todas las islas (pero pos 0 SIEMPRE protegida).
+                    _elite_ok = (global_stagnation <= 1) or (generations % 10 == 0)
+                    if best_rpn is not None and _elite_ok:
                         best_size = self.get_tree_size(best_rpn)
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             next_pop[0] = best_rpn
