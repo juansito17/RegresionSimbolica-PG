@@ -330,8 +330,13 @@ class PatternMemory:
         
         # Inject in-place (no clone)
         population[inject_positions] = selected_patterns
-        constants[inject_positions] = torch.randn(n_inject, constants.shape[1],
-                                                   device=self.device, dtype=constants.dtype) * 0.5
+        # FIX Bug5: usar Uniform[-10, 10] en lugar de Gaussian(0, 0.5) para cubrir
+        # todo el espacio de constantes. El rango estrecho anterior (±1.5) nunca
+        # encontraba constantes como 6.0, -7.0, etc. que la fórmula objetivo necesita.
+        from .config import GpuGlobals
+        constants[inject_positions] = torch.empty(
+            n_inject, constants.shape[1], device=self.device, dtype=constants.dtype
+        ).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
         
         self.total_injected += n_inject
         return inject_positions

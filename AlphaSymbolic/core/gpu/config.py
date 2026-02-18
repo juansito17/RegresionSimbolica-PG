@@ -204,7 +204,7 @@ class GpuGlobals:
     # y evita penalizar sub-fórmulas en crossover que momentáneamente no tienen todas las vars.
     # El best tracking ahora usa raw RMSE → acepta cualquier mejora estructural.
     VAR_DIVERSITY_PENALTY = 0.0
-    VAR_FORCE_SEED_PERCENT = 0.25   # FIX: 25% de individuos nuevos deben contener x1 o x2 (era 0.0)
+    VAR_FORCE_SEED_PERCENT = 0.0    # FIX Bug4: con VAR_DIVERSITY_PENALTY=0 este forced seeding es innecesario y sesga la búsqueda (era 0.25)
     
     # Weighted Fitness
     USE_WEIGHTED_FITNESS = False
@@ -225,10 +225,13 @@ class GpuGlobals:
 
     # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)
     # PySR usa BFGS internamente — esta es la clave para superarlo en poly/trig.
-    USE_BFGS_OPTIMIZER = True
-    BFGS_INTERVAL = 15             # FIX velocidad: 15 gens (era 5→demasiado frecuente con PSO ya funcionando)
-    BFGS_TOP_K = 40               # FIX velocidad: 40 top-K (era 120→~72s/100gens overhead; PSO cubre el resto)
-    BFGS_MAX_ITER = 20             # FIX velocidad: 20 iter (era 30; suficiente para refinamiento fino)
+    # REVERTIDO: Adam FD vectorizado añade overhead Python (40 evaluate_batch calls/run)
+    # que duplica el tiempo total sin mejorar calidad — PSO fused CUDA ya optimiza constants
+    # de las top-400 fórmulas en un único kernel launch cada 2 gens (mejor eficiencia).
+    USE_BFGS_OPTIMIZER = False
+    BFGS_INTERVAL = 50
+    BFGS_TOP_K = 20
+    BFGS_MAX_ITER = 3
     
     # Simplification
     USE_SIMPLIFICATION = True
