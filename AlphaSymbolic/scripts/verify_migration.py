@@ -4,8 +4,8 @@ import os
 import torch
 import time
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.gpu.engine import TensorGeneticEngine
 from core.gpu.config import GpuGlobals

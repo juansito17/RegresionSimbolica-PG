@@ -782,12 +782,14 @@ class GPUOperators:
             invalid_c2 = invalid_pre_2 | invalid_mid_2 | invalid_post_2
             c2[invalid_c2] = PAD_ID
         
-        # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite duro ---
+        # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite de NODOS (Longitud) ---
+        # NOTA: Aunque el nombre diga "Depth", históricamente se usa como límite de longitud (total de nodos).
+        # Ver Bug N7.
         if GpuGlobals.USE_HARD_DEPTH_LIMIT:
             hard_limit = GpuGlobals.MAX_TREE_DEPTH_HARD_LIMIT
             c1_len = (c1 != PAD_ID).sum(dim=1)
             c2_len = (c2 != PAD_ID).sum(dim=1)
-            # Si un hijo excede el límite, revertir al padre original
+            # Si un hijo excede el límite de longitud, revertir al padre original
             too_long_1 = c1_len > hard_limit
             too_long_2 = c2_len > hard_limit
             if too_long_1.any():

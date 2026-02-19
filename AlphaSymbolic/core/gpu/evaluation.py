@@ -321,16 +321,22 @@ class GPUEvaluator:
         """
         B, L = population.shape
         
-        # Standardize x to [Vars, Samples]
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
+        # Robust Shape Detection (Sync with evaluate_batch)
+        num_vars_grammar = len(self.grammar.active_variables)
         if x.dim() == 2:
-            if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
+            if x.shape[1] == num_vars_grammar and x.shape[0] != num_vars_grammar:
+                x = x.T.contiguous()
+            elif x.shape[0] == num_vars_grammar and x.shape[1] != num_vars_grammar:
+                pass
+            elif x.shape[0] == num_vars_grammar and x.shape[1] == num_vars_grammar:
+                n_samples = y_target.shape[0]
+                if x.shape[1] == n_samples:
+                    pass
+                elif x.shape[0] == n_samples:
+                    x = x.T.contiguous()
+            elif x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
                 pass
             elif x.shape[0] == y_target.shape[0] and x.shape[0] != x.shape[1]:
-                # FIX N3: guard against square matrices (num_vars == num_samples).
-                # Without it, x[V,V] was incorrectly transposed even though it was
-                # already in [Vars, Samples] format.
                 x = x.T.contiguous()
         
         N_samples = x.shape[1]

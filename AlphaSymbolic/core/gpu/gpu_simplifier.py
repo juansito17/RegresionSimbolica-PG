@@ -120,6 +120,13 @@ class GPUSymbolicSimplifier:
             elif t == 'e':
                 self._cached_val_table[tid] = math.e
         self._cached_lit_vals = self._cached_val_table[self.literal_ids] if self.literal_ids.numel() > 0 else None
+        
+        # FIX N8 (Optimización): Cachear versiones CPU para evitar transferencias en bucles
+        self._lit_vals_cpu = None
+        if self._cached_lit_vals is not None:
+            self._lit_vals_cpu = self._cached_lit_vals.cpu().numpy() if self._cached_lit_vals.is_cuda else self._cached_lit_vals.numpy()
+        
+        self._lit_ids_cpu = self.literal_ids.cpu().numpy() if self.literal_ids.is_cuda else self.literal_ids.numpy()
                 
     def _is_zero(self, token_ids: torch.Tensor) -> torch.Tensor:
         by_id = (token_ids.unsqueeze(-1) == self.zero_ids).any(dim=-1) if self.zero_ids.numel() > 0 else torch.zeros_like(token_ids, dtype=torch.bool)
@@ -208,12 +215,9 @@ class GPUSymbolicSimplifier:
         if self._cached_lit_vals is not None and self.literal_ids.numel() > 0:
             tol = self._fold_abs_tol + self._fold_rel_tol * abs(value)
             # Acceder a valores CPU directamente
-            lit_vals_cpu = self._cached_lit_vals.cpu().numpy() if self._cached_lit_vals.is_cuda else self._cached_lit_vals.numpy()
-            lit_ids_cpu = self.literal_ids.cpu().numpy() if self.literal_ids.is_cuda else self.literal_ids.numpy()
-            
-            for i, lit_val in enumerate(lit_vals_cpu):
+            for i, lit_val in enumerate(self._lit_vals_cpu):
                 if abs(value - lit_val) <= tol:
-                    return int(lit_ids_cpu[i])
+                    return int(self._lit_ids_cpu[i])
         
         return -1
 
@@ -241,10 +245,7 @@ class GPUSymbolicSimplifier:
         # We process right-to-left, tracking how many items each position needs
         need = arities.clone()  # [B, L] - remaining items needed
         
-        for j in range(L - 1, -1, -1):
-            # For position j, walk backward accumulating needs
-            # This is still O(L) total backward passes, but each is a vectorized step
-            pass
+        # Strategy: Process each ending position j in parallel across batch B
         
         # More efficient approach: backward cumulative scan
         # For each position j, the subtree start is determined by walking backward

@@ -91,9 +91,9 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = False
+    USE_INITIAL_FORMULA = True
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "(lgamma(x0) + (sqrt((x0 + ((sqrt(x0) + gamma(log(5))) + ((exp(2.85944295) - (exp(x1) / 5)) / fact(((lgamma(x0) / 3.26135468) - x2)))))) - x0))"
+    INITIAL_FORMULA_STRING = "log(((((lgamma(x0) * pi) + ((1 + 1.10762465)**(e + lgamma((x0 - 3.24382305))))) - lgamma(fact(x1))) + (sqrt(x0)**((exp(2) - x1)**x2))))"
 
     USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
 
@@ -233,7 +233,6 @@ class GpuGlobals:
     LIBRARY_UPDATE_INTERVAL = 10          # Update library every N generations
     LIBRARY_INJECT_FRACTION = 0.05       # Fraction of mutation bank to fill with library blocks
     LIBRARY_CAPACITY = 512               # Number of slots in the library hash table
-
 
     # --- SOTA P1: Pareto Multi-Objective Selection (NSGA-II style) ---
     # Balances RMSE (accuracy) vs tree complexity (parsimony) in selection.
