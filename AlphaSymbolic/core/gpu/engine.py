@@ -2243,7 +2243,16 @@ class TensorGeneticEngine:
                         curr = min(chunk_size, total_cross - c_ptr)
                         sub_idx = parents_idx[c_ptr : c_ptr + curr]
                         parents = population[sub_idx]
-                        offspring = self.operators.crossover_population(parents, 1.0)
+                        # --- SOTA P0: Headless Chicken Crossover ---
+                        # HEADLESS_CHICKEN_RATE% of pairs get a fresh random parent 2,
+                        # forcing structural exploration even in converged populations.
+                        _chicken_rate = float(getattr(GpuGlobals, 'HEADLESS_CHICKEN_RATE', 0.15))
+                        if _chicken_rate > 0:
+                            offspring = self.operators.headless_chicken_crossover(
+                                parents, pop_constants[sub_idx], 1.0, _chicken_rate
+                            )
+                        else:
+                            offspring = self.operators.crossover_population(parents, 1.0)
                         next_pop[p_ptr : p_ptr + curr] = offspring
                         next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
                         p_ptr += curr
@@ -2330,6 +2339,16 @@ class TensorGeneticEngine:
                      # Non-fatal, just skip simplification for this batch
                  # next_c[top_global_idx] = ... (constants preserved if not PADed)
             
+            # --- SOTA P0: Constant Perturbation ---
+            # Apply multiplicative Gaussian noise to a fraction of constants before each generation.
+            # Complements PSO (global search) with cheap local neighbourhood exploration.
+            # Runs on next_c regardless of CUDA or Python path.
+            _cp_rate = float(getattr(GpuGlobals, 'CONSTANT_PERTURBATION_RATE', 0.05))
+            _cp_sigma = float(getattr(GpuGlobals, 'CONSTANT_PERTURBATION_SIGMA', 0.01))
+            if _cp_rate > 0 and next_c is not None:
+                # Skip slot 0 (global elite) to preserve the known best constants
+                self.operators.constant_perturbation(next_c[1:], rate=_cp_rate, sigma=_cp_sigma)
+
             # Swap Buffers
             population = next_pop
             pop_constants = next_c

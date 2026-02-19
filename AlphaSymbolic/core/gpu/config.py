@@ -51,7 +51,7 @@ class GpuGlobals:
     # ============================================================
     # Population Size
     # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
-    POP_SIZE = 4_000_000
+    POP_SIZE = 1_000_000
     GENERATIONS = 1_000_000
     
     # Islands
@@ -183,6 +183,19 @@ class GpuGlobals:
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
     DEDUPLICATION_INTERVAL = 50
+    
+    # --- SOTA P0: Headless Chicken Crossover ---
+    # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
+    # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
+    # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
+    HEADLESS_CHICKEN_RATE = 0.15       # 15% de crossovers usan un padre aleatorio
+    
+    # --- SOTA P0: Constant Perturbation Mutation ---
+    # Perturba constantes con ruido gaussiano multiplicativo. Complementa PSO:
+    # PSO explora globalmente en el espacio de constantes, perturbación explora localmente.
+    # Especialmente efectivo para escapar mínimos de constantes donde PSO se estancó.
+    CONSTANT_PERTURBATION_RATE = 0.05  # 5% de individuos perturbados por generación
+    CONSTANT_PERTURBATION_SIGMA = 0.01 # 1% ruido relativo (|c| * sigma)
     PREVENT_DUPLICATES = True
     
     # Mutation Bank

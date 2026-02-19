@@ -975,3 +975,130 @@ class GPUOperators:
             constants[invalid_idx] = fresh_consts
 
         return population, constants, n_invalid
+
+    # ================================================================
+    #   SOTA P0 — Constant Perturbation
+    # ================================================================
+    def constant_perturbation(
+        self,
+        constants: torch.Tensor,
+        rate: float = 0.05,
+        sigma: float = 0.01,
+    ) -> torch.Tensor:
+        """
+        Apply multiplicative Gaussian noise to a fraction of constants.
+
+        For each constant c, the perturbed value is:
+            c' = c + N(0, |c| * sigma + eps)
+
+        This keeps constants near their current value while exploring
+        the local neighbourhood — complementary to PSO which explores
+        globally.
+
+        Args:
+            constants: [B, K] float tensor of current constant values.
+            rate:  Fraction of individuals that receive perturbation.
+            sigma: Relative noise magnitude (0.01 = 1% of |c|).
+
+        Returns:
+            constants tensor (modified in-place, also returned for chaining).
+        """
+        B, K = constants.shape
+        # Decide which individuals get perturbed
+        perturb_mask = torch.rand(B, device=self.device) < rate  # [B]
+        if not perturb_mask.any():
+            return constants
+
+        # Build scale: |c| * sigma + small absolute floor (avoids 0-noise for c≈0)
+        eps = 1e-4
+        scale = constants[perturb_mask].abs() * sigma + eps  # [n_pert, K]
+
+        noise = torch.randn(scale.shape, device=self.device, dtype=constants.dtype) * scale
+        constants[perturb_mask] = constants[perturb_mask] + noise
+
+        # Clamp to valid constant range
+        c_min = float(getattr(GpuGlobals, 'CONSTANT_MIN_VALUE', -10.0))
+        c_max = float(getattr(GpuGlobals, 'CONSTANT_MAX_VALUE', 10.0))
+        constants.clamp_(c_min, c_max)
+
+        return constants
+
+    # ================================================================
+    #   SOTA P0 — Headless Chicken Crossover
+    # ================================================================
+    def headless_chicken_crossover(
+        self,
+        population: torch.Tensor,
+        constants: torch.Tensor,
+        crossover_rate: float,
+        chicken_rate: float = 0.15,
+    ) -> torch.Tensor:
+        """
+        Headless Chicken Crossover — a classical bloat-control / diversity operator.
+
+        For `chicken_rate` fraction of crossover pairs, replace parent 2 with a
+        freshly generated random individual before crossing. This guarantees
+        structural diversity even when the population has converged to a single
+        locally-optimal tree skeleton.
+
+        Algorithm:
+            1. Select pairs as normal.
+            2. For `chicken_rate` fraction of pairs, overwrite parent2 with random.
+            3. Run standard subtree crossover.
+
+        Args:
+            population:    [B, L] integer tensor (RPN token ids).
+            constants:     [B, K] float tensor of constants.
+            crossover_rate: Fraction of individuals participating in crossover.
+            chicken_rate:  Fraction of crossover pairs with random second parent.
+
+        Returns:
+            New population after crossover (same shape as input).
+        """
+        B, L = population.shape
+        n_pairs = int(B * 0.5 * crossover_rate)
+        if n_pairs == 0:
+            return population
+
+        perm = torch.randperm(B, device=self.device)
+        p1_idx = perm[:n_pairs * 2:2]
+        p2_idx = perm[1:n_pairs * 2:2]
+
+        # Decide which pairs get the chicken treatment
+        n_p = p1_idx.shape[0]
+        chicken_mask = torch.rand(n_p, device=self.device) < chicken_rate  # [n_p]
+
+        parents_1 = population[p1_idx].clone()
+        parents_2 = population[p2_idx].clone()
+
+        if chicken_mask.any():
+            n_chicken = int(chicken_mask.sum().item())
+            # Replace those parent2 slots with fresh random individuals
+            fresh_pop = self.generate_random_population(n_chicken)  # [n_chicken, max_len]
+
+            # Handle length mismatch between fresh_pop and L
+            if fresh_pop.shape[1] < L:
+                pad = torch.full(
+                    (n_chicken, L - fresh_pop.shape[1]), PAD_ID,
+                    dtype=self.pop_dtype, device=self.device
+                )
+                fresh_pop = torch.cat([fresh_pop, pad], dim=1)
+            elif fresh_pop.shape[1] > L:
+                fresh_pop = fresh_pop[:, :L]
+
+            parents_2[chicken_mask] = fresh_pop
+
+        # Now perform regular subtree crossover on (parents_1, parents_2)
+        combined = torch.cat([parents_1, parents_2], dim=0)  # [2*n_p, L]
+        # Interleave so crossover_population sees pairs at adjacent indices
+        interleaved = torch.empty_like(combined)
+        interleaved[0::2] = parents_1
+        interleaved[1::2] = parents_2
+
+        crossed = self.crossover_population(interleaved, crossover_rate=1.0)
+
+        # Write children back to original population
+        population[p1_idx] = crossed[0::2]
+        population[p2_idx] = crossed[1::2]
+
+        return population
