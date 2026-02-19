@@ -89,6 +89,18 @@ class GPUSymbolicSimplifier:
         self.ID_5 = self.grammar.token_to_id.get('5', -1)
         self.ID_6 = self.grammar.token_to_id.get('6', -1)
         self.ID_PI = self.grammar.token_to_id.get('pi', -1)
+        self.OP_0 = self.zero_ids[0].item() if self.zero_ids.numel() > 0 else -1
+        self.OP_1 = self.one_ids[0].item() if self.one_ids.numel() > 0 else -1
+        self.OP_2 = self.two_ids[0].item() if self.two_ids.numel() > 0 else -1
+        self.OP_POW_ID = self.OP_POW_IDS[0].item() if self.OP_POW_IDS.numel() > 0 else -1
+        self.OP_LOG_ID = self.OP_LOG_IDS[0].item() if self.OP_LOG_IDS.numel() > 0 else -1
+        self.OP_EXP_ID = self.OP_EXP_IDS[0].item() if self.OP_EXP_IDS.numel() > 0 else -1
+        self.OP_NEG_ID = self.OP_NEG_IDS[0].item() if self.OP_NEG_IDS.numel() > 0 else -1
+        self.OP_SQRT_ID = self.OP_SQRT_IDS[0].item() if self.OP_SQRT_IDS.numel() > 0 else -1
+        self.OP_ABS_ID = self.OP_ABS_IDS[0].item() if self.OP_ABS_IDS.numel() > 0 else -1
+        self.OP_FACT_ID = self.OP_FACT_IDS[0].item() if self.OP_FACT_IDS.numel() > 0 else -1
+        self.OP_GAMMA_ID = self.OP_GAMMA_IDS[0].item() if self.OP_GAMMA_IDS.numel() > 0 else -1
+        self.OP_LGAMMA_ID = self.OP_LGAMMA_IDS[0].item() if self.OP_LGAMMA_IDS.numel() > 0 else -1
         self.ID_E = self.grammar.token_to_id.get('e', -1)
         
     def _build_arity_table(self):
@@ -348,20 +360,16 @@ class GPUSymbolicSimplifier:
                         device=self.device, dtype=torch.float32
                     ).contiguous() if self.literal_ids.numel() > 0 else torch.empty(0, device=self.device, dtype=torch.float32)
                 
-                # Get scalar opcode IDs (use first element or -1 if absent)
-                def _first_or(ids_tensor, default=-1):
-                    return ids_tensor[0].item() if ids_tensor.numel() > 0 else default
-                
                 rpn_cuda_native.simplify_batch(
                     pop, arities_int,
                     self._cuda_val_table, self._cuda_literal_ids, self._cuda_literal_vals,
                     max_passes,
                     self.OP_PLUS, self.OP_MINUS, self.OP_MULT, self.OP_DIV,
-                    _first_or(self.OP_NEG_IDS), self.grammar.token_to_id.get('%', self.grammar.token_to_id.get('mod', -1)), _first_or(self.OP_POW_IDS),
+                    self.OP_NEG_ID, self.grammar.token_to_id.get('%', self.grammar.token_to_id.get('mod', -1)), self.OP_POW_ID,
                     self.OP_SIN, self.OP_COS, self.OP_TAN,
                     self.OP_ASIN, self.OP_ACOS, self.OP_ATAN,
-                    _first_or(self.OP_LOG_IDS), _first_or(self.OP_EXP_IDS), _first_or(self.OP_SQRT_IDS), _first_or(self.OP_ABS_IDS),
-                    _first_or(self.OP_GAMMA_IDS), _first_or(self.OP_LGAMMA_IDS),
+                    self.OP_LOG_ID, self.OP_EXP_ID, self.OP_SQRT_ID, self.OP_ABS_ID,
+                    self.OP_GAMMA_ID, self.OP_LGAMMA_ID,
                     self.OP_FLOOR, self.OP_CEIL, self.OP_SIGN,
                     self.ID_0, self.ID_1, self.ID_2, self.ID_3, self.ID_4, self.ID_5, self.ID_6
                 )
@@ -399,9 +407,9 @@ class GPUSymbolicSimplifier:
         if original_population is None:
             original_population = pop
 
-        total_simplified = 0
+        total_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         for _ in range(max_passes):
-            n_pass = 0
+            n_pass = torch.tensor(0, dtype=torch.long, device=self.device)
             
             # Pre-compute subtree starts ONCE per pass (replaces hundreds of individual calls)
             starts_cache = self._precompute_all_subtree_starts(pop)
@@ -432,7 +440,7 @@ class GPUSymbolicSimplifier:
             pop, n = self._apply_modulo_rules(pop, starts_cache); n_pass += n
             pop, n = self._apply_constant_folding(pop, starts_cache); n_pass += n
             pop, n = self._compact_formulas(pop); n_pass += n
-            if n_pass == 0: break
+            if n_pass.item() == 0: break
             total_simplified += n_pass
 
         # Validation Step: Revert rows that became invalid (unbalanced)
@@ -441,7 +449,7 @@ class GPUSymbolicSimplifier:
             invalid_indices = torch.where(~is_valid)[0]
             pop[invalid_indices] = original_population[invalid_indices]
 
-        return pop, constants, total_simplified
+        return pop, constants, total_simplified.item()
     
     def _validate_batch_stack(self, population: torch.Tensor) -> torch.Tensor:
         """
@@ -511,10 +519,10 @@ class GPUSymbolicSimplifier:
         
         return cond_final & has_tokens & cond_no_underflow
     
-    def _apply_identity_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_identity_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         o_id = self.ID_1
         for j in range(2, L):
             op = pop[:, j]
@@ -535,7 +543,7 @@ class GPUSymbolicSimplifier:
             # Apply unconditionally — torch.where is a no-op on empty masks
             pop[:, j-1] = torch.where(to_skip_arg2, PAD_ID, pop[:, j-1])
             pop[:, j] = torch.where(to_skip_arg2, PAD_ID, pop[:, j])
-            n_simplified += to_skip_arg2.sum().item()
+            n_simplified += to_skip_arg2.sum()
             
             # 0+x, 1*x -> skip arg1/op (keep arg2)
             s1 = self._get_subtree_starts_cached(starts_cache, s2-1) if starts_cache is not None else self._get_subtree_starts(pop, s2-1)
@@ -548,7 +556,7 @@ class GPUSymbolicSimplifier:
             rows = torch.where(to_skip_arg1)[0]
             pop[rows, (s2-1)[rows]] = PAD_ID
             pop[rows, j] = PAD_ID
-            n_simplified += to_skip_arg1.sum().item()
+            n_simplified += to_skip_arg1.sum()
             
             # Special Constant Result Rules: x^0 -> 1, 1^x -> 1
             match_const_1 = is_pow & (is_z2 | is_o1)
@@ -562,7 +570,7 @@ class GPUSymbolicSimplifier:
                 pos = torch.arange(L, device=self.device).reshape(1, L)
                 sub_pop[(pos > start.unsqueeze(1)) & (pos <= j)] = PAD_ID
                 pop[rows] = sub_pop
-                n_simplified += match_const_1.sum().item()
+                n_simplified += match_const_1.sum()
         return pop, n_simplified
 
     def _apply_commutative_normalization(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
@@ -638,7 +646,7 @@ class GPUSymbolicSimplifier:
                         rows_v = rows_simple[valid_swap]
                         pop[rows_v, cols_s1[valid_swap]] = vals_2[valid_swap]
                         pop[rows_v, cols_s2[valid_swap]] = vals_1[valid_swap]
-                        n_swapped += valid_swap.sum().item()
+                        n_swapped += valid_swap.sum()
                     
                     # Remove simple swaps from remaining potential swaps to avoid double handling
                     should_swap &= ~is_simple_swap
@@ -658,10 +666,10 @@ class GPUSymbolicSimplifier:
                     
         return pop, n_swapped
 
-    def _apply_zero_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_zero_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         z_id = self.zero_ids[0].item() if self.zero_ids.numel() > 0 else self.CONST_0
         neg_id = self.OP_NEG_IDS[0].item() if self.OP_NEG_IDS.numel() > 0 else -1
         for j in range(2, L):
@@ -698,7 +706,7 @@ class GPUSymbolicSimplifier:
                 # Write back to main population
                 pop[rows] = sub_pop
                 
-                n_simplified += match.sum().item()
+                n_simplified += match.sum()
 
             # 0 - x -> neg(x)
             if neg_id != -1:
@@ -748,10 +756,10 @@ class GPUSymbolicSimplifier:
 
         return pop, n_simplified
 
-    def _apply_self_cancellation_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+    def _apply_self_cancellation_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         z_id, o_id = (self.zero_ids[0].item() if self.zero_ids.numel()>0 else self.CONST_0), (self.one_ids[0].item() if self.one_ids.numel()>0 else self.CONST_1)
         for j in range(2, L):
             op = pop[:, j]
@@ -765,10 +773,10 @@ class GPUSymbolicSimplifier:
             pop[:, j-2] = torch.where(is_m, z_id, torch.where(is_d, o_id, pop[:, j-2]))
             pop[:, j-1] = torch.where(match_single, PAD_ID, pop[:, j-1])
             pop[:, j] = torch.where(match_single, PAD_ID, pop[:, j])
-            n_simplified += match_single.sum().item()
+            n_simplified += match_single.sum()
         return pop, n_simplified
 
-    def _apply_advanced_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_advanced_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply advanced rules: 
         - neg(neg(x)) = x
@@ -898,9 +906,9 @@ class GPUSymbolicSimplifier:
                     pop[b, s1[b]+1:j+1] = PAD_ID
                     counts[b] += 1
 
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _apply_associative_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_associative_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply associative/grouping rules:
         - x + (x + y) -> 2*x + y
@@ -908,7 +916,7 @@ class GPUSymbolicSimplifier:
         """
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         
         for j in range(4, L):
             op = pop[:, j]
@@ -1058,7 +1066,7 @@ class GPUSymbolicSimplifier:
 
         return pop, n_simplified
 
-    def _apply_term_consolidation(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_term_consolidation(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
@@ -1172,9 +1180,9 @@ class GPUSymbolicSimplifier:
                                 pop[b, s1+len(new):j+1] = PAD_ID
                                 counts[b] += 1
 
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _apply_modulo_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_modulo_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
@@ -1194,9 +1202,9 @@ class GPUSymbolicSimplifier:
                 pop[:, j-1] = torch.where(match_self, PAD_ID, pop[:, j-1])
                 pop[:, j] = torch.where(match_self, PAD_ID, pop[:, j])
                 counts += match_self.long()
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _apply_constant_folding(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_constant_folding(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
@@ -1277,9 +1285,9 @@ class GPUSymbolicSimplifier:
                     pop[:, j] = torch.where(match_close, PAD_ID, pop[:, j])
                     counts += match_close.long()
         
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+    def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # FIX B6: El count anterior era is_pad.any(dim=1).sum(), que equivale al numero de
         # filas con ALGUN PAD (practicamente todas las formulas cortas). Eso hacia que
         # n_pass nunca fuera 0, evitando el early-exit del bucle de simplificacion y
@@ -1290,7 +1298,7 @@ class GPUSymbolicSimplifier:
         sort_key = is_pad.long() * L + torch.arange(L, device=self.device).unsqueeze(0)
         _, idx = torch.sort(sort_key, dim=1, stable=True)
         compacted = torch.gather(population, 1, idx)
-        n_changed = int((compacted != population).any(dim=1).sum().item())
+        n_changed = (compacted != population).any(dim=1).sum()
         return compacted, n_changed
 
     def _get_subtree_starts(self, population: torch.Tensor, end_indices) -> torch.Tensor:

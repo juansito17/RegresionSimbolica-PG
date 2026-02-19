@@ -418,7 +418,7 @@ class GPUOperators:
     def _validate_rpn_batch_custom(self, population: torch.Tensor, max_len: int) -> torch.Tensor:
         """Validate RPN batch for custom-length populations."""
         B, L = population.shape
-        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1)]
+        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1).long()]
         deltas = 1 - arities
         is_pad = (population == PAD_ID)
         deltas[is_pad] = 0

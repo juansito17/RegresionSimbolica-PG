@@ -1650,14 +1650,16 @@ class TensorGeneticEngine:
                 # El método anterior (sum()) producía el mismo hash para [1,2,3] y [3,2,1]
                 _curr_rpn_hash = None
                 if best_rpn is not None:
-                    # Hash polinomial: sum(token_i * base^i) - diferente orden = diferente hash
-                    base = 31
-                    indices = torch.arange(len(best_rpn), device=self.device)
-                    non_pad_mask = best_rpn != PAD_ID
-                    if non_pad_mask.any():
-                        _curr_rpn_hash = int((best_rpn[non_pad_mask].long() * (base ** indices[:non_pad_mask.sum().item()])).sum().item())
-                    else:
-                        _curr_rpn_hash = 0
+                    # Pure tensor polynomial hash: sum(token_i * base^i)
+                    # Eliminates multiple .item() / .any() CPU syncs which are very expensive
+                    if not hasattr(self, '_hash_powers'):
+                        # Cache powers to avoid re-calculating inside the tight loop
+                        self._hash_powers = (31 ** torch.arange(self.max_len, device=self.device)).long()
+                    
+                    # Pad tokens don't contribute to structural hash
+                    masked_rpn = torch.where(best_rpn != PAD_ID, best_rpn.long(), torch.tensor(0, device=self.device))
+                    hash_tensor = torch.sum(masked_rpn * self._hash_powers[:len(best_rpn)])
+                    _curr_rpn_hash = hash_tensor.item() # ONLY ONE SYNC
                 
                 # Decide whether to skip PSO this round
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
