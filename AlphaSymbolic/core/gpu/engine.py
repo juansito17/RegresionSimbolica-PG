@@ -8,6 +8,8 @@ from core.grammar import ExpressionTree
 from .config import GpuGlobals
 from .sniper import Sniper
 from .pareto import ParetoOptimizer
+from .library_learning import LibraryLearner
+
 from .pattern_memory import PatternMemory
 
 # New Modules
@@ -94,6 +96,16 @@ class TensorGeneticEngine:
         # --- SOTA P1: Pareto Optimizer (NSGA-II) ---
         self.pareto_optimizer = ParetoOptimizer(device=self.device, dtype=self.dtype)
         
+        # --- SOTA P2: Library Learning ---
+        self.library_learner = LibraryLearner(
+            grammar=self.grammar,
+            pop_size=self.pop_size,
+            max_len=self.max_len,
+            device=self.device,
+            dtype=self.dtype,
+            capacity=int(getattr(GpuGlobals, 'LIBRARY_CAPACITY', 512)),
+        )
+
 
         # --- P0-6: Cache CudaRPNVM and arity tensors for evolve_generation_cuda ---
         self._cached_vm = None
@@ -1430,6 +1442,14 @@ class TensorGeneticEngine:
         # NO migrar y NO inyectar el global best → la población fresca se desarrolla sola.
         _post_restart_cooldown = 0
         
+        # --- SOTA P2: ALPS — individual age tracking ---
+        # individual_ages[i] = number of generations individual i has been alive.
+        # Age grows each generation; crossover/mutation offspring reset to 0.
+        # Age-based penalty is added to selection_metric, giving younger individuals an advantage.
+        _alps_enabled = getattr(GpuGlobals, 'USE_ALPS', False)
+        individual_ages = torch.zeros(self.pop_size, dtype=torch.long, device=self.device)
+
+        
         # --- ANTI-STAG: Adaptive PSO tracking ---
         # Saltar PSO cuando la estructura del best no cambió (constantes ya saturadas).
         # _last_pso_rpn_hash: hash del RPN en el último run de PSO.
@@ -2066,8 +2086,34 @@ class TensorGeneticEngine:
             # Evolution Step (Vectorized Island Model + Double Buffering)
             island_offsets = self._island_offsets
 
+            # --- SOTA P2: ALPS — age tracking ---
+            # Increment every individual's age each generation.
+            # Layer-0 reseed: periodically inject fresh random individuals
+            # to ensure the "young" layer never becomes dominated by old elites.
+            if _alps_enabled:
+                individual_ages.add_(1)
+                _alps_reseed_interval = int(getattr(GpuGlobals, 'ALPS_LAYER0_RESEED_INTERVAL', 50))
+                _alps_reseed_frac = float(getattr(GpuGlobals, 'ALPS_LAYER0_RESEED_FRACTION', 0.01))
+                if generations % _alps_reseed_interval == 0 and generations > 0:
+                    n_reseed = max(1, int(self.pop_size * _alps_reseed_frac))
+                    # Find youngest individuals (smallest ages outside elite slot 0)
+                    _reseed_idx = torch.topk(individual_ages[1:], n_reseed, largest=False).indices + 1
+                    fresh = self.operators.generate_random_population(n_reseed)
+                    if fresh.shape[1] != population.shape[1]:
+                        _L = population.shape[1]
+                        if fresh.shape[1] < _L:
+                            from .grammar import PAD_ID as _PAD
+                            _pad = torch.full((n_reseed, _L - fresh.shape[1]), _PAD, dtype=population.dtype, device=self.device)
+                            fresh = torch.cat([fresh, _pad], dim=1)
+                        else:
+                            fresh = fresh[:, :_L]
+                    population[_reseed_idx] = fresh
+                    pop_constants[_reseed_idx].uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                    individual_ages[_reseed_idx] = 0
+
             # Adaptive parsimony (general): increase structural pressure during stagnation,
             # especially when already close to a good fit to avoid bloat plateaus.
+
             dynamic_complexity_penalty = COMPLEXITY_PENALTY
             if global_stagnation > GpuGlobals.MUTATION_STAGNATION_TRIGGER:
                 stag_span = max(1, GpuGlobals.MUTATION_STAGNATION_TRIGGER * 2)
@@ -2154,6 +2200,17 @@ class TensorGeneticEngine:
                     if _pw > 0:
                         selection_metric.add_(self._pareto_rank_buf, alpha=_pw)
                 
+                # --- SOTA P2: ALPS — age penalty in selection metric ---
+                # Normalize ages to [0, 1] by max_age, then penalize with weight.
+                # This ensures individuals that have existed longer face slightly higher
+                # selection pressure, rewarding structural novelty.
+                if _alps_enabled:
+                    _alps_pw = float(getattr(GpuGlobals, 'ALPS_AGE_PENALTY_WEIGHT', 0.05))
+                    if _alps_pw > 0:
+                        _age_max = float(individual_ages.max().item()) + 1.0
+                        _norm_ages = individual_ages.to(self.dtype) / _age_max
+                        selection_metric.add_(_norm_ages, alpha=_alps_pw)
+                
                 # Adaptive tournament size: reduce during stagnation to allow more diversity.
                 # Durante global stagnation extendida (>20 gens), bajar floor a 2 para
                 # reducir presión de selección y dar tiempo a estructuras nuevas de crecer.
@@ -2161,9 +2218,23 @@ class TensorGeneticEngine:
                 effective_tournament = max(_tour_floor, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - (stagnation + global_stagnation // 5) // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
+                
+                # --- SOTA P2: Library Learning (Update & Inject) ---
+                if getattr(GpuGlobals, 'USE_LIBRARY_LEARNING', False):
+                    # 1. Update Library from current population
+                    _lib_interval = int(getattr(GpuGlobals, 'LIBRARY_UPDATE_INTERVAL', 10))
+                    if generations % _lib_interval == 0:
+                        self.library_learner.update(population, fitness_rmse)
+                
                 # Refresh Mutation Bank periodically for structural innovation
                 if self.mutation_bank is None or generations % GpuGlobals.MUTATION_BANK_REFRESH_INTERVAL == 0:
                     self.mutation_bank = self.operators.generate_random_population(GpuGlobals.MUTATION_BANK_SIZE)
+                    
+                    # 2. Inject Library blocks into Mutation Bank
+                    if getattr(GpuGlobals, 'USE_LIBRARY_LEARNING', False):
+                        _lib_frac = float(getattr(GpuGlobals, 'LIBRARY_INJECT_FRACTION', 0.05))
+                        self.library_learner.inject_into_mutation_bank(self.mutation_bank, fraction=_lib_frac)
+
 
                 next_pop, next_c, next_fit = self.evolve_generation_cuda(
                     population, pop_constants, selection_metric, abs_errors, x_t, y_t, self.mutation_bank,
@@ -2281,6 +2352,14 @@ class TensorGeneticEngine:
                     _pw2 = float(getattr(GpuGlobals, 'PARETO_RANK_WEIGHT', 0.15))
                     if _pw2 > 0:
                         selection_metric.add_(self._pareto_rank_buf, alpha=_pw2)
+                
+                # --- SOTA P2: ALPS — age penalty (Python path) ---
+                if _alps_enabled:
+                    _alps_pw2 = float(getattr(GpuGlobals, 'ALPS_AGE_PENALTY_WEIGHT', 0.05))
+                    if _alps_pw2 > 0:
+                        _age_max2 = float(individual_ages.max().item()) + 1.0
+                        _norm_ages2 = individual_ages.to(self.dtype) / _age_max2
+                        selection_metric.add_(_norm_ages2, alpha=_alps_pw2)
                 
                 def get_island_parents(n_needed_per_island):
                     rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)

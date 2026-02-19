@@ -196,6 +196,20 @@ class GpuGlobals:
     # This gives small subtrees equal probability of being selected, reducing bloat.
     DEPTH_FAIR_CROSSOVER = True        # Enable depth-fair subtree crossover
 
+    # --- SOTA P2: ALPS (Age-Layered Population Structure) ---
+    # ALPS prevents elite stagnation by tracking the age of each individual.
+    # Older individuals in early layers are penalized during selection,
+    # giving younger, freshly produced individuals a better chance.
+    # Layer 0 is periodically reseeded with fresh random individuals.
+    # Based on: Hornby (2006) — no single algorithm dominates ALPS.
+    USE_ALPS = True                    # Enable age-layered selection pressure
+    ALPS_AGE_GAP = 10                  # Gens between layer boundaries (layer_idx = age // gap)
+    ALPS_MAX_LAYER = 5                 # Max layer index (beyond = capped, treated as =max)
+    ALPS_AGE_PENALTY_WEIGHT = 0.05    # Weight of age penalty in selection_metric
+    ALPS_LAYER0_RESEED_INTERVAL = 50  # Every N gens, reseed layer-0 individuals from scratch
+    ALPS_LAYER0_RESEED_FRACTION = 0.01 # Fraction of pop_size to reseed as fresh individuals
+
+
     
     # --- SOTA P0: Constant Perturbation Mutation ---
     # Perturba constantes con ruido gaussiano multiplicativo. Complementa PSO:
@@ -208,6 +222,18 @@ class GpuGlobals:
     # Mutation Bank
     MUTATION_BANK_SIZE = 2000
     MUTATION_BANK_REFRESH_INTERVAL = 100  # OPTIMIZED: less overhead (was 50)
+
+    # --- SOTA P2: Library Learning ---
+    # Extracts frequently-found, high-fitness subtrees and reuses them
+    # as building blocks — injection of proven structural patterns.
+    # Inspired by LaSR (Li et al., 2024).
+    USE_LIBRARY_LEARNING = True           # Enable library learning
+    LIBRARY_MAX_BLOCK_LEN = 8             # Max token length of stored subtrees
+    LIBRARY_TOP_K_FRACTION = 0.05        # Top-% of pop to scan for subtrees
+    LIBRARY_UPDATE_INTERVAL = 10          # Update library every N generations
+    LIBRARY_INJECT_FRACTION = 0.05       # Fraction of mutation bank to fill with library blocks
+    LIBRARY_CAPACITY = 512               # Number of slots in the library hash table
+
 
     # --- SOTA P1: Pareto Multi-Objective Selection (NSGA-II style) ---
     # Balances RMSE (accuracy) vs tree complexity (parsimony) in selection.
