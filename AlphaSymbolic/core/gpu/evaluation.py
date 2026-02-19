@@ -115,6 +115,8 @@ class GPUEvaluator:
         
         # Pre-process Target
         y_target_chunk = y_target.flatten().unsqueeze(0) # [1, N]
+        if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
+            log_target_chunk = torch.log(torch.abs(y_target_chunk) + 1.0)
         
         # Transpose X for Cupy VM: [N, Vars] -> NO, CUDA VM expects [Vars, N]
         # cupy_vm expects x as [Samples, Features] and expands population against it
@@ -152,9 +154,8 @@ class GPUEvaluator:
                 # We use abs() to handle negative predictions gracefully, though ideally models shouldn't produce them for count data.
                 # Clamp to avoid log(0)
                 log_pred = torch.log(torch.abs(preds_mat) + 1.0)
-                log_target = torch.log(torch.abs(y_target_chunk) + 1.0)
                 
-                diff = log_pred - log_target
+                diff = log_pred - log_target_chunk
                 sq_diff = diff**2
                 mse = torch.mean(sq_diff, dim=1) # [current_B]
                 

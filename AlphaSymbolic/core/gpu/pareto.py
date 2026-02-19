@@ -186,17 +186,21 @@ class ParetoOptimizer:
              
              # Objective 1: Fitness
              sorted_idx = torch.argsort(f_vals)
-             dists[sorted_idx[0]] = float('inf')
-             dists[sorted_idx[-1]] = float('inf')
-             r = f_vals[sorted_idx[-1]] - f_vals[sorted_idx[0]]
+             min_f = f_vals[sorted_idx[0]]
+             max_f = f_vals[sorted_idx[-1]]
+             r = max_f - min_f
+             dists[f_vals == min_f] = float('inf')
+             dists[f_vals == max_f] = float('inf')
              if r > 1e-9:
                  dists[sorted_idx[1:-1]] += (f_vals[sorted_idx[2:]] - f_vals[sorted_idx[:-2]]) / r
                  
              # Objective 2: Complexity
              sorted_idx = torch.argsort(c_vals)
-             dists[sorted_idx[0]] = float('inf')
-             dists[sorted_idx[-1]] = float('inf')
-             r = c_vals[sorted_idx[-1]] - c_vals[sorted_idx[0]]
+             min_c = c_vals[sorted_idx[0]]
+             max_c = c_vals[sorted_idx[-1]]
+             r = max_c - min_c
+             dists[c_vals == min_c] = float('inf')
+             dists[c_vals == max_c] = float('inf')
              if r > 1e-9:
                  dists[sorted_idx[1:-1]] += (c_vals[sorted_idx[2:]] - c_vals[sorted_idx[:-2]]) / r
                  
@@ -233,14 +237,16 @@ class ParetoOptimizer:
                 
                 # Fit
                 idx = torch.argsort(f_vals)
-                dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')
-                r = f_vals[idx[-1]] - f_vals[idx[0]]
+                min_f = f_vals[idx[0]]; max_f = f_vals[idx[-1]]
+                dists[f_vals == min_f] = float('inf'); dists[f_vals == max_f] = float('inf')
+                r = max_f - min_f
                 if r > 1e-9: dists[idx[1:-1]] += (f_vals[idx[2:]] - f_vals[idx[:-2]]) / r
                 
                 # Comp
                 idx = torch.argsort(c_vals)
-                dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')
-                r = c_vals[idx[-1]] - c_vals[idx[0]]
+                min_c = c_vals[idx[0]]; max_c = c_vals[idx[-1]]
+                dists[c_vals == min_c] = float('inf'); dists[c_vals == max_c] = float('inf')
+                r = max_c - min_c
                 if r > 1e-9: dists[idx[1:-1]] += (c_vals[idx[2:]] - c_vals[idx[:-2]]) / r
                 
                 _, best_local = torch.topk(dists, rem, largest=True) # Max crowding
@@ -263,12 +269,14 @@ class ParetoOptimizer:
              dists = torch.zeros(k, dtype=self.dtype, device=self.device)
              
              idx = torch.argsort(f_vals)
-             dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')
-             if (f_vals[idx[-1]]-f_vals[idx[0]]) > 1e-9: dists[idx[1:-1]] += (f_vals[idx[2:]]-f_vals[idx[:-2]])/(f_vals[idx[-1]]-f_vals[idx[0]])
+             min_f = f_vals[idx[0]]; max_f = f_vals[idx[-1]]
+             dists[f_vals == min_f] = float('inf'); dists[f_vals == max_f] = float('inf')
+             if (max_f - min_f) > 1e-9: dists[idx[1:-1]] += (f_vals[idx[2:]]-f_vals[idx[:-2]])/(max_f - min_f)
 
              idx = torch.argsort(c_vals)
-             dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf') 
-             if (c_vals[idx[-1]]-c_vals[idx[0]]) > 1e-9: dists[idx[1:-1]] += (c_vals[idx[2:]]-c_vals[idx[:-2]])/(c_vals[idx[-1]]-c_vals[idx[0]])
+             min_c = c_vals[idx[0]]; max_c = c_vals[idx[-1]]
+             dists[c_vals == min_c] = float('inf'); dists[c_vals == max_c] = float('inf') 
+             if (max_c - min_c) > 1e-9: dists[idx[1:-1]] += (c_vals[idx[2:]]-c_vals[idx[:-2]])/(max_c - min_c)
              
              _, top_idx = torch.topk(dists, self.max_front_size)
              front = front[top_idx]

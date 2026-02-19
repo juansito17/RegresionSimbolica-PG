@@ -668,7 +668,11 @@ class TensorGeneticEngine:
              
              fit_f32 = fitness.float()
              
-             rpn_cuda_native.tournament_selection(fit_f32, all_idx_mat, winner_indices)
+             dummy_errs = torch.empty((0, 0), dtype=torch.float32, device=self.device)
+             dummy_cases = torch.empty(0, dtype=torch.int32, device=self.device)
+             dummy_lengths = torch.empty(0, dtype=torch.int32, device=self.device)
+             
+             rpn_cuda_native.tournament_selection(fit_f32, dummy_errs, all_idx_mat, dummy_cases, winner_indices, dummy_lengths)
              
              return winner_indices
         except ImportError:
