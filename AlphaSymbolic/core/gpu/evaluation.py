@@ -57,14 +57,38 @@ class GPUEvaluator:
         # Expectation: x can be [Vars, Samples] (Legacy) or [Samples, Vars] (Standard)
         # We need internally: [Vars, Samples] so that x.T becomes [Samples, Vars] for VM
         
+        # FIX N1: Usar num_variables de la gramática como referencia cuando
+        # la matriz es cuadrada (num_vars == num_samples)
+        num_vars_grammar = len(self.grammar.active_variables)
+        
         if x.dim() == 2:
-            if x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
+            # Caso 1: Segunda dimensión coincide con num_variables y primera NO
+            # Claramente es [Samples, Vars] -> necesita transposición
+            if x.shape[1] == num_vars_grammar and x.shape[0] != num_vars_grammar:
+                x = x.T.contiguous()
+            # Caso 2: Primera dimensión coincide con num_variables y segunda NO
+            # Claramente es [Vars, Samples] -> correcto
+            elif x.shape[0] == num_vars_grammar and x.shape[1] != num_vars_grammar:
+                pass  # Formato correcto
+            # Caso 3: Matriz cuadrada donde AMBAS dimensiones coinciden con num_variables
+            # Usar y_target como referencia: samples = len(y_target)
+            elif x.shape[0] == num_vars_grammar and x.shape[1] == num_vars_grammar:
+                # Matriz cuadrada: ambas dimensiones son num_vars
+                # Verificar si el número de samples coincide con y_target
+                n_samples = y_target.shape[0]
+                if x.shape[1] == n_samples:
+                    # [Vars, Samples] - samples en segunda dimensión coinciden
+                    pass
+                elif x.shape[0] == n_samples:
+                    # [Samples, Vars] - samples en primera dimensión
+                    x = x.T.contiguous()
+                # Si ambas coinciden (extremadamente raro: num_vars == num_samples == len(y))
+                # Asumimos [Vars, Samples] por convención
+            # Fallback: lógica anterior para casos donde num_variables no coincide
+            elif x.shape[1] == y_target.shape[0] and x.shape[0] != y_target.shape[0]:
                 # Matches [Vars, Samples] - Do nothing
                 pass
             elif x.shape[0] == y_target.shape[0] and x.shape[0] != x.shape[1]:
-                # FIX N3: added `x.shape[0] != x.shape[1]` guard.
-                # Without it, square matrices (num_vars == num_samples) were
-                # incorrectly transposed, corrupting the evaluation entirely.
                 # Matches [Samples, Vars] -> Transpose
                 x = x.T.contiguous()
         

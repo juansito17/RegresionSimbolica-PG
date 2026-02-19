@@ -622,7 +622,7 @@ class GPUOperators:
         len_2_pre = start_2
         len_2_sub = end_2 - start_2 + 1
         
-        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'crossover_splicing'):
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'crossover_splicing') and parents.is_cuda:
              # CUDA Fast Splicing
              # Allocate children
              c1 = torch.full((n_pairs, L), PAD_ID, dtype=self.pop_dtype, device=self.device)
@@ -635,49 +635,74 @@ class GPUOperators:
                  c1, c2, PAD_ID
              )
         else:
-            # PyTorch Fallback
-            # Reconstruct Child 1
+            # PyTorch Fallback - FIX N9: Crossover producía RPNs inválidos
+            # Problemas identificados:
+            # 1. Los tensores escalares no se broadcastean correctamente
+            # 2. La asignación in-place de PAD_ID falla con tensores no escribibles
+            # 3. Selección de fuente incorrecta para las secciones post-crossover
+            
             grid = torch.arange(L, device=self.device).unsqueeze(0).expand(n_pairs, L)
             
+            # Child 1: pre from p1, mid from p2, post from p1
             cut_1 = len_1_pre + len_2_sub
             mask_c1_pre = (grid < len_1_pre.unsqueeze(1))
             mask_c1_mid = (grid >= len_1_pre.unsqueeze(1)) & (grid < cut_1.unsqueeze(1))
-            # post is rest
+            mask_c1_post = (grid >= cut_1.unsqueeze(1))
             
-            src_idx_c1 = torch.zeros((n_pairs, L), dtype=torch.long, device=self.device)
-            term_1 = grid
-            term_2 = grid - len_1_pre.unsqueeze(1) + start_2.unsqueeze(1)
-            term_3 = grid - cut_1.unsqueeze(1) + end_1.unsqueeze(1) + 1
+            # Índices de origen para cada sección del hijo 1
+            # Pre: índice directo de parents_1
+            # Mid: índice mapeado a parents_2 (subtree)
+            # Post: índice mapeado a parents_1 (después del subtree eliminado)
+            idx_from_p1_c1 = torch.where(mask_c1_pre, grid, 
+                                torch.where(mask_c1_post, grid - cut_1.unsqueeze(1) + end_1.unsqueeze(1) + 1, grid))
+            idx_from_p2_c1 = grid - len_1_pre.unsqueeze(1) + start_2.unsqueeze(1)
             
-            src_idx_c1 = torch.where(mask_c1_pre, term_1, 
-                           torch.where(mask_c1_mid, term_2, term_3))
-                           
-            # Child 2
+            # Seleccionar fuente: p1 para pre/post, p2 para mid
+            use_p2_c1 = mask_c1_mid.long()  # 1 si viene de p2, 0 si viene de p1
+            
+            # Gather con selección de fuente
+            safe_idx_p1_c1 = torch.clamp(idx_from_p1_c1, 0, L-1)
+            safe_idx_p2_c1 = torch.clamp(idx_from_p2_c1, 0, L-1)
+            val_p1_c1 = parents_1.gather(1, safe_idx_p1_c1)
+            val_p2_c1 = parents_2.gather(1, safe_idx_p2_c1)
+            c1 = torch.where(use_p2_c1 == 1, val_p2_c1, val_p1_c1)
+            
+            # Marcar posiciones inválidas como PAD
+            # Pre: válido si idx < len(original_p1) 
+            # Mid: válido si idx_from_p2 < len(original_p2)
+            # Post: válido si idx_from_p1 < len(original_p1)
+            len_p1 = (parents_1 != PAD_ID).sum(dim=1)
+            len_p2 = (parents_2 != PAD_ID).sum(dim=1)
+            
+            invalid_pre = mask_c1_pre & (grid >= len_p1.unsqueeze(1))
+            invalid_mid = mask_c1_mid & (idx_from_p2_c1 >= len_p2.unsqueeze(1))
+            invalid_post = mask_c1_post & (idx_from_p1_c1 >= len_p1.unsqueeze(1))
+            invalid_c1 = invalid_pre | invalid_mid | invalid_post
+            c1[invalid_c1] = PAD_ID
+            
+            # Child 2: pre from p2, mid from p1, post from p2
             cut_2 = len_2_pre + len_1_sub
             mask_c2_pre = (grid < len_2_pre.unsqueeze(1))
             mask_c2_mid = (grid >= len_2_pre.unsqueeze(1)) & (grid < cut_2.unsqueeze(1))
+            mask_c2_post = (grid >= cut_2.unsqueeze(1))
             
-            term_2_1 = grid
-            term_2_2 = grid - len_2_pre.unsqueeze(1) + start_1.unsqueeze(1)
-            term_2_3 = grid - cut_2.unsqueeze(1) + end_2.unsqueeze(1) + 1
+            idx_from_p2_c2 = torch.where(mask_c2_pre, grid,
+                                torch.where(mask_c2_post, grid - cut_2.unsqueeze(1) + end_2.unsqueeze(1) + 1, grid))
+            idx_from_p1_c2 = grid - len_2_pre.unsqueeze(1) + start_1.unsqueeze(1)
             
-            src_idx_c2 = torch.where(mask_c2_pre, term_2_1,
-                           torch.where(mask_c2_mid, term_2_2, term_2_3))
+            use_p1_c2 = mask_c2_mid.long()  # 1 si viene de p1, 0 si viene de p2
             
-            sel_c1 = torch.where(mask_c1_mid, torch.tensor(1, device=self.device), torch.tensor(0, device=self.device))
-            sel_c2 = torch.where(mask_c2_mid, torch.tensor(0, device=self.device), torch.tensor(1, device=self.device))
+            safe_idx_p2_c2 = torch.clamp(idx_from_p2_c2, 0, L-1)
+            safe_idx_p1_c2 = torch.clamp(idx_from_p1_c2, 0, L-1)
+            val_p2_c2 = parents_2.gather(1, safe_idx_p2_c2)
+            val_p1_c2 = parents_1.gather(1, safe_idx_p1_c2)
+            c2 = torch.where(use_p1_c2 == 1, val_p1_c2, val_p2_c2)
             
-            def gather_mixed(idx_map, sel_map, t0, t1):
-                safe_idx = torch.clamp(idx_map, 0, L-1)
-                val0 = t0.gather(1, safe_idx)
-                val1 = t1.gather(1, safe_idx)
-                res = torch.where(sel_map == 0, val0, val1)
-                is_pad = (idx_map < 0) | (idx_map >= L)
-                res[is_pad] = PAD_ID
-                return res
-                
-            c1 = gather_mixed(src_idx_c1, sel_c1, parents_1, parents_2)
-            c2 = gather_mixed(src_idx_c2, sel_c2, parents_1, parents_2)
+            invalid_pre_2 = mask_c2_pre & (grid >= len_p2.unsqueeze(1))
+            invalid_mid_2 = mask_c2_mid & (idx_from_p1_c2 >= len_p1.unsqueeze(1))
+            invalid_post_2 = mask_c2_post & (idx_from_p2_c2 >= len_p2.unsqueeze(1))
+            invalid_c2 = invalid_pre_2 | invalid_mid_2 | invalid_post_2
+            c2[invalid_c2] = PAD_ID
         
         # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite duro ---
         if GpuGlobals.USE_HARD_DEPTH_LIMIT:
@@ -694,6 +719,15 @@ class GPUOperators:
         
         parents[p1_idx] = c1
         parents[p2_idx] = c2
+        
+        # FIX N9: Reparar individuos inválidos después del crossover
+        # El crossover de RPN es complejo y puede producir fórmulas inválidas.
+        # Esta reparación asegura que todos los individuos sean RPN válidos.
+        valid_mask = self._validate_rpn_batch(parents)
+        n_invalid = (~valid_mask).sum().item()
+        if n_invalid > 0:
+            parents, _, _ = self.repair_invalid_population(parents, None)
+        
         return parents
 
     def deduplicate_population(self, population: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
