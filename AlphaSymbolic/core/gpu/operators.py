@@ -584,7 +584,68 @@ class GPUOperators:
 
         return subtree_starts
 
+    def _depth_fair_sample(self, parents: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+        """
+        Depth-Fair crossover point sampling.
+
+        Standard multinomial over nodes is biased toward large subtrees
+        (more tokens → more often picked). This method equalizes by:
+          1. Compute depth of each RPN node using cumulative arity stack.
+          2. Pick a random depth d uniformly in [0, max_depth].
+          3. Pick uniformly among valid nodes at that depth.
+
+        Args:
+            parents:    [B, L] RPN integer tensor.
+            valid_mask: [B, L] bool, True where crossover point is valid.
+
+        Returns:
+            end_idx: [B] long tensor — the sampled end-of-subtree index.
+        """
+        B, L = parents.shape
+        device = self.device
+
+        # Compute per-token stack deltas: terminal(+1), unary(0), binary(-1), pad(0)
+        arities = self.token_arity[parents.clamp(0, self.token_arity.shape[0] - 1).long()]
+        deltas = (1 - arities).long()  # [B, L]
+        is_pad = (parents == PAD_ID)
+        deltas[is_pad] = 0
+
+        # Cumulative stack depth at each position = "depth level" proxy
+        # Stack value before consuming position i = cumsum up to i (exclusive) + 1
+        # We use cumsum(deltas) and shift: depth[i] = cumsum(deltas)[:i+1].sum()
+        # Simplified: use running stack height as depth proxy
+        depths = torch.cumsum(deltas, dim=1)  # [B, L], stack height after position i
+
+        # Clamp to non-negative (invalid RPNs may go negative)
+        depths = depths.clamp(min=0)
+
+        # Mask out non-valid positions
+        # valid_mask: True where subtree_start != -1
+        depths_valid = depths * valid_mask.long()  # zero invalid positions
+
+        # For each individual: how many distinct depth levels exist?
+        max_depths = depths_valid.max(dim=1).values  # [B]
+
+        # Sample target depth: uniform in [0, max_depth] (using rand * (max+1) as integer)
+        # +1 to include depth=0 (leaf nodes at the root level when stack=1)
+        target_depth = (torch.rand(B, device=device) * (max_depths.float() + 1)).long()  # [B]
+
+        # Build a per-position mask: node is at target depth AND valid
+        at_target_depth = (depths_valid == target_depth.unsqueeze(1)) & valid_mask  # [B, L]
+
+        # Fallback: if no nodes match target depth, use all valid nodes
+        no_match = ~at_target_depth.any(dim=1)  # [B]
+        if no_match.any():
+            at_target_depth[no_match] = valid_mask[no_match]
+
+        # Uniform sample from matching nodes
+        sample_probs = at_target_depth.float() + 1e-9
+        end_idx = torch.multinomial(sample_probs, 1).squeeze(1)  # [B]
+
+        return end_idx
+
     def crossover_population(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
+
         # FIX B1: Clonar entrada para evitar mutacion in-place del tensor original.
         # Si 'parents' es una vista de la poblacion principal (ej. population[sub_idx]),
         # escribir en ella corrompe los individuos originales que no participaron en el cruce.
@@ -606,12 +667,29 @@ class GPUOperators:
         valid_mask_1 = (starts_1_mat != -1)
         valid_mask_2 = (starts_2_mat != -1)
         
-        # Sample points
-        probs_1 = valid_mask_1.float() + 1e-6
-        probs_2 = valid_mask_2.float() + 1e-6
-        
-        end_1 = torch.multinomial(probs_1, 1).squeeze(1)
-        end_2 = torch.multinomial(probs_2, 1).squeeze(1)
+        # Sample crossover points
+        _depth_fair = getattr(GpuGlobals, 'DEPTH_FAIR_CROSSOVER', False)
+        if _depth_fair:
+            # --- SOTA P1: Depth-Fair Crossover ---
+            # Instead of uniform-over-nodes (biased toward large subtrees),
+            # sample a random DEPTH first, then pick uniformly at that depth.
+            # Weights each depth equally → small subtrees get fair representation.
+            # Fallback to classic uniform sampling if depth computation fails.
+            try:
+                end_1 = self._depth_fair_sample(parents_1, valid_mask_1)
+                end_2 = self._depth_fair_sample(parents_2, valid_mask_2)
+            except Exception:
+                # Fallback: original uniform sampling
+                probs_1 = valid_mask_1.float() + 1e-6
+                probs_2 = valid_mask_2.float() + 1e-6
+                end_1 = torch.multinomial(probs_1, 1).squeeze(1)
+                end_2 = torch.multinomial(probs_2, 1).squeeze(1)
+        else:
+            probs_1 = valid_mask_1.float() + 1e-6
+            probs_2 = valid_mask_2.float() + 1e-6
+            end_1 = torch.multinomial(probs_1, 1).squeeze(1)
+            end_2 = torch.multinomial(probs_2, 1).squeeze(1)
+
         
         start_1 = starts_1_mat.gather(1, end_1.unsqueeze(1)).squeeze(1)
         start_2 = starts_2_mat.gather(1, end_2.unsqueeze(1)).squeeze(1)

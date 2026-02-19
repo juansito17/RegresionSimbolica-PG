@@ -190,6 +190,13 @@ class GpuGlobals:
     # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
     HEADLESS_CHICKEN_RATE = 0.15       # 15% de crossovers usan un padre aleatorio
     
+    # --- SOTA P1: Depth-Fair Crossover ---
+    # Standard crossover picks a random NODE as swap point → large subtrees dominate selection.
+    # Depth-Fair: pick a random DEPTH first, then a random node at that depth.
+    # This gives small subtrees equal probability of being selected, reducing bloat.
+    DEPTH_FAIR_CROSSOVER = True        # Enable depth-fair subtree crossover
+
+    
     # --- SOTA P0: Constant Perturbation Mutation ---
     # Perturba constantes con ruido gaussiano multiplicativo. Complementa PSO:
     # PSO explora globalmente en el espacio de constantes, perturbación explora localmente.
@@ -201,6 +208,17 @@ class GpuGlobals:
     # Mutation Bank
     MUTATION_BANK_SIZE = 2000
     MUTATION_BANK_REFRESH_INTERVAL = 100  # OPTIMIZED: less overhead (was 50)
+
+    # --- SOTA P1: Pareto Multi-Objective Selection (NSGA-II style) ---
+    # Balances RMSE (accuracy) vs tree complexity (parsimony) in selection.
+    # PySR uses this natively; AlphaSymbolic now has it too.
+    # Non-dominated sort is O(N²) — we run it on a sampled subset (PARETO_SAMPLE_K)
+    # and blend the resulting rank into the selection metric.
+    USE_PARETO_SELECTION = True        # Enable NSGA-II Pareto blending
+    PARETO_SAMPLE_K = 2000             # Subset size for Pareto sort (per island sample)
+    PARETO_RANK_WEIGHT = 0.15          # How much Pareto rank adds to selection_metric
+    PARETO_INTERVAL = 5                # Run Pareto sort every N generations (amortize cost)
+
 
     # ============================================================
     #                  6. EVALUATION & FITNESS

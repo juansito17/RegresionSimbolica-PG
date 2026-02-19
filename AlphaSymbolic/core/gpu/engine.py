@@ -91,6 +91,10 @@ class TensorGeneticEngine:
         self._cached_initial_consts = None
         self.mutation_bank = None
         
+        # --- SOTA P1: Pareto Optimizer (NSGA-II) ---
+        self.pareto_optimizer = ParetoOptimizer(device=self.device, dtype=self.dtype)
+        
+
         # --- P0-6: Cache CudaRPNVM and arity tensors for evolve_generation_cuda ---
         self._cached_vm = None
         self._cached_token_arities = None
@@ -102,6 +106,8 @@ class TensorGeneticEngine:
         # --- Pre-cached tensors for hot loop ---
         self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
         self._selection_metric_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
+        # --- SOTA P1: Pareto rank adjustment buffer (NSGA-II blending) ---
+        self._pareto_rank_buf = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
         
         # --- Variable diversity: cache variable token IDs for penalty computation ---
         self._var_token_ids = []
@@ -2117,6 +2123,37 @@ class TensorGeneticEngine:
                     # Additive: selection_metric += PENALTY * n_missing
                     selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
+                # --- SOTA P1: Pareto NSGA-II blending ---
+                # Every PARETO_INTERVAL gens, compute Pareto ranks on a sample of PARETO_SAMPLE_K
+                # best candidates (per island) and blend rank * PARETO_RANK_WEIGHT into selection_metric.
+                # This balances RMSE accuracy vs tree complexity (parsimony pressure) without O(N²) on 4M.
+                if getattr(GpuGlobals, 'USE_PARETO_SELECTION', False):
+                    _p_interval = int(getattr(GpuGlobals, 'PARETO_INTERVAL', 5))
+                    if generations % _p_interval == 0:
+                        try:
+                            _k = min(int(getattr(GpuGlobals, 'PARETO_SAMPLE_K', 2000)), self.pop_size)
+                            # Sample top-K per island by current fitness
+                            _fit_view = fitness_rmse.view(self.n_islands, self.island_size)
+                            _top_k = min(_k // self.n_islands, self.island_size)
+                            _, _top_local = torch.topk(_fit_view, _top_k, dim=1, largest=False)
+                            _top_global = (_top_local + island_offsets).view(-1)  # [n_islands * _top_k]
+                            _s_fit = fitness_rmse[_top_global].float()
+                            _s_comp = (population[_top_global] != PAD_ID).sum(dim=1).float()
+                            # Run Pareto sort on the sample
+                            _par_ranks, _par_crowd = self.pareto_optimizer.compute_ranks_and_crowding(_s_fit, _s_comp)
+                            # Normalize rank to [0, 1]
+                            _max_rank = float(_par_ranks.max().item()) + 1.0
+                            _norm_ranks = _par_ranks.to(self.dtype) / _max_rank
+                            # Write back to pareto_rank_buf for sampled slots
+                            self._pareto_rank_buf.zero_()
+                            self._pareto_rank_buf[_top_global] = _norm_ranks
+                        except Exception:
+                            pass  # Non-fatal — fall back to pure RMSE selection
+                    # Always blend cached Pareto rank adjustment into selection metric
+                    _pw = float(getattr(GpuGlobals, 'PARETO_RANK_WEIGHT', 0.15))
+                    if _pw > 0:
+                        selection_metric.add_(self._pareto_rank_buf, alpha=_pw)
+                
                 # Adaptive tournament size: reduce during stagnation to allow more diversity.
                 # Durante global stagnation extendida (>20 gens), bajar floor a 2 para
                 # reducir presión de selección y dar tiempo a estructuras nuevas de crecer.
@@ -2222,6 +2259,28 @@ class TensorGeneticEngine:
                     for vid in self._var_token_ids:
                         var_pen.sub_((population == vid).any(dim=1).float())
                     selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                
+                # --- SOTA P1: Pareto blending (Python path, reuse same buffer) ---
+                if getattr(GpuGlobals, 'USE_PARETO_SELECTION', False):
+                    _p_interval = int(getattr(GpuGlobals, 'PARETO_INTERVAL', 5))
+                    if generations % _p_interval == 0:
+                        try:
+                            _k = min(int(getattr(GpuGlobals, 'PARETO_SAMPLE_K', 2000)), self.pop_size)
+                            _fit_view2 = fitness_rmse.view(self.n_islands, self.island_size)
+                            _top_k2 = min(_k // self.n_islands, self.island_size)
+                            _, _top_local2 = torch.topk(_fit_view2, _top_k2, dim=1, largest=False)
+                            _top_global2 = (_top_local2 + island_offsets).view(-1)
+                            _s_fit2 = fitness_rmse[_top_global2].float()
+                            _s_comp2 = (population[_top_global2] != PAD_ID).sum(dim=1).float()
+                            _pr2, _ = self.pareto_optimizer.compute_ranks_and_crowding(_s_fit2, _s_comp2)
+                            _max_r2 = float(_pr2.max().item()) + 1.0
+                            self._pareto_rank_buf.zero_()
+                            self._pareto_rank_buf[_top_global2] = (_pr2.to(self.dtype) / _max_r2)
+                        except Exception:
+                            pass
+                    _pw2 = float(getattr(GpuGlobals, 'PARETO_RANK_WEIGHT', 0.15))
+                    if _pw2 > 0:
+                        selection_metric.add_(self._pareto_rank_buf, alpha=_pw2)
                 
                 def get_island_parents(n_needed_per_island):
                     rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
