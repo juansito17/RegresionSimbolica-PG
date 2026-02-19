@@ -91,7 +91,14 @@ __global__ void generate_random_rpn_kernel(
     int stack = 0;
     int actual_len = 0;
     
+    bool is_completed = false;
+    
     for (int j = 0; j < L; j++) {
+        if (is_completed) {
+            row[j] = (uint8_t)PAD_ID_CONST;
+            continue;
+        }
+
         int remaining = L - j - 1;
         
         // Determine valid categories
@@ -153,12 +160,7 @@ __global__ void generate_random_rpn_kernel(
         
         // If stack == 1 and we've written enough, pad the rest
         if (stack == 1 && j > 0) {
-            // Check if remaining positions can only be PAD
-            // (i.e., the formula is already complete)
-            // Actually, we should continue to make formulas of varying lengths.
-            // Only stop early if stack == 1 and this is a reasonable stopping point.
-            // For diversity, let's not stop early — always fill L positions.
-            // The Python version fills all L positions too.
+            is_completed = true;
         }
     }
     

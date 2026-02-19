@@ -106,10 +106,10 @@ class GpuGlobals:
     # Constants — reduced from 15 to 8: typical formulas use 3-5 constants.
     # Smaller K = faster PSO (47% fewer dimensions to optimize).
     MAX_CONSTANTS = 8
-    CONSTANT_MIN_VALUE = -10.0
-    CONSTANT_MAX_VALUE = 10.0
-    CONSTANT_INT_MIN_VALUE = -10
-    CONSTANT_INT_MAX_VALUE = 10
+    CONSTANT_MIN_VALUE = -25.0
+    CONSTANT_MAX_VALUE = 25.0
+    CONSTANT_INT_MIN_VALUE = -25
+    CONSTANT_INT_MAX_VALUE = 25
     FORCE_INTEGER_CONSTANTS = False # Force int constants in PSO
     CONSTANT_PRECISION = 8          # Number of decimal places to show in formulas (Console)
 
@@ -170,7 +170,7 @@ class GpuGlobals:
     DEFAULT_CROSSOVER_RATE = 0.60
     
     # Adaptive Mutation
-    MUTATION_RATE_CAP = 0.70
+    MUTATION_RATE_CAP = 0.50       # Reduced from 0.70 to prevent destroying elites during long plateaus
     MUTATION_RAMP_PER_GEN = 0.015
     MUTATION_STAGNATION_TRIGGER = 5
     
@@ -250,11 +250,11 @@ class GpuGlobals:
     # ============================================================
     LOSS_FUNCTION = 'RMSE'
     
-    # Validation
+    # Validations & Penalties
     FORCE_STRICT_VALIDATION = True     # Strict math Mode (No protected operators)
     
     # Penalties
-    COMPLEXITY_PENALTY = 0.02
+    COMPLEXITY_PENALTY = 0.04          # Raised from 0.02 to combat formula bloat at log-scale errors
     TRIVIAL_FORMULA_PENALTY = 1.5
     NO_VARIABLE_PENALTY = 2.5
     TRIVIAL_FORMULA_MAX_TOKENS = 2
@@ -288,14 +288,10 @@ class GpuGlobals:
     PSO_ADAPTIVE = True
     PSO_SKIP_GENS = 6              # ANTI-STAG: saltar PSO cada N gens si no hubo cambio estructural
 
-    # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)
-    # PySR usa BFGS internamente — esta es la clave para superarlo en poly/trig.
-    # REVERTIDO: Adam FD vectorizado añade overhead Python (40 evaluate_batch calls/run)
-    # que duplica el tiempo total sin mejorar calidad — PSO fused CUDA ya optimiza constants
-    # de las top-400 fórmulas en un único kernel launch cada 2 gens (mejor eficiencia).
-    USE_BFGS_OPTIMIZER = False
-    BFGS_INTERVAL = 50
-    BFGS_TOP_K = 20
+    # L-BFGS-B Constant Optimizer
+    USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
+    BFGS_INTERVAL = 30             # Run L-BFGS-B every 30 gens
+    BFGS_TOP_K = 15                # Only refine the absolute top 15 elites island-wide
     BFGS_MAX_ITER = 3
     
     # Simplification
