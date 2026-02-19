@@ -1642,9 +1642,18 @@ class TensorGeneticEngine:
             _pso_skip_gens = getattr(GpuGlobals, 'PSO_SKIP_GENS', 6)
             if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
                 # Compute a cheap structural hash of the current best RPN
+                # FIX BUG-2: Usar hash polinomial en lugar de suma simple para evitar colisiones
+                # El método anterior (sum()) producía el mismo hash para [1,2,3] y [3,2,1]
                 _curr_rpn_hash = None
                 if best_rpn is not None:
-                    _curr_rpn_hash = best_rpn.sum().item()  # Cheap proxy for structural identity
+                    # Hash polinomial: sum(token_i * base^i) - diferente orden = diferente hash
+                    base = 31
+                    indices = torch.arange(len(best_rpn), device=self.device)
+                    non_pad_mask = best_rpn != PAD_ID
+                    if non_pad_mask.any():
+                        _curr_rpn_hash = int((best_rpn[non_pad_mask].long() * (base ** indices[:non_pad_mask.sum().item()])).sum().item())
+                    else:
+                        _curr_rpn_hash = 0
                 
                 # Decide whether to skip PSO this round
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD

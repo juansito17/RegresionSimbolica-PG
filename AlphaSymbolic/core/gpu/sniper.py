@@ -488,10 +488,13 @@ class Sniper:
                 templates.append((f'x^{n}*cos', make_model_cos(), [1.0], n, 'cos'))
             
             # Template: y = a * x^n * exp(b*x) for n=0,1,2,3
+            # BUG-9 FIX: Agregar proteccion contra overflow en exp()
+            # exp(>700) = inf, causando warnings y deteccion fallida
             for n in [0, 1, 2, 3]:
                 def make_model_exp(n=n):
                     def model(x, a, b):
-                        return a * (x**n) * np.exp(b * x)
+                        exp_arg = np.clip(b * x, -700, 700)  # Previene overflow
+                        return a * (x**n) * np.exp(exp_arg)
                     return model
                 templates.append((f'x^{n}*exp', make_model_exp(), [1.0, -1.0], n, 'exp'))
             
@@ -499,7 +502,8 @@ class Sniper:
             for n in [0, 1, 2, 3]:
                 def make_model_exp_sin(n=n):
                     def model(x, a, b):
-                        return a * (x**n) * np.exp(b * x) * np.sin(x)
+                        exp_arg = np.clip(b * x, -700, 700)  # BUG-9 FIX
+                        return a * (x**n) * np.exp(exp_arg) * np.sin(x)
                     return model
                 templates.append((f'x^{n}*exp*sin', make_model_exp_sin(), [1.0, -1.0], n, 'exp_sin'))
             
@@ -507,7 +511,8 @@ class Sniper:
             for n in [0, 1, 2, 3]:
                 def make_model_exp_cos(n=n):
                     def model(x, a, b):
-                        return a * (x**n) * np.exp(b * x) * np.cos(x)
+                        exp_arg = np.clip(b * x, -700, 700)  # BUG-9 FIX
+                        return a * (x**n) * np.exp(exp_arg) * np.cos(x)
                     return model
                 templates.append((f'x^{n}*exp*cos', make_model_exp_cos(), [1.0, -1.0], n, 'exp_cos'))
             
@@ -515,7 +520,8 @@ class Sniper:
             for n in [0, 1, 2, 3]:
                 def make_model_exp_sincos(n=n):
                     def model(x, a, b):
-                        return a * (x**n) * np.exp(b * x) * np.sin(x) * np.cos(x)
+                        exp_arg = np.clip(b * x, -700, 700)  # BUG-9 FIX
+                        return a * (x**n) * np.exp(exp_arg) * np.sin(x) * np.cos(x)
                     return model
                 templates.append((f'x^{n}*exp*sin*cos', make_model_exp_sincos(), [1.0, -1.0], n, 'exp_sin_cos'))
             

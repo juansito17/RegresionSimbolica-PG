@@ -246,8 +246,22 @@ class PatternMemory:
             n_to_evict = new_patterns.shape[0]
             if n_to_evict > 0:
                 # Score: higher is worse (more likely to evict)
-                # Low count + high fitness = bad pattern
-                evict_scores = -self.patterns_count.float() + self.patterns_fitness / 100.0
+                # BUG-5 FIX: Usar normalización dinámica para que el fitness tenga peso real
+                # Antes: fitness/100.0 era insignificante cuando fitness está en [0.001, 0.5]
+                # Ahora: combinamos count normalizado + fitness normalizado
+                count_scores = self.patterns_count[:self.n_patterns].float()
+                count_scores = count_scores / (count_scores.max() + 1e-10)  # Normalizar a [0, 1]
+                
+                fit_scores = self.patterns_fitness[:self.n_patterns]
+                fit_min = fit_scores.min()
+                fit_max = fit_scores.max()
+                if fit_max - fit_min > 1e-10:
+                    fit_scores = (fit_scores - fit_min) / (fit_max - fit_min)  # Normalizar a [0, 1]
+                else:
+                    fit_scores = torch.zeros_like(fit_scores)
+                
+                # Score final: bajo count + alto fitness = mal patrón = score alto = candidato a evicción
+                evict_scores = -count_scores + fit_scores
                 
                 # Get indices of worst patterns
                 _, worst_indices = torch.topk(evict_scores[:self.n_patterns], 

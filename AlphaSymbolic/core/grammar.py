@@ -394,7 +394,7 @@ class ExpressionTree:
                 return np.arccos(args[0])
             if val == 'atan' or val == 'T': return np.arctan(args[0])
             
-            if val == 'exp' or val == 'e': 
+            if val == 'exp':
                 # Match CUDA safe_exp: return 0 if very negative, else let it overflow to Inf
                 return np.where(args[0] < -100.0, 0.0, np.exp(args[0]))
             if val == 'log': 

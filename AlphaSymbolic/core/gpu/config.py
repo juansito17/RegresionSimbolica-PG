@@ -91,7 +91,7 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = True
+    USE_INITIAL_FORMULA = False
     # Evolved Gen 16 seed (Verified < 1% error)
     INITIAL_FORMULA_STRING = "log(((((lgamma(x0) * pi) + ((1 + 1.10762465)**(e + lgamma((x0 - 3.24382305))))) - lgamma(fact(x1))) + (sqrt(x0)**((exp(2) - x1)**x2))))"
 
