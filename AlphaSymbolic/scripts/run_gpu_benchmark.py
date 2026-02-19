@@ -3,6 +3,8 @@ Performance Benchmarking Suite for GPU GP Engine.
 
 Standard benchmark problems for evaluating symbolic regression performance.
 """
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 import numpy as np
 import time
@@ -209,7 +211,7 @@ class BenchmarkSuite:
 
 def create_benchmark_suite(device=None, pop_size=1000):
     """Factory function to create a benchmark suite."""
-    from . import TensorGeneticEngine
+    from AlphaSymbolic.core.gpu.engine import TensorGeneticEngine
     
     def factory():
         return TensorGeneticEngine(device=device, pop_size=pop_size, n_islands=4)

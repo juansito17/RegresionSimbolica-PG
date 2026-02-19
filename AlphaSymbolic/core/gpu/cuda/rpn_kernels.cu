@@ -11,7 +11,9 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 // Stack size for RPN
-#define STACK_SIZE 64
+// Max formula length is 30 tokens → max stack depth ~15 levels.
+// Reduced from 64 to 32 → frees registers → higher SM occupancy.
+#define STACK_SIZE 32
 
 // Templated Constants?
 // We will cast inside functions
@@ -234,7 +236,8 @@ __global__ void rpn_eval_kernel(
     int c_idx = 0; // Constants pointer
 
     const unsigned char* my_prog = &population[b_idx * L];
-    const scalar_t ERROR_VAL = (scalar_t)1e300; // Match Python INF_VAL for float64
+    // 1e30 fits in both float32 (max ~3.4e38) and float64 — no truncation warning.
+    const scalar_t ERROR_VAL = (scalar_t)1e30;
 
     for (int pc = 0; pc < L; ++pc) {
         int64_t token = (int64_t)my_prog[pc];
@@ -374,7 +377,7 @@ void launch_rpn_kernel(
     int K = constants.size(1);
     
     int total_threads = B * D;
-    const int block_size = 256;
+    const int block_size = 512;   // OPTIMIZED: mayor ocupación en RTX 3050 (era 256)
     const int grid_size = (total_threads + block_size - 1) / block_size;
     
     // Dispatch based on X type (float or double)
@@ -699,7 +702,8 @@ __global__ void hoist_mutation_kernel(
     float hoist_rate,
     int B, int L, int PAD_ID
 ) {
-    int b = blockIdx.x;
+    // OPTIMIZED: 128 threads/block en vez de 1 → mejor ocupación SM (era <<<B,1>>>)
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
     
     // 1. Check Probability
@@ -762,8 +766,10 @@ void launch_hoist_mutation(
     CHECK_INPUT(rand_floats);
     CHECK_INPUT(rand_ints);
     
-    // One block per individual, 1 thread
-    hoist_mutation_kernel<<<B, 1>>>(
+    // OPTIMIZED: 128 threads/block → 128x mejor ocupación de SM (era <<<B,1>>>)
+    const int hoist_threads = 128;
+    const int hoist_blocks = (B + hoist_threads - 1) / hoist_threads;
+    hoist_mutation_kernel<<<hoist_blocks, hoist_threads>>>(
         population.data_ptr<unsigned char>(),
         starts.data_ptr<int64_t>(),
         rand_floats.data_ptr<float>(),
@@ -1130,7 +1136,9 @@ std::vector<torch::Tensor> evolve_generation(
     // For Hoist, we can handle it similarly.
     
     // A. Point Mutation Path
-    if (point_mask.any().item<bool>()) {
+    // OPTIMIZED: eliminado .any().item<bool>() — cada llamada forzaba sync GPU→CPU.
+    // nonzero() devuelve tensor vacío si mask=False, y index_select sobre tensor vacío es no-op.
+    {
         auto point_idx = torch::nonzero(point_mask).squeeze(1);
         auto point_pop = offspring.index_select(0, point_idx);
         auto r_floats = torch::rand({point_pop.size(0), L}, float_opt);
@@ -1144,9 +1152,12 @@ std::vector<torch::Tensor> evolve_generation(
     }
     
     // B. Structural Mutation Path (Grafting from Bank)
-    if (struct_mask.any().item<bool>()) {
-        int n_struct = struct_mask.sum().item<int>();
+    // OPTIMIZED: eliminado .any().item<bool>() y .sum().item<int>() — ambos forzaban sync GPU→CPU.
+    // n_struct se obtiene de struct_idx.size(0) tras nonzero() sin sync adicional.
+    {
         auto struct_idx = torch::nonzero(struct_mask).squeeze(1);
+        int n_struct = (int)struct_idx.size(0);
+        if (n_struct > 0) {
         auto struct_pop = offspring.index_select(0, struct_idx);
         
         int bank_size = mutation_bank.size(0);
@@ -1176,11 +1187,14 @@ std::vector<torch::Tensor> evolve_generation(
         auto final_struct = torch::where(m_mask.unsqueeze(1), child, struct_pop);
         
         offspring.index_copy_(0, struct_idx, final_struct);
-    }
+        } // end if (n_struct > 0)
+    } // end struct_mask scope
 
     // C. Hoist Mutation Path (NEW)
-    if (hoist_mask.any().item<bool>()) {
+    // OPTIMIZED: eliminado .any().item<bool>() — forzaba sync GPU→CPU.
+    {
         auto hoist_idx = torch::nonzero(hoist_mask).squeeze(1);
+        if (hoist_idx.size(0) > 0) {
         auto hoist_pop = offspring.index_select(0, hoist_idx);
         
         // Find subtree ranges for hoist candidates
@@ -1194,7 +1208,8 @@ std::vector<torch::Tensor> evolve_generation(
         launch_hoist_mutation(hoist_pop, starts_hoist, r_floats, r_ints, mutation_rate, PAD_ID);
         
         offspring.index_copy_(0, hoist_idx, hoist_pop);
-    }
+        } // end if (hoist_idx.size(0) > 0)
+    } // end hoist_mask scope
     
     // 4. NanoPSO (Constant Optimization)
     auto gbest_pos = offspring_consts.clone();

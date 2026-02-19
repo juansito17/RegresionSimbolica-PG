@@ -61,25 +61,33 @@ __device__ __forceinline__ int xorshift_int(uint64_t* state, int n) {
  *   B, L:           population size and max formula length
  *   seed:           base seed for PRNG (each thread adds its index)
  */
+/*
+ * OPTIMIZED: Añadidos parámetros de peso por categoría.
+ * term_weight/unary_weight/bin_weight vienen de GpuGlobals.OPERATOR_WEIGHTS
+ * (calculados en Python). Resuelve el bug donde TERMINAL_VS_VARIABLE_PROB
+ * y OPERATOR_WEIGHTS no se aplicaban en el kernel CUDA.
+ */
 __global__ void generate_random_rpn_kernel(
-    int64_t* __restrict__ out_pop,
-    const int64_t* __restrict__ terminal_ids,
-    const int64_t* __restrict__ unary_ids,
-    const int64_t* __restrict__ binary_ids,
+    uint8_t* __restrict__ out_pop,              // FIX: uint8_t — coincide con pop_dtype Python
+    const uint8_t* __restrict__ terminal_ids,   // FIX: uint8_t
+    const uint8_t* __restrict__ unary_ids,      // FIX: uint8_t
+    const uint8_t* __restrict__ binary_ids,     // FIX: uint8_t
     int n_terminals, int n_unary, int n_binary,
     int B, int L,
-    uint64_t seed
+    uint64_t seed,
+    float term_weight,
+    float unary_weight,
+    float bin_weight
 ) {
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
     
     // Initialize per-thread PRNG with unique seed
     uint64_t rng_state = seed + (uint64_t)b * 6364136223846793005ULL + 1442695040888963407ULL;
-    // Warm up the RNG a bit
     xorshift_uniform(&rng_state);
     xorshift_uniform(&rng_state);
     
-    int64_t* row = out_pop + (int64_t)b * L;
+    uint8_t* row = out_pop + (int64_t)b * L;
     int stack = 0;
     int actual_len = 0;
     
@@ -98,14 +106,15 @@ __global__ void generate_random_rpn_kernel(
             can_binary = can_binary && ((stack - 1) == 1);
         }
         
-        // Compute weights (equal weight per category for simplicity)
-        float w_t = can_terminal ? 1.0f : 0.0f;
-        float w_u = can_unary ? 1.0f : 0.0f;
-        float w_b = can_binary ? 1.0f : 0.0f;
+        // OPTIMIZED: usar pesos configurables en vez de 1.0 fijo
+        float w_t = can_terminal ? term_weight : 0.0f;
+        float w_u = can_unary ? unary_weight : 0.0f;
+        float w_b = can_binary ? bin_weight : 0.0f;
         float total_w = w_t + w_u + w_b;
         
-        // Fallback to terminal if nothing valid
-        if (total_w < 0.5f) {
+        // FIX: fallback SOLO cuando ninguna categoría es válida (no usar 0.5f fijo
+        // — con pesos <0.5 el threshold antiguo disparaba fallbacks incorrectos)
+        if (total_w <= 1e-6f) {
             w_t = 1.0f;
             total_w = 1.0f;
             can_terminal = true;
@@ -118,7 +127,7 @@ __global__ void generate_random_rpn_kernel(
         float p_t = w_t / total_w;
         float p_u = w_u / total_w;
         
-        int64_t chosen;
+        uint8_t chosen;  // FIX: uint8_t — token IDs caben en 0..255
         int delta;
         
         if (r < p_t) {
@@ -171,7 +180,10 @@ void launch_generate_random_rpn(
     const torch::Tensor& terminal_ids,
     const torch::Tensor& unary_ids,
     const torch::Tensor& binary_ids,
-    uint64_t seed
+    uint64_t seed,
+    float term_weight,   // OPTIMIZED: peso categoria terminal
+    float unary_weight,  // OPTIMIZED: peso categoria unaria
+    float bin_weight     // OPTIMIZED: peso categoria binaria
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(terminal_ids);
@@ -190,13 +202,17 @@ void launch_generate_random_rpn(
     int threads = 256;
     int blocks = (B + threads - 1) / threads;
     
+    // FIX: usar uint8_t — coincide con el tipo real de los tensores en Python (pop_dtype = uint8)
     generate_random_rpn_kernel<<<blocks, threads>>>(
-        population.data_ptr<int64_t>(),
-        terminal_ids.data_ptr<int64_t>(),
-        n_unary > 0 ? unary_ids.data_ptr<int64_t>() : nullptr,
-        n_binary > 0 ? binary_ids.data_ptr<int64_t>() : nullptr,
+        population.data_ptr<uint8_t>(),
+        terminal_ids.data_ptr<uint8_t>(),
+        n_unary > 0 ? unary_ids.data_ptr<uint8_t>() : nullptr,
+        n_binary > 0 ? binary_ids.data_ptr<uint8_t>() : nullptr,
         n_terminals, n_unary, n_binary,
         B, L,
-        seed
+        seed,
+        term_weight,
+        unary_weight,
+        bin_weight
     );
 }

@@ -62,16 +62,159 @@ class GPUOptimizer:
         Uses fused CUDA kernel when available (single launch for entire PSO loop),
         falls back to multi-kernel approach otherwise.
         """
-        # Try fused kernel first (single CUDA launch, ~5-10x faster for PSO portion)
-        if self._has_fused_pso and self.dtype == torch.float32:
+        # Try fused kernel first (single CUDA launch, ~5-10x faster for PSO portion).
+        # The fused kernel supports both float32 and float64 via AT_DISPATCH_FLOATING_TYPES.
+        if self._has_fused_pso:
             return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
         
         return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
+
+    def lbfgs_optimize_top_k(self, population: torch.Tensor, constants: torch.Tensor,
+                              x: torch.Tensor, y_target: torch.Tensor,
+                              top_k: int = 50, max_iter: int = 30) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Optimización de constantes via Adam vectorizado con gradientes numéricos (diferencias finitas).
+        
+        FIX Bug7: El L-BFGS-B original nunca optimizaba nada porque el VM CUDA no soporta
+        autograd → loss.requires_grad = False siempre → backward() nunca se llamaba →
+        LBFGS divergía o retornaba los mismos constantes. 
+        
+        REEMPLAZADO por: Adam vectorizado con diferencias finitas.
+        - UN solo batch de evaluate_batch por paso de gradiente (NO loop Python por individuo)
+        - Evalúa B×2K formulas por paso (40×16=640 en batch único = 1 kernel CUDA launch)
+        - 20 pasos × 640 evals = 12800 evaluaciones pero solo 20 launches → muy eficiente
+        - No necesita autograd — solo valores de función
+
+        Args:
+            population:  [B, L] formulas (uint8) — ya son top-K del engine
+            constants:   [B, K] constantes iniciales
+            x, y_target: datos de evaluación
+            top_k:       cuántos individuos optimizar (<=B)
+            max_iter:    pasos de Adam
+
+        Returns:
+            (refined_consts [B, K], best_errs [B])
+        """
+        B, K = constants.shape
+        if K == 0 or top_k <= 0 or B == 0:
+            return constants, torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+
+        actual_k = min(top_k, B)
+        
+        # Trabajamos solo en los primeros actual_k
+        pop_k = population[:actual_k].contiguous()       # [actual_k, L]
+        c = constants[:actual_k].clone().to(self.dtype)  # [actual_k, K]
+        
+        # Baseline fitness antes de optimizar
+        best_errs_k = self.evaluator.evaluate_batch(pop_k, x, y_target, c)
+        best_c_k = c.clone()
+        
+        if K == 0:
+            result = constants.clone()
+            result[:actual_k] = best_c_k
+            full_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+            full_errs[:actual_k] = best_errs_k
+            return result, full_errs
+        
+        # ---- Adam state ----
+        m = torch.zeros_like(c)   # primer momento
+        v = torch.zeros_like(c)   # segundo momento
+        beta1, beta2, eps_adam = 0.9, 0.999, 1e-8
+        lr = 0.08
+        fd_eps = 1e-3  # epsilon para diferencias finitas
+        
+        # Pre-expand population para batch completo de finite-diffs:
+        # Para cada individuo i y dimensión k necesitamos c[i, k] ± fd_eps
+        # Total filas = actual_k * K * 2 (+ y - para cada dimensión)
+        total_rows = actual_k * K * 2
+        # [actual_k * K * 2, L] — cada individuo repetido 2K veces
+        pop_expanded = pop_k.repeat_interleave(K * 2, dim=0)  # [total_rows, L]
+        
+        # Pre-computar índices y signos de perturbación (constantes por toda la optimización)
+        # Layout: fila (i*2K + 2k) → individuo i, constante k, perturb +
+        #         fila (i*2K + 2k+1) → individuo i, constante k, perturb -
+        k_idx_base = torch.arange(K, device=self.device).repeat_interleave(2)  # [2K]: 0,0,1,1,...
+        k_idx = k_idx_base.unsqueeze(0).expand(actual_k, K * 2).reshape(total_rows)  # [total_rows]
+        sign_base = torch.tensor([1.0, -1.0] * K, device=self.device, dtype=self.dtype)  # [2K]
+        sign_pert = sign_base.unsqueeze(0).expand(actual_k, K * 2).reshape(total_rows)   # [total_rows]
+        row_idx = torch.arange(total_rows, device=self.device)
+        fd_delta = sign_pert * fd_eps  # pre-multiplicado
+        
+        for step in range(max_iter):
+            # Construir tensor de constantes perturbadas [total_rows, K]
+            c_pert = c.unsqueeze(1).expand(actual_k, K * 2, K).clone().reshape(total_rows, K)
+            c_pert[row_idx, k_idx] += fd_delta
+            c_pert.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+            
+            # UN solo batch eval
+            errs_flat = self.evaluator.evaluate_batch(pop_expanded, x, y_target, c_pert)  # [total_rows]
+            
+            # Reshape: [actual_k, K, 2] → grad = (f+ - f-) / (2*eps)
+            errs_kd = errs_flat.reshape(actual_k, K, 2)
+            grad = (errs_kd[:, :, 0] - errs_kd[:, :, 1]) / (2.0 * fd_eps)  # [actual_k, K]
+            
+            # Clip gradients (estabilidad numérica)
+            grad.clamp_(-1e6, 1e6)
+            
+            # Adam update
+            t = step + 1
+            m = beta1 * m + (1.0 - beta1) * grad
+            v = beta2 * v + (1.0 - beta2) * grad ** 2
+            m_hat = m / (1.0 - beta1 ** t)
+            v_hat = v / (1.0 - beta2 ** t)
+            c = c - lr * m_hat / (v_hat.sqrt() + eps_adam)
+            c.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+        
+        # Evaluación final
+        final_errs_k = self.evaluator.evaluate_batch(pop_k, x, y_target, c)
+        
+        # Solo actualizar si mejoró (never worsen)
+        improved = torch.isfinite(final_errs_k) & (final_errs_k < best_errs_k)
+        best_c_k[improved] = c[improved]
+        best_errs_k[improved] = final_errs_k[improved]
+        
+        # Construir output completo [B, K]
+        result_consts = constants.clone()
+        result_consts[:actual_k] = best_c_k
+        full_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+        full_errs[:actual_k] = best_errs_k
+        
+        return result_consts, full_errs
+
+    def nano_pso_adaptive(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y: torch.Tensor, 
+                steps: int = 20, num_particles: int = 20, w_max: float = 0.9, w_min: float = 0.4,
+                c1: float = 1.5, c2: float = 1.5) -> tuple:
+        """
+        PSO con inercia adaptativa (IPSO): w decrece de w_max a w_min.
+        Favorece exploración al inicio y explotación al final.
+        Usa el mismo kernel fused pero con w calculado por step.
+        """
+        # Ejecutar en pasos individuales con w variable
+        # Para el fused kernel: lo llamamos con steps=1 en loop (menos eficiente)
+        # pero permite inercia adaptativa real.
+        # Alternativa más eficiente: llamar fused con w promedio (aproximación)
+        # El fused kernel ahora aplica decay lineal interno w_max→0.4.
+        # Pasamos w_max directamente — no hace falta promediar.
+        # El fallback multi-kernel sigue usando w_avg para compatibilidad.
+        if self._has_fused_pso:
+            return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w_max, c1, c2)
+        w_avg = (w_max + w_min) / 2.0
+        return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w_avg, c1, c2)
 
     def _fused_nano_pso(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
                        steps: int, num_particles: int, w: float, c1: float, c2: float) -> Tuple[torch.Tensor, torch.Tensor]:
         """Fused PSO: entire PSO loop in a single CUDA kernel launch."""
         B, K = constants.shape
+        
+        # FIX: El kernel CUDA espera x en formato [Vars, D] (variables × datos).
+        # El engine pasa x como [D, Vars] (datos × variables) → transponer.
+        # Detectar por comparación con y.numel() (= número de puntos D).
+        D_expected = y.numel()
+        if x.ndim == 2 and x.shape[0] == D_expected and x.shape[1] != D_expected:
+            # x es [D, Vars] → transponer a [Vars, D]
+            x = x.T.contiguous()
+        elif not x.is_contiguous():
+            x = x.contiguous()
         
         # Pre-allocate outputs
         gbest_pos = torch.empty((B, K), device=self.device, dtype=self.dtype)

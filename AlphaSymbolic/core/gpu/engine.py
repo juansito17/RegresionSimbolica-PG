@@ -8,6 +8,8 @@ from core.grammar import ExpressionTree
 from .config import GpuGlobals
 from .sniper import Sniper
 from .pareto import ParetoOptimizer
+from .library_learning import LibraryLearner
+
 from .pattern_memory import PatternMemory
 
 # New Modules
@@ -91,6 +93,20 @@ class TensorGeneticEngine:
         self._cached_initial_consts = None
         self.mutation_bank = None
         
+        # --- SOTA P1: Pareto Optimizer (NSGA-II) ---
+        self.pareto_optimizer = ParetoOptimizer(device=self.device, dtype=self.dtype)
+        
+        # --- SOTA P2: Library Learning ---
+        self.library_learner = LibraryLearner(
+            grammar=self.grammar,
+            pop_size=self.pop_size,
+            max_len=self.max_len,
+            device=self.device,
+            dtype=self.dtype,
+            capacity=int(getattr(GpuGlobals, 'LIBRARY_CAPACITY', 512)),
+        )
+
+
         # --- P0-6: Cache CudaRPNVM and arity tensors for evolve_generation_cuda ---
         self._cached_vm = None
         self._cached_token_arities = None
@@ -102,6 +118,8 @@ class TensorGeneticEngine:
         # --- Pre-cached tensors for hot loop ---
         self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
         self._selection_metric_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
+        # --- SOTA P1: Pareto rank adjustment buffer (NSGA-II blending) ---
+        self._pareto_rank_buf = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
         
         # --- Variable diversity: cache variable token IDs for penalty computation ---
         self._var_token_ids = []
@@ -1283,10 +1301,9 @@ class TensorGeneticEngine:
                     print("[GPU Engine] Saved.")
                 except Exception as e:
                     print(f"[GPU Engine] Warning: Could not save cache ({e})")
-        elif GpuGlobals.USE_STRUCTURAL_SEEDS:
-            # Re-inject polynomial basis even if loaded from cache to ensure structural variety
-            # This is critical for discovering complex formulas like poly-4
-                print(f"[GPU Engine] Warning: Could not save cache: {e}")
+        # FIX B4: Se eliminó el bloque 'elif GpuGlobals.USE_STRUCTURAL_SEEDS' que contenía
+        # 'print(f"... {e}")' donde 'e' no estaba en scope (era variable de un except superior).
+        # Habría lanzado NameError si USE_STRUCTURAL_SEEDS=True y la cache era cargada sin error.
 
         # 4. Inject structural seeds (post-init overwrite)
         if seeds:
@@ -1417,6 +1434,28 @@ class TensorGeneticEngine:
         generations = 0
         current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
         COMPLEXITY_PENALTY = GpuGlobals.COMPLEXITY_PENALTY
+        # --- Escalating restart tracking ---
+        _consecutive_restarts = 0            # Cuántos soft restarts seguidos sin mejorar
+        _best_rmse_at_last_restart = float('inf')  # RMSE en el momento del último restart
+        # --- Post-restart isolation cooldown ---
+        # Después de un TRUE HARD restart, aislar la población por N gens:
+        # NO migrar y NO inyectar el global best → la población fresca se desarrolla sola.
+        _post_restart_cooldown = 0
+        
+        # --- SOTA P2: ALPS — individual age tracking ---
+        # individual_ages[i] = number of generations individual i has been alive.
+        # Age grows each generation; crossover/mutation offspring reset to 0.
+        # Age-based penalty is added to selection_metric, giving younger individuals an advantage.
+        _alps_enabled = getattr(GpuGlobals, 'USE_ALPS', False)
+        individual_ages = torch.zeros(self.pop_size, dtype=torch.long, device=self.device)
+
+        
+        # --- ANTI-STAG: Adaptive PSO tracking ---
+        # Saltar PSO cuando la estructura del best no cambió (constantes ya saturadas).
+        # _last_pso_rpn_hash: hash del RPN en el último run de PSO.
+        # _pso_skip_counter: generaciones desde el último run de PSO.
+        _last_pso_rpn_hash = None
+        _pso_skip_counter = 0
         
         # --- P0-1 Optimization: Reuse fitness from C++ orchestrator ---
         cached_next_fit = None       # Fitness returned by evolve_generation_cuda
@@ -1466,8 +1505,18 @@ class TensorGeneticEngine:
             # Migration (track modified indices for fitness cache invalidation)
             all_modified = False  # Flag instead of 1M-element tensor
             modified_indices = None
-            # Reduce migration during stagnation to preserve island diversity
-            mig_interval = GpuGlobals.MIGRATION_INTERVAL_STAGNATION if stagnation > GpuGlobals.MIGRATION_STAGNATION_THRESHOLD else GpuGlobals.MIGRATION_INTERVAL
+            # Reduce migration during stagnation to preserve island diversity.
+            # During GLOBAL stagnation > 20 gens: almost stop migration completely so islands
+            # can develop independent structures without lgamma contamination.
+            if _post_restart_cooldown > 0:
+                mig_interval = 999999  # Sin migración durante aislamiento post-restart
+                _post_restart_cooldown -= 1
+            elif global_stagnation > 20:
+                mig_interval = getattr(GpuGlobals, 'MIGRATION_INTERVAL_GLOBAL_STAGNATION', 300)
+            elif stagnation > GpuGlobals.MIGRATION_STAGNATION_THRESHOLD:
+                mig_interval = GpuGlobals.MIGRATION_INTERVAL_STAGNATION
+            else:
+                mig_interval = GpuGlobals.MIGRATION_INTERVAL
             if self.n_islands > 1 and generations % mig_interval == 0:
                  population, pop_constants = self.migrate_islands(population, pop_constants, 
                      fitness_rmse if cached_next_fit is None else cached_next_fit)
@@ -1587,36 +1636,82 @@ class TensorGeneticEngine:
                  )
             
             # Optimize Top K — focus PSO on multi-variable formulas
+            # ANTI-STAG: PSO adaptativo. Si el best no cambió estructuralmente,
+            # saltar PSO_SKIP_GENS generaciones para liberar GPU a exploración.
+            _pso_adaptive = getattr(GpuGlobals, 'PSO_ADAPTIVE', False)
+            _pso_skip_gens = getattr(GpuGlobals, 'PSO_SKIP_GENS', 6)
             if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
-                # During stagnation: optimize more individuals with more steps
-                if stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD:
-                    k_opt = min(self.pop_size, GpuGlobals.PSO_K_STAGNATION)
-                    pso_steps = GpuGlobals.PSO_STEPS_STAGNATION
-                else:
-                    k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
-                    pso_steps = GpuGlobals.PSO_STEPS_NORMAL
+                # Compute a cheap structural hash of the current best RPN
+                _curr_rpn_hash = None
+                if best_rpn is not None:
+                    _curr_rpn_hash = best_rpn.sum().item()  # Cheap proxy for structural identity
                 
-                # Use penalized metric to select top-K for PSO (favor multi-variable)
-                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                    _pso_metric = fitness_rmse.clone()
-                    _n_miss = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
-                    _n_miss.fill_(float(len(self._var_token_ids)))
-                    for vid in self._var_token_ids:
-                        _n_miss.sub_((population == vid).any(dim=1).float())
-                    _pso_metric.add_(_n_miss, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
-                    _, top_idx = torch.topk(_pso_metric, k_opt, largest=False)
-                else:
-                    _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
+                # Decide whether to skip PSO this round
+                _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
+                _struct_changed = (_curr_rpn_hash != _last_pso_rpn_hash)
+                _skip_pso = (
+                    _pso_adaptive and
+                    not _in_stagnation and
+                    not _struct_changed and
+                    _pso_skip_counter < _pso_skip_gens
+                )
+                _pso_skip_counter += 1
                 
-                opt_pop = population[top_idx]
-                opt_consts = pop_constants[top_idx]
-                
-                refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=pso_steps)
-                # Forzar constantes enteras si está configurado
-                if GpuGlobals.FORCE_INTEGER_CONSTANTS:
-                    refined_consts = refined_consts.round()
-                pop_constants[top_idx] = refined_consts
-                fitness_rmse[top_idx] = refined_mse
+                if not _skip_pso:
+                    _pso_skip_counter = 0
+                    _last_pso_rpn_hash = _curr_rpn_hash
+                    # During stagnation: optimize more individuals with more steps
+                    if _in_stagnation:
+                        k_opt = min(self.pop_size, GpuGlobals.PSO_K_STAGNATION)
+                        pso_steps = GpuGlobals.PSO_STEPS_STAGNATION
+                    else:
+                        k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
+                        pso_steps = GpuGlobals.PSO_STEPS_NORMAL
+                    
+                    # Use penalized metric to select top-K for PSO (favor multi-variable)
+                    if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                        _pso_metric = fitness_rmse.clone()
+                        _n_miss = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
+                        _n_miss.fill_(float(len(self._var_token_ids)))
+                        for vid in self._var_token_ids:
+                            _n_miss.sub_((population == vid).any(dim=1).float())
+                        _pso_metric.add_(_n_miss, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                        _, top_idx = torch.topk(_pso_metric, k_opt, largest=False)
+                    else:
+                        _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
+                    
+                    opt_pop = population[top_idx]
+                    opt_consts = pop_constants[top_idx]
+                    
+                    refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=pso_steps)
+                    # Forzar constantes enteras si está configurado
+                    if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                        refined_consts = refined_consts.round()
+                    pop_constants[top_idx] = refined_consts
+                    fitness_rmse[top_idx] = refined_mse
+
+            # L-BFGS-B Constant Optimization (2nd orden — complementa PSO)
+            # Corre cada BFGS_INTERVAL generaciones sobre los top-K mejores individuos.
+            # PySR usa BFGS internamente — esto cierra el gap en problemas poly/trig.
+            _bfgs_interval = getattr(GpuGlobals, 'BFGS_INTERVAL', 5)
+            if (getattr(GpuGlobals, 'USE_BFGS_OPTIMIZER', False) and
+                    generations % _bfgs_interval == 0):
+                _bfgs_k = min(getattr(GpuGlobals, 'BFGS_TOP_K', 50), self.pop_size)
+                _bfgs_iters = getattr(GpuGlobals, 'BFGS_MAX_ITER', 30)
+                _, _bfgs_top_idx = torch.topk(fitness_rmse, _bfgs_k, largest=False)
+                _bfgs_pop = population[_bfgs_top_idx]
+                _bfgs_consts = pop_constants[_bfgs_top_idx]
+                try:
+                    _bfgs_consts_new, _bfgs_errs = self.optimizer.lbfgs_optimize_top_k(
+                        _bfgs_pop, _bfgs_consts, x_t, y_t, top_k=_bfgs_k, max_iter=_bfgs_iters)
+                    # Solo aplicar mejoras (nunca empeorar)
+                    _bfgs_improved = _bfgs_errs < fitness_rmse[_bfgs_top_idx]
+                    if _bfgs_improved.any():
+                        _gi = _bfgs_top_idx[_bfgs_improved]
+                        pop_constants[_gi] = _bfgs_consts_new[_bfgs_improved]
+                        fitness_rmse[_gi] = _bfgs_errs[_bfgs_improved]
+                except Exception:
+                    pass  # Non-fatal: BFGS puede fallar en fórmulas no diferenciables
             
             # Best Tracking — only consider formulas using ALL variables (if multi-var mode)
             if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
@@ -1739,7 +1834,11 @@ class TensorGeneticEngine:
             # Cataclysm / Reset — use penalized metric to preserve multi-variable formulas
             # print(f"[DEBUG] check cataclysm {stagnation} >= {GpuGlobals.STAGNATION_LIMIT}")
             if GpuGlobals.USE_ISLAND_CATACLYSM and stagnation >= GpuGlobals.STAGNATION_LIMIT:
-                 n_elites = int(self.pop_size * GpuGlobals.CATACLYSM_ELITE_PERCENT)
+                 # ANTI-STAG: Elitismo dinámico — cuando el estancamiento es profundo a nivel global,
+                 # reducir drásticamente los elites para que el super-elite inyectado no domine la repoblación.
+                 _deep_stagnation = global_stagnation > (GpuGlobals.GLOBAL_STAGNATION_LIMIT // 2)
+                 _cat_pct = getattr(GpuGlobals, 'ELITE_PCT_STAGNATION', GpuGlobals.CATACLYSM_ELITE_PERCENT) if _deep_stagnation else GpuGlobals.CATACLYSM_ELITE_PERCENT
+                 n_elites = max(1, int(self.pop_size * _cat_pct))
                  n_random = self.pop_size - n_elites
                  # Compute cataclysm metric: prefer multi-variable formulas
                  cat_metric = fitness_rmse.clone()
@@ -1761,6 +1860,8 @@ class TensorGeneticEngine:
                  if n_mutate_elites > 0:
                      mutated = self.operators.subtree_mutation(elites[n_elites//4:n_elites//4+n_mutate_elites].clone(), 1.0)
                      elites[n_elites//4:n_elites//4+n_mutate_elites] = mutated
+                 # Reset PSO skip counter so PSO fires immediately on fresh population
+                 _pso_skip_counter = 0
                  
                  # Note: Cataclysm creates new tensor, breaking buffer link temporarily.
                  # But we assign it to 'population' variable.
@@ -1798,27 +1899,47 @@ class TensorGeneticEngine:
             # Global Stagnation — total or soft restart
             if global_stagnation >= GpuGlobals.GLOBAL_STAGNATION_LIMIT:
                 if GpuGlobals.SOFT_RESTART_ENABLED:
-                     # Soft Restart: Keep top N% elites, randomize rest
-                     n_keep = int(self.pop_size * GpuGlobals.SOFT_RESTART_ELITE_RATIO)
+                     # --- Escalating Restart: track consecutive failed restarts ---
+                     # Después de N soft restarts sin mejora → true hard restart (1 elite).
+                     # Elimina la convergencia estructural (e.g. lgamma(x0) fijo para siempre)
+                     # sin perder la mejor fórmula encontrada hasta el momento.
+                     _escalate_limit = getattr(GpuGlobals, 'ESCALATE_RESTART_LIMIT', 2)
+                     if best_rmse >= _best_rmse_at_last_restart - 1e-9:
+                         _consecutive_restarts += 1
+                     else:
+                         _consecutive_restarts = 0
+                     _best_rmse_at_last_restart = best_rmse
+
+                     if _consecutive_restarts >= _escalate_limit:
+                         # TRUE HARD RESTART: solo 1 elite (la mejor fórmula del algoritmo)
+                         n_keep = 1
+                         _consecutive_restarts = 0
+                         restart_label = "TRUE HARD"
+                         _post_restart_cooldown = 50  # 50 gens sin migrar ni inyectar elite
+                     else:
+                         n_keep = int(self.pop_size * GpuGlobals.SOFT_RESTART_ELITE_RATIO)
+                         restart_label = "Soft"
+
                      n_random = self.pop_size - n_keep
-                     print(f"[Engine] Global stagnation ({global_stagnation} gens). Soft Restart (Keeping top {n_keep} elites).")
-                     
+                     print(f"[Engine] Global stagnation ({global_stagnation} gens). {restart_label} Restart "
+                           f"(Keeping top {n_keep} elites, streak={_consecutive_restarts}/{_escalate_limit}).")
+
                      # Identify elites
                      _, indices = torch.topk(fitness_rmse, n_keep, largest=False)
                      elites = population[indices]
                      elite_c = pop_constants[indices]
-                     
+
+                     # Siempre garantizar que la mejor fórmula ocupe el slot 0
+                     if best_rpn is not None and n_keep >= 1:
+                         elites[0] = best_rpn
+                         elite_c[0] = best_consts_vec
+
                      # Generate randoms
                      rand_pop = self.operators.generate_random_population(n_random)
                      rand_c = torch.empty(n_random, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
                      
                      # Combine (write to buffers if exist)
                      if self.pop_buffer_A is not None:
-                         # Decide which buffer is current 'population'
-                         # Actually, we just overwrite 'population' variable and then write to both buffers to be safe?
-                         # No, we should write to the active buffer.
-                         # Assuming 'population' points to one of the buffers or is a distinct tensor.
-                         # Let's rebuild 'population' first.
                          population = torch.cat([elites, rand_pop])
                          pop_constants = torch.cat([elite_c, rand_c])
                          
@@ -1912,6 +2033,7 @@ class TensorGeneticEngine:
 
                 stagnation = 0
                 global_stagnation = 0
+                _pso_skip_counter = 0  # ANTI-STAG: forzar PSO inmediato en nueva población
                 continue
 
             # Dynamic Mutation — Ramp up during GLOBAL stagnation
@@ -1943,16 +2065,20 @@ class TensorGeneticEngine:
                              self.const_buffer_B[0] = best_consts_vec
                 
                 # --- Stagnation Random Injection ---
-                # Inyectar individuos aleatorios durante estancamiento para mantener diversidad
-                if GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT > 0 and stagnation % 10 == 0:
+                # Inyectar individuos aleatorios durante estancamiento para mantener diversidad.
+                # IMPORTANTE: reemplazar posiciones ALEATORIAS (no las peores) para que los nuevos
+                # árboles tengan oportunidad de estar en zonas competitivas de la población.
+                if GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT > 0 and stagnation % 10 == 0 and _post_restart_cooldown <= 0:
                     n_inject = int(self.pop_size * GpuGlobals.STAGNATION_RANDOM_INJECT_PERCENT)
                     if n_inject > 0:
                         inject_pop = self.operators.generate_random_population(n_inject)
                         inject_c = torch.empty(n_inject, self.max_constants, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
-                        # Reemplazar los peores individuos
-                        _, worst_idx = torch.topk(fitness_rmse, n_inject, largest=True)
-                        population[worst_idx] = inject_pop
-                        pop_constants[worst_idx] = inject_c
+                        # FIX: Reemplazar posiciones ALEATORIAS, no los peores.
+                        # Antes: los lgamma elites estaban "protegidos" y los nuevos iban al fondo.
+                        # Ahora: lgamma variants tienen 50% de probabilidad de ser reemplazados.
+                        inject_positions = torch.randint(0, self.pop_size, (n_inject,), device=self.device)
+                        population[inject_positions] = inject_pop
+                        pop_constants[inject_positions] = inject_c
                          
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
@@ -1960,8 +2086,34 @@ class TensorGeneticEngine:
             # Evolution Step (Vectorized Island Model + Double Buffering)
             island_offsets = self._island_offsets
 
+            # --- SOTA P2: ALPS — age tracking ---
+            # Increment every individual's age each generation.
+            # Layer-0 reseed: periodically inject fresh random individuals
+            # to ensure the "young" layer never becomes dominated by old elites.
+            if _alps_enabled:
+                individual_ages.add_(1)
+                _alps_reseed_interval = int(getattr(GpuGlobals, 'ALPS_LAYER0_RESEED_INTERVAL', 50))
+                _alps_reseed_frac = float(getattr(GpuGlobals, 'ALPS_LAYER0_RESEED_FRACTION', 0.01))
+                if generations % _alps_reseed_interval == 0 and generations > 0:
+                    n_reseed = max(1, int(self.pop_size * _alps_reseed_frac))
+                    # Find youngest individuals (smallest ages outside elite slot 0)
+                    _reseed_idx = torch.topk(individual_ages[1:], n_reseed, largest=False).indices + 1
+                    fresh = self.operators.generate_random_population(n_reseed)
+                    if fresh.shape[1] != population.shape[1]:
+                        _L = population.shape[1]
+                        if fresh.shape[1] < _L:
+                            from .grammar import PAD_ID as _PAD
+                            _pad = torch.full((n_reseed, _L - fresh.shape[1]), _PAD, dtype=population.dtype, device=self.device)
+                            fresh = torch.cat([fresh, _pad], dim=1)
+                        else:
+                            fresh = fresh[:, :_L]
+                    population[_reseed_idx] = fresh
+                    pop_constants[_reseed_idx].uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                    individual_ages[_reseed_idx] = 0
+
             # Adaptive parsimony (general): increase structural pressure during stagnation,
             # especially when already close to a good fit to avoid bloat plateaus.
+
             dynamic_complexity_penalty = COMPLEXITY_PENALTY
             if global_stagnation > GpuGlobals.MUTATION_STAGNATION_TRIGGER:
                 stag_span = max(1, GpuGlobals.MUTATION_STAGNATION_TRIGGER * 2)
@@ -1991,21 +2143,21 @@ class TensorGeneticEngine:
                 selection_metric.mul_(fitness_rmse)
                 selection_metric.add_(lengths, alpha=1e-6)
 
-                # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate
+                # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate.
+                # OPTIMIZED: removed .any() CPU syncs — always apply penalty (mul by mask = same result,
+                # no sync needed since penalty is 0 when mask is False via float conversion).
                 trivial_mask = lengths <= float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS)
-                if trivial_mask.any():
-                    low_quality_trivial = trivial_mask & (fitness_rmse > GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE)
-                    if low_quality_trivial.any():
-                        selection_metric.add_(low_quality_trivial.float(), alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
+                low_quality_trivial = trivial_mask & (fitness_rmse > GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE)
+                selection_metric.add_(low_quality_trivial.float(), alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
 
-                # Penalize constant-only formulas in single-variable problems
+                # Penalize constant-only formulas in single-variable problems.
+                # OPTIMIZED: removed .any() CPU sync — penalty is 0 for formulas WITH variables.
                 if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
                     has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
                     for vid in self._single_var_ids:
                         has_var |= (population == vid).any(dim=1)
                     no_var = ~has_var
-                    if no_var.any():
-                        selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
+                    selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
                 
                 # 1b. Variable Diversity Penalty (ADDITIVE): penalize formulas missing variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
@@ -2017,13 +2169,72 @@ class TensorGeneticEngine:
                     # Additive: selection_metric += PENALTY * n_missing
                     selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
-                # Adaptive tournament size: reduce during stagnation to allow more diversity
-                effective_tournament = max(GpuGlobals.TOURNAMENT_SIZE_FLOOR, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - stagnation // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
+                # --- SOTA P1: Pareto NSGA-II blending ---
+                # Every PARETO_INTERVAL gens, compute Pareto ranks on a sample of PARETO_SAMPLE_K
+                # best candidates (per island) and blend rank * PARETO_RANK_WEIGHT into selection_metric.
+                # This balances RMSE accuracy vs tree complexity (parsimony pressure) without O(N²) on 4M.
+                if getattr(GpuGlobals, 'USE_PARETO_SELECTION', False):
+                    _p_interval = int(getattr(GpuGlobals, 'PARETO_INTERVAL', 5))
+                    if generations % _p_interval == 0:
+                        try:
+                            _k = min(int(getattr(GpuGlobals, 'PARETO_SAMPLE_K', 2000)), self.pop_size)
+                            # Sample top-K per island by current fitness
+                            _fit_view = fitness_rmse.view(self.n_islands, self.island_size)
+                            _top_k = min(_k // self.n_islands, self.island_size)
+                            _, _top_local = torch.topk(_fit_view, _top_k, dim=1, largest=False)
+                            _top_global = (_top_local + island_offsets).view(-1)  # [n_islands * _top_k]
+                            _s_fit = fitness_rmse[_top_global].float()
+                            _s_comp = (population[_top_global] != PAD_ID).sum(dim=1).float()
+                            # Run Pareto sort on the sample
+                            _par_ranks, _par_crowd = self.pareto_optimizer.compute_ranks_and_crowding(_s_fit, _s_comp)
+                            # Normalize rank to [0, 1]
+                            _max_rank = float(_par_ranks.max().item()) + 1.0
+                            _norm_ranks = _par_ranks.to(self.dtype) / _max_rank
+                            # Write back to pareto_rank_buf for sampled slots
+                            self._pareto_rank_buf.zero_()
+                            self._pareto_rank_buf[_top_global] = _norm_ranks
+                        except Exception:
+                            pass  # Non-fatal — fall back to pure RMSE selection
+                    # Always blend cached Pareto rank adjustment into selection metric
+                    _pw = float(getattr(GpuGlobals, 'PARETO_RANK_WEIGHT', 0.15))
+                    if _pw > 0:
+                        selection_metric.add_(self._pareto_rank_buf, alpha=_pw)
+                
+                # --- SOTA P2: ALPS — age penalty in selection metric ---
+                # Normalize ages to [0, 1] by max_age, then penalize with weight.
+                # This ensures individuals that have existed longer face slightly higher
+                # selection pressure, rewarding structural novelty.
+                if _alps_enabled:
+                    _alps_pw = float(getattr(GpuGlobals, 'ALPS_AGE_PENALTY_WEIGHT', 0.05))
+                    if _alps_pw > 0:
+                        _age_max = float(individual_ages.max().item()) + 1.0
+                        _norm_ages = individual_ages.to(self.dtype) / _age_max
+                        selection_metric.add_(_norm_ages, alpha=_alps_pw)
+                
+                # Adaptive tournament size: reduce during stagnation to allow more diversity.
+                # Durante global stagnation extendida (>20 gens), bajar floor a 2 para
+                # reducir presión de selección y dar tiempo a estructuras nuevas de crecer.
+                _tour_floor = 2 if global_stagnation > 20 else GpuGlobals.TOURNAMENT_SIZE_FLOOR
+                effective_tournament = max(_tour_floor, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - (stagnation + global_stagnation // 5) // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
+                
+                # --- SOTA P2: Library Learning (Update & Inject) ---
+                if getattr(GpuGlobals, 'USE_LIBRARY_LEARNING', False):
+                    # 1. Update Library from current population
+                    _lib_interval = int(getattr(GpuGlobals, 'LIBRARY_UPDATE_INTERVAL', 10))
+                    if generations % _lib_interval == 0:
+                        self.library_learner.update(population, fitness_rmse)
+                
                 # Refresh Mutation Bank periodically for structural innovation
                 if self.mutation_bank is None or generations % GpuGlobals.MUTATION_BANK_REFRESH_INTERVAL == 0:
                     self.mutation_bank = self.operators.generate_random_population(GpuGlobals.MUTATION_BANK_SIZE)
+                    
+                    # 2. Inject Library blocks into Mutation Bank
+                    if getattr(GpuGlobals, 'USE_LIBRARY_LEARNING', False):
+                        _lib_frac = float(getattr(GpuGlobals, 'LIBRARY_INJECT_FRACTION', 0.05))
+                        self.library_learner.inject_into_mutation_bank(self.mutation_bank, fraction=_lib_frac)
+
 
                 next_pop, next_c, next_fit = self.evolve_generation_cuda(
                     population, pop_constants, selection_metric, abs_errors, x_t, y_t, self.mutation_bank,
@@ -2041,8 +2252,12 @@ class TensorGeneticEngine:
                     next_c = next_c[:self.pop_size]
                     # P0-1: Cache the fitness from C++ for reuse in next iteration
                     cached_next_fit = next_fit[:self.pop_size] if next_fit is not None else None
-                    # Global Elite Injection: preserve best formula in position 0
-                    if best_rpn is not None:
+                    # Global Elite Injection: preserve best formula en posición 0.
+                    # ANTI-STAG FIX: Durante el cooldown post-restart, NO inyectar el elite global
+                    # para que la población fresca explore sin contaminarse con la estructura vieja.
+                    # Fuera del cooldown: siempre activo para proteger el global best.
+                    _elite_ok = (_post_restart_cooldown <= 0)
+                    if best_rpn is not None and _elite_ok:
                         best_size = self.get_tree_size(best_rpn)
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             next_pop[0] = best_rpn
@@ -2116,6 +2331,36 @@ class TensorGeneticEngine:
                         var_pen.sub_((population == vid).any(dim=1).float())
                     selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
+                # --- SOTA P1: Pareto blending (Python path, reuse same buffer) ---
+                if getattr(GpuGlobals, 'USE_PARETO_SELECTION', False):
+                    _p_interval = int(getattr(GpuGlobals, 'PARETO_INTERVAL', 5))
+                    if generations % _p_interval == 0:
+                        try:
+                            _k = min(int(getattr(GpuGlobals, 'PARETO_SAMPLE_K', 2000)), self.pop_size)
+                            _fit_view2 = fitness_rmse.view(self.n_islands, self.island_size)
+                            _top_k2 = min(_k // self.n_islands, self.island_size)
+                            _, _top_local2 = torch.topk(_fit_view2, _top_k2, dim=1, largest=False)
+                            _top_global2 = (_top_local2 + island_offsets).view(-1)
+                            _s_fit2 = fitness_rmse[_top_global2].float()
+                            _s_comp2 = (population[_top_global2] != PAD_ID).sum(dim=1).float()
+                            _pr2, _ = self.pareto_optimizer.compute_ranks_and_crowding(_s_fit2, _s_comp2)
+                            _max_r2 = float(_pr2.max().item()) + 1.0
+                            self._pareto_rank_buf.zero_()
+                            self._pareto_rank_buf[_top_global2] = (_pr2.to(self.dtype) / _max_r2)
+                        except Exception:
+                            pass
+                    _pw2 = float(getattr(GpuGlobals, 'PARETO_RANK_WEIGHT', 0.15))
+                    if _pw2 > 0:
+                        selection_metric.add_(self._pareto_rank_buf, alpha=_pw2)
+                
+                # --- SOTA P2: ALPS — age penalty (Python path) ---
+                if _alps_enabled:
+                    _alps_pw2 = float(getattr(GpuGlobals, 'ALPS_AGE_PENALTY_WEIGHT', 0.05))
+                    if _alps_pw2 > 0:
+                        _age_max2 = float(individual_ages.max().item()) + 1.0
+                        _norm_ages2 = individual_ages.to(self.dtype) / _age_max2
+                        selection_metric.add_(_norm_ages2, alpha=_alps_pw2)
+                
                 def get_island_parents(n_needed_per_island):
                     rand_local = torch.randint(0, self.island_size, (self.n_islands, n_needed_per_island, GpuGlobals.DEFAULT_TOURNAMENT_SIZE), device=self.device)
                     offsets = island_offsets.view(self.n_islands, 1, 1)
@@ -2136,7 +2381,16 @@ class TensorGeneticEngine:
                         curr = min(chunk_size, total_cross - c_ptr)
                         sub_idx = parents_idx[c_ptr : c_ptr + curr]
                         parents = population[sub_idx]
-                        offspring = self.operators.crossover_population(parents, 1.0)
+                        # --- SOTA P0: Headless Chicken Crossover ---
+                        # HEADLESS_CHICKEN_RATE% of pairs get a fresh random parent 2,
+                        # forcing structural exploration even in converged populations.
+                        _chicken_rate = float(getattr(GpuGlobals, 'HEADLESS_CHICKEN_RATE', 0.15))
+                        if _chicken_rate > 0:
+                            offspring = self.operators.headless_chicken_crossover(
+                                parents, pop_constants[sub_idx], 1.0, _chicken_rate
+                            )
+                        else:
+                            offspring = self.operators.crossover_population(parents, 1.0)
                         next_pop[p_ptr : p_ptr + curr] = offspring
                         next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
                         p_ptr += curr
@@ -2165,9 +2419,10 @@ class TensorGeneticEngine:
             
             # --- SIMPLIFICATION ---
             # Repair invalid RPNs produced by crossover/mutation to avoid collapse to trivial survivors.
-            next_pop, next_c, n_repaired = self.operators.repair_invalid_population(next_pop, next_c)
-            if n_repaired > 0:
-                cached_next_fit = None
+            # Repair invalids — always invalidate cache (repair puede cambiar individuos).
+            # Eliminado n_repaired > 0 check: evita sync GPU→CPU con .item().
+            next_pop, next_c, _ = self.operators.repair_invalid_population(next_pop, next_c)
+            cached_next_fit = None
 
             # --- SIMPLIFICATION ---
             if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
@@ -2222,6 +2477,16 @@ class TensorGeneticEngine:
                      # Non-fatal, just skip simplification for this batch
                  # next_c[top_global_idx] = ... (constants preserved if not PADed)
             
+            # --- SOTA P0: Constant Perturbation ---
+            # Apply multiplicative Gaussian noise to a fraction of constants before each generation.
+            # Complements PSO (global search) with cheap local neighbourhood exploration.
+            # Runs on next_c regardless of CUDA or Python path.
+            _cp_rate = float(getattr(GpuGlobals, 'CONSTANT_PERTURBATION_RATE', 0.05))
+            _cp_sigma = float(getattr(GpuGlobals, 'CONSTANT_PERTURBATION_SIGMA', 0.01))
+            if _cp_rate > 0 and next_c is not None:
+                # Skip slot 0 (global elite) to preserve the known best constants
+                self.operators.constant_perturbation(next_c[1:], rate=_cp_rate, sigma=_cp_sigma)
+
             # Swap Buffers
             population = next_pop
             pop_constants = next_c

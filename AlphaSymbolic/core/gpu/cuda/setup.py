@@ -23,7 +23,12 @@ setup(
             ],
             extra_compile_args={
                 'cxx': ['/O2', '/std:c++17'],
-                'nvcc': ['-O3']
+                # -O3: máxima optimización
+                # --use_fast_math: instrucciones FP rápidas (rsqrt, fma, etc.)
+                # -diag-suppress 221: silencia truncation warning (1e300 -> float32)
+                # -Xarch_device/-maxrregcount=64: limita registros para mayor ocupancia
+                'nvcc': ['-O3', '--use_fast_math', '-Xcudafe', '--diag_suppress=221',
+                         '--maxrregcount=64']
             }
         )
     ],

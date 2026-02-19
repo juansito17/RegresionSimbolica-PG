@@ -24,7 +24,7 @@ void rpn_kernel(
     int op_sin, int op_cos, int op_tan,
     int op_log, int op_exp,
     int op_sqrt, int op_abs, int op_neg,
-    int op_fact, int op_floor, int op_gamma,
+    int op_fact, int op_floor, int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     // Values
     double pi_val, double e_val
@@ -154,8 +154,17 @@ void rpn_kernel(
             if (a >= 0 && a <= 170) res = exp(lgamma(a + 1.0));
             else res = val_1e30;
         }
+        // FIX N1: gamma(a) = Γ(a) = exp(lgamma(a)), NOT lgamma(a+1).
+        // The old code computed lgamma(a+1) = log(Γ(a+1)) which is log-factorial, not Gamma.
+        // Domain: Gamma is real-positive only for a > 0.
         else if (token == op_gamma) {
-            if (a > -1.0) res = lgamma(a + 1.0);
+            if (a > 0.0) res = exp(lgamma(a));
+            else res = val_1e30;
+        }
+        // FIX N2: lgamma operator was completely missing from the kernel.
+        // Any formula using lgamma silently evaluated to res=0.0 (default).
+        else if (token == op_lgamma) {
+            if (a > 0.0) res = lgamma(a);
             else res = val_1e30;
         }
         
@@ -185,7 +194,7 @@ def run_vm_cupy(
     op_sin, op_cos, op_tan,
     op_log, op_exp,
     op_sqrt, op_abs, op_neg,
-    op_fact, op_floor, op_gamma,
+    op_fact, op_floor, op_gamma, op_lgamma,
     op_asin, op_acos, op_atan,
     pi_val, e_val
 ):
@@ -254,7 +263,7 @@ def run_vm_cupy(
         op_sin, op_cos, op_tan,
         op_log, op_exp,
         op_sqrt, op_abs, op_neg,
-        op_fact, op_floor, op_gamma,
+        op_fact, op_floor, op_gamma, op_lgamma,
         op_asin, op_acos, op_atan,
         float(pi_val), float(e_val)
     ))

@@ -120,6 +120,13 @@ class GPUSymbolicSimplifier:
             elif t == 'e':
                 self._cached_val_table[tid] = math.e
         self._cached_lit_vals = self._cached_val_table[self.literal_ids] if self.literal_ids.numel() > 0 else None
+        
+        # FIX N8 (Optimización): Cachear versiones CPU para evitar transferencias en bucles
+        self._lit_vals_cpu = None
+        if self._cached_lit_vals is not None:
+            self._lit_vals_cpu = self._cached_lit_vals.cpu().numpy() if self._cached_lit_vals.is_cuda else self._cached_lit_vals.numpy()
+        
+        self._lit_ids_cpu = self.literal_ids.cpu().numpy() if self.literal_ids.is_cuda else self.literal_ids.numpy()
                 
     def _is_zero(self, token_ids: torch.Tensor) -> torch.Tensor:
         by_id = (token_ids.unsqueeze(-1) == self.zero_ids).any(dim=-1) if self.zero_ids.numel() > 0 else torch.zeros_like(token_ids, dtype=torch.bool)
@@ -185,11 +192,33 @@ class GPUSymbolicSimplifier:
         return token_ids, matched
 
     def _map_single_value_to_literal_id(self, value: float) -> int:
-        vals = torch.tensor([value], device=self.device, dtype=self.dtype)
-        mask = torch.tensor([True], device=self.device, dtype=torch.bool)
-        token_ids, matched = self._map_values_to_literal_ids(vals, mask)
-        if matched[0].item():
-            return int(token_ids[0].item())
+        """
+        Map a single numeric value to a grammar literal token ID.
+        
+        FIX N8: Versión optimizada sin crear tensores GPU.
+        Usa búsqueda directa en los literales cacheados (CPU) para evitar
+        asignaciones de memoria GPU en cada llamada dentro de bucles.
+        """
+        # Fast path: valores comunes hardcoded
+        if self.ID_0 != -1 and abs(value) <= self._fold_abs_tol:
+            return self.ID_0
+        if self.ID_1 != -1 and abs(value - 1.0) <= self._fold_abs_tol:
+            return self.ID_1
+        if self.ID_2 != -1 and abs(value - 2.0) <= self._fold_abs_tol:
+            return self.ID_2
+        if self.ID_PI != -1 and abs(value - math.pi) <= self._fold_abs_tol:
+            return self.ID_PI
+        if self.ID_E != -1 and abs(value - math.e) <= self._fold_abs_tol:
+            return self.ID_E
+        
+        # Buscar en literales cacheados (sin crear tensores GPU)
+        if self._cached_lit_vals is not None and self.literal_ids.numel() > 0:
+            tol = self._fold_abs_tol + self._fold_rel_tol * abs(value)
+            # Acceder a valores CPU directamente
+            for i, lit_val in enumerate(self._lit_vals_cpu):
+                if abs(value - lit_val) <= tol:
+                    return int(self._lit_ids_cpu[i])
+        
         return -1
 
     def _precompute_all_subtree_starts(self, population: torch.Tensor) -> torch.Tensor:
@@ -216,10 +245,7 @@ class GPUSymbolicSimplifier:
         # We process right-to-left, tracking how many items each position needs
         need = arities.clone()  # [B, L] - remaining items needed
         
-        for j in range(L - 1, -1, -1):
-            # For position j, walk backward accumulating needs
-            # This is still O(L) total backward passes, but each is a vectorized step
-            pass
+        # Strategy: Process each ending position j in parallel across batch B
         
         # More efficient approach: backward cumulative scan
         # For each position j, the subtree start is determined by walking backward
@@ -936,7 +962,9 @@ class GPUSymbolicSimplifier:
                                                 torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
                                             ])
                                             if new_seg.numel() <= (j - s1 + 1):
-                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(torch.uint8)
+                                                # FIX B5: se usaba .to(torch.uint8) hardcoded.
+                                                # Si pop.dtype no es uint8 (ej: int64), trunca IDs > 255.
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(pop.dtype)
                                                 pop[b, s1+new_seg.numel():j+1] = PAD_ID
                                                 n_simplified += 1
                                                 continue
@@ -977,7 +1005,8 @@ class GPUSymbolicSimplifier:
                                                 torch.tensor([self.OP_PLUS], device=self.device, dtype=torch.long)
                                             ])
                                             if new_seg.numel() <= (j - s1 + 1):
-                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(torch.uint8)
+                                                # FIX B5 (Case B): mismo bug que Case A.
+                                                pop[b, s1:s1+new_seg.numel()] = new_seg.to(pop.dtype)
                                                 pop[b, s1+new_seg.numel():j+1] = PAD_ID
                                                 n_simplified += 1
                                                 continue
@@ -1015,13 +1044,15 @@ class GPUSymbolicSimplifier:
                 if torch.equal(x, z):
                     new = torch.cat([torch.tensor([self.ID_2], device=self.device), x, torch.tensor([self.OP_MULT], device=self.device), y, torch.tensor([self.OP_PLUS], device=self.device)])
                     if len(new) <= (j - idx_s1 + 1):
-                        pop[b, idx_s1:idx_s1+len(new)] = new.to(torch.uint8)
+                        # FIX B5 (Pattern section): usar pop.dtype en vez de uint8 hardcoded
+                        pop[b, idx_s1:idx_s1+len(new)] = new.to(pop.dtype)
                         pop[b, idx_s1+len(new):j+1] = PAD_ID
                         n_simplified += 1
                 elif torch.equal(y, z):
                     new = torch.cat([torch.tensor([self.ID_2], device=self.device), y, torch.tensor([self.OP_MULT], device=self.device), x, torch.tensor([self.OP_PLUS], device=self.device)])
                     if len(new) <= (j - idx_s1 + 1):
-                        pop[b, idx_s1:idx_s1+len(new)] = new.to(torch.uint8)
+                        # FIX B5 (Pattern section): usar pop.dtype en vez de uint8 hardcoded
+                        pop[b, idx_s1:idx_s1+len(new)] = new.to(pop.dtype)
                         pop[b, idx_s1+len(new):j+1] = PAD_ID
                         n_simplified += 1
 
@@ -1249,11 +1280,18 @@ class GPUSymbolicSimplifier:
         return pop, counts.sum().item()
 
     def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        # FIX B6: El count anterior era is_pad.any(dim=1).sum(), que equivale al numero de
+        # filas con ALGUN PAD (practicamente todas las formulas cortas). Eso hacia que
+        # n_pass nunca fuera 0, evitando el early-exit del bucle de simplificacion y
+        # ejecutando pasadas innecesarias.
+        # Ahora count = filas que realmente cambiaron (tenian huecos internos).
         B, L = population.shape
         is_pad = (population == PAD_ID)
         sort_key = is_pad.long() * L + torch.arange(L, device=self.device).unsqueeze(0)
         _, idx = torch.sort(sort_key, dim=1, stable=True)
-        return torch.gather(population, 1, idx), (is_pad.any(dim=1).sum().item())
+        compacted = torch.gather(population, 1, idx)
+        n_changed = int((compacted != population).any(dim=1).sum().item())
+        return compacted, n_changed
 
     def _get_subtree_starts(self, population: torch.Tensor, end_indices) -> torch.Tensor:
         B, L = population.shape
