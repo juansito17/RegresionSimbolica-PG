@@ -67,7 +67,7 @@ class GpuGlobals:
 
     # Stagnation & Restarts
     STAGNATION_LIMIT = 15              # OPTIMIZED: balance entre exploración y escape (was 20→15)
-    GLOBAL_STAGNATION_LIMIT = 80       # FIX Bug3: con elite siempre en pop, podemos dar más tiempo sin restarts prematuros (era 50)
+    GLOBAL_STAGNATION_LIMIT = 40       # ANTI-STAG: 80→40. Escalar restarts más rápido para escapar antes
     STAGNATION_RANDOM_INJECT_PERCENT = 0.05  # FIX: 5% para no destruir elites durante cooldown (era 0.50)
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
@@ -75,20 +75,25 @@ class GpuGlobals:
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
     SOFT_RESTART_ELITE_RATIO = 0.04    # FIX: muy pocos elites en restart → fuerza diversidad estructural (era 0.15)
-    ESCALATE_RESTART_LIMIT = 2         # NEW: después de N soft restarts sin mejora → true hard restart (1 elite)
+    ESCALATE_RESTART_LIMIT = 1         # ANTI-STAG: 2→1. TRUE HARD restart después del 1er soft restart sin mejora
     
     USE_STRUCTURAL_RESTART_INJECTION = False  # Sin bias de estructura — búsqueda completamente aleatoria
     STRUCTURAL_RESTART_INJECTION_RATIO = 0.25
     HARD_RESTART_ELITE_RATIO = 0.12
+    
+    # Elitismo dinámico durante estancamiento global
+    # Cuando global_stagnation > GLOBAL_STAGNATION_LIMIT/2 (plateau profundo),
+    # reducir elitismo para permitir que estructuras nuevas compitan sin ser aplastadas por el super-elite.
+    ELITE_PCT_STAGNATION = 0.005       # ANTI-STAG: 0.5% elites durante estancamiento profundo (solo ~20k)
 
     # ============================================================
     #                  4. GRAMMAR & INITIALIZATION
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = True
+    USE_INITIAL_FORMULA = False
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "log(((2.39036274 * (x0 * (((x0 / fact(3.13972592))**x0) + log(((10 + (6.7144866**x2))**(pi**(x2**x1))))))) - lgamma(fact((x1 * x2)))))"
+    INITIAL_FORMULA_STRING = "(lgamma(x0) + (sqrt((x0 + ((sqrt(x0) + gamma(log(5))) + ((exp(2.85944295) - (exp(x1) / 5)) / fact(((lgamma(x0) / 3.26135468) - x2)))))) - x0))"
 
     USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
 
@@ -96,7 +101,7 @@ class GpuGlobals:
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
-    MAX_TREE_DEPTH_MUTATION = 6
+    MAX_TREE_DEPTH_MUTATION = 10   # ANTI-STAG: 6→10. Subtrees más grandes compiten con el elite inyectado
 
     # Constants — reduced from 15 to 8: typical formulas use 3-5 constants.
     # Smaller K = faster PSO (47% fewer dimensions to optimize).
@@ -222,6 +227,10 @@ class GpuGlobals:
     PSO_K_NORMAL = 400             # OPTIMIZED: menos individuos, más profundidad (was 800→400)
     PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
     PSO_STAGNATION_THRESHOLD = 10
+    # ANTI-STAG: PSO adaptativo. Si el best_rpn no cambió desde el último PSO run,
+    # saltar PSO_SKIP_IF_NO_STRUCT_CHANGE generaciones para liberar GPU a exploración.
+    PSO_ADAPTIVE = True
+    PSO_SKIP_GENS = 6              # ANTI-STAG: saltar PSO cada N gens si no hubo cambio estructural
 
     # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)
     # PySR usa BFGS internamente — esta es la clave para superarlo en poly/trig.
