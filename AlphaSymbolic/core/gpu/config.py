@@ -67,14 +67,14 @@ class GpuGlobals:
 
     # Stagnation & Restarts
     STAGNATION_LIMIT = 40              # INCREASED: More time for local refinement (was 25)
-    GLOBAL_STAGNATION_LIMIT = 120      # INCREASED: Let the species breathe before wiping (was 60)
+    GLOBAL_STAGNATION_LIMIT = 60       # REVERTED: Trigger global restart faster to escape local minima (was 120)
     STAGNATION_RANDOM_INJECT_PERCENT = 0.10  # Reduced slightly to keep more elites during plateau.
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
     CATACLYSM_ELITE_PERCENT = 0.04     # Mantenemos pocos elites para forzar diversidad
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
-    SOFT_RESTART_ELITE_RATIO = 0.001   # ULTRA-LOW: Solo 1k elites de 1M (era 0.04) — fuerza nuevas estructuras.
+    SOFT_RESTART_ELITE_RATIO = 0.0001  # ULTRA-LOW: Solo 100 elites de 1M (era 0.001) — fuerza nuevas estructuras.
     ESCALATE_RESTART_LIMIT = 1         # ANTI-STAG: 2→1. TRUE HARD restart después del 1er soft restart sin mejora
     
     USE_STRUCTURAL_RESTART_INJECTION = False  # Sin bias de estructura — búsqueda completamente aleatoria
@@ -93,7 +93,7 @@ class GpuGlobals:
     USE_INITIAL_POP_CACHE = False
     USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = ""
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt((x0 + ((2 / (lgamma(x0) - x0)) + sqrt((x0 + (sqrt((10 + x0)) + (sqrt(pi) + ((pi + (2.87953472 + ((pi - lgamma(((1 - (lgamma(x0) - 3.10847616)) + 6))) / (3.06480002 - lgamma((x2 + sqrt(lgamma(x0)))))))) / (pi - lgamma((sqrt(lgamma(x0)) + (lgamma(x0) - x0)))))))))))))"
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
@@ -102,7 +102,7 @@ class GpuGlobals:
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
-    MAX_TREE_DEPTH_MUTATION = 10   # ANTI-STAG: 6→10. Subtrees más grandes compiten con el elite inyectado
+    MAX_TREE_DEPTH_MUTATION = 25   # OPTIMIZED: Large subtrees allowed (up to 51 tokens) to shatter local minima.
 
     # Constants — reduced from 15 to 8: typical formulas use 3-5 constants.
     # Smaller K = faster PSO (47% fewer dimensions to optimize).
@@ -176,7 +176,7 @@ class GpuGlobals:
     MUTATION_STAGNATION_TRIGGER = 8
     
     # Selection
-    DEFAULT_TOURNAMENT_SIZE = 6    # INCREASED: Higher pressure to favor structural winners (was 4)
+    DEFAULT_TOURNAMENT_SIZE = 7    # OPTIMIZED: Extreme pressure. Forces population to adopt deep mutations instantly.
     TOURNAMENT_SIZE_FLOOR = 3
     TOURNAMENT_ADAPTIVE_DIVISOR = 5
     BASE_ELITE_PERCENTAGE = 0.12   # INCREASED: Keep more good structures (was 0.10)
@@ -189,7 +189,7 @@ class GpuGlobals:
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
     # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
     # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
-    HEADLESS_CHICKEN_RATE = 0.15       # 15% de crossovers usan un padre aleatorio
+    HEADLESS_CHICKEN_RATE = 0.30       # OPTIMIZED: 30% of crossovers mutate with pure random trees.
     
     # --- SOTA P1: Depth-Fair Crossover ---
     # Standard crossover picks a random NODE as swap point → large subtrees dominate selection.
@@ -243,7 +243,8 @@ class GpuGlobals:
     USE_PARETO_SELECTION = True        # Enable NSGA-II Pareto blending
     PARETO_SAMPLE_K = 2000             # Subset size for Pareto sort (per island sample)
     PARETO_RANK_WEIGHT = 0.15          # How much Pareto rank adds to selection_metric
-    PARETO_INTERVAL = 5                # Run Pareto sort every N generations (amortize cost)
+    PARETO_INTERVAL = 15               # OPTIMIZED: Run Pareto sort every N generations (amortize cost)
+    PARETO_MAX_FRONT_SIZE = 30
 
 
     # ============================================================
@@ -255,9 +256,14 @@ class GpuGlobals:
     FORCE_STRICT_VALIDATION = True     # Strict math Mode (No protected operators)
     
     # Penalties
-    COMPLEXITY_PENALTY = 0.04          # Raised from 0.02 to combat formula bloat at log-scale errors
+    COMPLEXITY_PENALTY = 0.04          # Multiplicative penalty (raised from 0.02)
+    ADDITIVE_COMPLEXITY_PENALTY_WEIGHT = 0.001 # REDUCED: 0.005 was too aggressive, hindering exploration
     TRIVIAL_FORMULA_PENALTY = 1.5
     NO_VARIABLE_PENALTY = 2.5
+    
+    # Bloat Control
+    USE_TARPEIAN_CONTROL = True        # Randomly assign worst fitness to bloated formulas
+    TARPEIAN_PROBABILITY = 0.1         # REDUCED: 0.3 was killing too many promising individuals
     TRIVIAL_FORMULA_MAX_TOKENS = 2
     TRIVIAL_FORMULA_ALLOW_RMSE = 1e-3
     
@@ -306,18 +312,16 @@ class GpuGlobals:
     
     # Residual Boosting
     USE_RESIDUAL_BOOSTING = True
+    USE_SNIPER = True              # ENABLED: PHASE 8 Escape stagnation
     RESIDUAL_BOOST_INTERVAL = 20
 
     # ============================================================
     #                  8. ADVANCED FEATURES
     # ============================================================
     # Selection Strategies
-    # LEXICASE: Disabled — computes [B×D] error matrix every gen = 68MB/gen overhead.
-    # Tournament selection with complexity penalty is sufficient.
-    USE_LEXICASE_SELECTION = False
-    USE_PARETO_SELECTION = True
-    PARETO_INTERVAL = 15           # OPTIMIZED: less overhead (was 5)
-    PARETO_MAX_FRONT_SIZE = 30
+    # LEXICASE: Habilidad experimental activada. Evalúa fitness punto por punto.
+    # Essential for escaping deep N-Queens local minima (e.g. 0.017).
+    USE_LEXICASE_SELECTION = True
     
     # Pattern Memory
     USE_PATTERN_MEMORY = True
@@ -330,8 +334,7 @@ class GpuGlobals:
     PATTERN_MAX_SIZE = 12
     PATTERN_MAX_PATTERNS = 200     # OPTIMIZED: más memoria genética (era 100)
     
-    # Neural / MCTS / Sniper (Disabled/Experimental)
-    USE_SNIPER = False
+    # Neural / MCTS (Experimental)
     USE_NEURAL_FLASH = False
     NEURAL_FLASH_INTERVAL = 50
     NEURAL_FLASH_INJECT_PERCENT = 0.10

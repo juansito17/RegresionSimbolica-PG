@@ -82,7 +82,7 @@ __device__ __forceinline__ T safe_pow(T a, T b, bool &error) {
     if (abs(a) > (T)100.0 && b > (T)10.0) b = (T)10.0;
 
     T res = pow(a, b);
-    if (res != res || isinf(res)) { return (T)0.0; }
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
     return res;
 }
 
@@ -104,7 +104,7 @@ template <typename T>
 __device__ __forceinline__ T safe_tgamma(T a, bool &error) {
     if (a <= (T)0.0 && floor(a) == a) return (T)0.0;
     T res = tgamma(a);
-    if (res != res || isinf(res)) return (T)0.0;
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
     return res;
 }
 
@@ -112,7 +112,7 @@ template <typename T>
 __device__ __forceinline__ T safe_lgamma(T a, bool &error) {
     if (a <= (T)0.0 && floor(a) == a) return (T)0.0;
     T res = lgamma(a);
-    if (res != res || isinf(res)) return (T)0.0;
+    if (res != res || isinf(res)) { error = true; return (T)0.0; }
     return res;
 }
 
@@ -661,6 +661,107 @@ __global__ void crossover_splicing_kernel(
     child2[n * L + t] = (unsigned char)val_c2;
 }
 
+__global__ void crossover_constants_kernel(
+    const unsigned char* __restrict__ p1,     // [N, L]
+    const unsigned char* __restrict__ p2,     // [N, L]
+    const float* __restrict__ consts1,        // [N, K]
+    const float* __restrict__ consts2,        // [N, K]
+    const int64_t* __restrict__ starts1,      // [N]
+    const int64_t* __restrict__ ends1,        // [N]
+    const int64_t* __restrict__ starts2,      // [N]
+    const int64_t* __restrict__ ends2,        // [N]
+    float* __restrict__ child1_consts,        // [N, K]
+    float* __restrict__ child2_consts,        // [N, K]
+    int N_pairs, int L, int K, int id_C
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N_pairs) return;
+
+    int64_t s1 = starts1[n];
+    int64_t e1 = ends1[n];
+    int64_t s2 = starts2[n];
+    int64_t e2 = ends2[n];
+    
+    // --- Child 1 Construction ---
+    int c1_idx = 0;
+    
+    // P1_pre [0, s1-1]
+    int p1_c = 0;
+    for (int i = 0; i < s1; ++i) {
+        if (p1[n * L + i] == id_C) {
+            if (c1_idx < K && p1_c < K) child1_consts[n * K + c1_idx++] = consts1[n * K + p1_c];
+            p1_c++;
+        }
+    }
+    
+    // P2_sub [s2, e2]
+    int p2_c = 0;
+    for (int i = 0; i < s2; ++i) {
+        if (p2[n * L + i] == id_C) p2_c++;
+    }
+    for (int i = s2; i <= e2; ++i) {
+        if (p2[n * L + i] == id_C) {
+            if (c1_idx < K && p2_c < K) child1_consts[n * K + c1_idx++] = consts2[n * K + p2_c];
+            p2_c++;
+        }
+    }
+    
+    // P1_post [e1+1, L-1]
+    for (int i = s1; i <= e1; ++i) {
+        if (p1[n * L + i] == id_C) p1_c++;
+    }
+    for (int i = e1 + 1; i < L; ++i) {
+        if (p1[n * L + i] == id_C) {
+            if (c1_idx < K && p1_c < K) child1_consts[n * K + c1_idx++] = consts1[n * K + p1_c];
+            p1_c++;
+        }
+    }
+    
+    while (c1_idx < K) {
+        int fill_idx = c1_idx;
+        child1_consts[n * K + c1_idx] = consts1[n * K + (fill_idx % K)];
+        c1_idx++;
+    }
+    
+    // --- Child 2 Construction ---
+    int c2_idx = 0;
+    
+    p2_c = 0;
+    for (int i = 0; i < s2; ++i) {
+        if (p2[n * L + i] == id_C) {
+            if (c2_idx < K && p2_c < K) child2_consts[n * K + c2_idx++] = consts2[n * K + p2_c];
+            p2_c++;
+        }
+    }
+    
+    p1_c = 0;
+    for (int i = 0; i < s1; ++i) {
+        if (p1[n * L + i] == id_C) p1_c++;
+    }
+    for (int i = s1; i <= e1; ++i) {
+        if (p1[n * L + i] == id_C) {
+            if (c2_idx < K && p1_c < K) child2_consts[n * K + c2_idx++] = consts1[n * K + p1_c];
+            p1_c++;
+        }
+    }
+    
+    for (int i = s2; i <= e2; ++i) {
+        if (p2[n * L + i] == id_C) p2_c++;
+    }
+    for (int i = e2 + 1; i < L; ++i) {
+        if (p2[n * L + i] == id_C) {
+            if (c2_idx < K && p2_c < K) child2_consts[n * K + c2_idx++] = consts2[n * K + p2_c];
+            p2_c++;
+        }
+    }
+    
+    while (c2_idx < K) {
+        int fill_idx = c2_idx;
+        child2_consts[n * K + c2_idx] = consts2[n * K + (fill_idx % K)];
+        c2_idx++;
+    }
+}
+
 void launch_crossover_splicing(
     const torch::Tensor& parent1,
     const torch::Tensor& parent2,
@@ -792,7 +893,7 @@ __global__ void tournament_selection_kernel(
     const int64_t* __restrict__ rand_idx,   // [PopSize, TourSize]
     const int* __restrict__ rand_cases,     // [PopSize] or nullptr
     int64_t* __restrict__ selected_idx,     // [PopSize]
-    const int* __restrict__ lengths,        // [PopSize] or nullptr (NEW)
+    const float* __restrict__ lengths,        // [PopSize] or nullptr (NEW)
     int pop_size, int tour_size, int n_data
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -803,7 +904,7 @@ __global__ void tournament_selection_kernel(
     
     int64_t best_idx = my_candidates[0];
     float best_val;
-    int best_len = 1000000;
+    float best_len = 1000000.0f;
     
     if (case_idx >= 0 && errors != nullptr) {
         best_val = errors[best_idx * n_data + case_idx];
@@ -817,7 +918,7 @@ __global__ void tournament_selection_kernel(
     for (int k = 1; k < tour_size; ++k) {
         int64_t candidate = my_candidates[k];
         float val;
-        int len = 1000000;
+        float len = 1000000.0f;
         
         if (case_idx >= 0 && errors != nullptr) {
             val = errors[candidate * n_data + case_idx];
@@ -831,8 +932,14 @@ __global__ void tournament_selection_kernel(
         bool improve = false;
         if (val < best_val) {
             improve = true;
-        } else if (lengths != nullptr && val == best_val && len < best_len) {
-            improve = true; // Parsimony Pressure
+        } else if (lengths != nullptr) {
+            // PHASE 8: Add epsilon for Lexicase parsimony
+            // If errors are extremely close, pick the shorter one.
+            // Using a substantial epsilon (0.02f) for Lexicase to naturally reject micro-optimizations that double the tree size.
+            float epsilon = (case_idx >= 0) ? 0.02f : 1e-9f;
+            if (fabsf(val - best_val) < epsilon && len < best_len) {
+                improve = true;
+            }
         }
         
         if (improve) {
@@ -873,7 +980,7 @@ void launch_tournament_selection(
     const float* errors_ptr = (errors.numel() > 0) ? errors.data_ptr<float>() : nullptr;
     const int* cases_ptr = (rand_cases.numel() > 0) ? rand_cases.data_ptr<int>() : nullptr;
 
-    const int* lengths_ptr = (lengths.numel() > 0) ? lengths.data_ptr<int>() : nullptr;
+    const float* lengths_ptr = (lengths.numel() > 0) ? lengths.data_ptr<float>() : nullptr;
 
     tournament_selection_kernel<<<blocks, threads>>>(
         fitness.data_ptr<float>(),
@@ -946,7 +1053,7 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor abs_errors,     // [B, N_data] or Empty
     torch::Tensor X,               // [Vars, N_data] (Transposed for RPN kernel)
     torch::Tensor Y_target,        // [N_data]
-    torch::Tensor lengths,         // [B] int32 (for parsimony)
+    torch::Tensor lengths,         // [B] float32 (for parsimony)
     torch::Tensor token_arities,   // [VocabSize] int32
     torch::Tensor arity_0_ids,     // [n0] int64
     torch::Tensor arity_1_ids,     // [n1] int64
@@ -1018,10 +1125,13 @@ std::vector<torch::Tensor> evolve_generation(
         rand_cases = torch::empty({0}, int_opt);
     }
     
-    auto fit_f32 = fitness.to(torch::kFloat32);
-    auto err_f32 = abs_errors.numel() > 0 ? abs_errors.to(torch::kFloat32) : torch::empty({0}, float_opt);
+    auto fit_f32 = (fitness.scalar_type() == torch::kFloat32) ? fitness : fitness.to(torch::kFloat32);
+    auto err_f32 = (abs_errors.numel() > 0) ? 
+        ((abs_errors.scalar_type() == torch::kFloat32) ? abs_errors : abs_errors.to(torch::kFloat32)) : 
+        torch::empty({0}, float_opt);
     
-    launch_tournament_selection(fit_f32, err_f32, rand_idx, rand_cases, winner_idx, lengths);
+    auto lengths_f32 = (lengths.numel() > 0 && lengths.scalar_type() != torch::kFloat32) ? lengths.to(torch::kFloat32) : lengths;
+    launch_tournament_selection(fit_f32, err_f32, rand_idx, rand_cases, winner_idx, lengths_f32);
     
     // --- Elitism: Preserve the best individual at index 0 ---
     auto best_idx = torch::argmin(fit_f32);
@@ -1081,18 +1191,74 @@ std::vector<torch::Tensor> evolve_generation(
     // Apply crossover rate mask AND Safety Mask
     // If unsafe, we treat it as "crossover failed" -> keep parents
     auto cx_prob = torch::rand({n_pairs, 1}, float_opt);
-    auto cx_mask = (cx_prob < crossover_rate) & safe_mask.unsqueeze(1);
+    auto want_cx = (cx_prob < crossover_rate);
+    auto cx_mask = want_cx & safe_mask.unsqueeze(1);
     
     auto final_c1 = torch::where(cx_mask, child1, parents1);
     auto final_c2 = torch::where(cx_mask, child2, parents2);
+    
+    // --- SOTA P0: Fallback Headless Chicken Crossover ---
+    // If trees are too bloated to cross (safe_mask = false) but wanted to,
+    // inject a random tree from the mutation bank to immediately break stagnation.
+    if (mutation_bank.numel() > 0) {
+        auto fallback_mask = want_cx & (~safe_mask.unsqueeze(1));
+        auto bank_size = mutation_bank.size(0);
+        
+        auto rand_bank_idx1 = torch::randint(0, bank_size, {n_pairs}, long_opt);
+        auto rand_bank1 = mutation_bank.index_select(0, rand_bank_idx1);
+        
+        auto rand_bank_idx2 = torch::randint(0, bank_size, {n_pairs}, long_opt);
+        auto rand_bank2 = mutation_bank.index_select(0, rand_bank_idx2);
+        
+        final_c1 = torch::where(fallback_mask, rand_bank1, final_c1);
+        final_c2 = torch::where(fallback_mask, rand_bank2, final_c2);
+    }
     
     // Fixed: Interleave back to original order [0, 1, 2, 3...]
     // cat gives [0, 2, 4...] followed by [1, 3, 5...] which scrambles islands!
     auto offspring = torch::stack({final_c1, final_c2}, 1).reshape({B, L});
     
-    auto consts1 = parent_consts.slice(0, 0, 2*n_pairs, 2);
-    auto consts2 = parent_consts.slice(0, 1, 2*n_pairs, 2);
-    auto offspring_consts = torch::stack({consts1, consts2}, 1).reshape({B, K});
+    auto consts1 = parent_consts.slice(0, 0, 2*n_pairs, 2).contiguous();
+    auto consts2 = parent_consts.slice(0, 1, 2*n_pairs, 2).contiguous();
+    
+    auto child1_consts = torch::empty_like(consts1);
+    auto child2_consts = torch::empty_like(consts2);
+    
+    int threads_consts = 256;
+    int blocks_consts = (n_pairs + threads_consts - 1) / threads_consts;
+    crossover_constants_kernel<<<blocks_consts, threads_consts>>>(
+        parents1.data_ptr<unsigned char>(),
+        parents2.data_ptr<unsigned char>(),
+        consts1.data_ptr<float>(),
+        consts2.data_ptr<float>(),
+        s1.data_ptr<int64_t>(),
+        e1.data_ptr<int64_t>(),
+        s2.data_ptr<int64_t>(),
+        e2.data_ptr<int64_t>(),
+        child1_consts.data_ptr<float>(),
+        child2_consts.data_ptr<float>(),
+        n_pairs, L, K, id_C
+    );
+    
+    // Fallback mask for offspring where crossover failed
+    auto cx_mask_consts = cx_mask.squeeze(1).unsqueeze(1); // shape [n_pairs, 1]
+    
+    auto final_c1_consts = torch::where(cx_mask_consts, child1_consts, consts1);
+    auto final_c2_consts = torch::where(cx_mask_consts, child2_consts, consts2);
+
+    // If Headless Chicken Crossover happened, substitute with bank
+    if (mutation_bank.numel() > 0) {
+        auto fallback_mask_consts = (want_cx & (~safe_mask.unsqueeze(1))).squeeze(1).unsqueeze(1);
+        
+        // Randomly initialized constants for Headless Chicken Trees
+        auto rand_c1_consts = torch::empty_like(consts1).uniform_(-10.0f, +10.0f);
+        auto rand_c2_consts = torch::empty_like(consts2).uniform_(-10.0f, +10.0f);
+        
+        final_c1_consts = torch::where(fallback_mask_consts, rand_c1_consts, final_c1_consts);
+        final_c2_consts = torch::where(fallback_mask_consts, rand_c2_consts, final_c2_consts);
+    }
+    
+    auto offspring_consts = torch::stack({final_c1_consts, final_c2_consts}, 1).reshape({2*n_pairs, K});
     
     // Elitism Check: Ensure first row of offspring is the global best from previous generation
     offspring.index_put_({0}, parents.index({0}));

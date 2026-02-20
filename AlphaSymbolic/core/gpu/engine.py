@@ -122,7 +122,9 @@ class TensorGeneticEngine:
         # --- SOTA P1: Pareto rank adjustment buffer (NSGA-II blending) ---
         self._pareto_rank_buf = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
         
-        # --- Variable diversity: cache variable token IDs for penalty computation ---
+        # --- PHASE 7: Lexicase Error Buffer (Reuse to avoid OOM fragmentation/alloc overhead) ---
+        # Note: Size depends on N_data (samples). We'll initialize it lazily or here if samples known.
+        self._abs_errors_buf = None # Will be initialized on first 100% Lexicase run
         self._var_token_ids = []
         if self.num_variables > 1:
             for vi in range(self.num_variables):
@@ -770,9 +772,9 @@ class TensorGeneticEngine:
 
         # Ensure lengths are passed
         if lengths is None:
-            lengths = (population != vm.PAD_ID).sum(dim=1).int()
+            lengths = (population != vm.PAD_ID).sum(dim=1).float()
         else:
-            lengths = lengths.int()
+            lengths = lengths.float()
 
         result = rpn_cuda.evolve_generation(
             population,
@@ -1593,8 +1595,12 @@ class TensorGeneticEngine:
                     fitness_rmse[unique_mod] = partial_rmse
             elif GpuGlobals.USE_LEXICASE_SELECTION:
 
-                abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
-                fitness_rmse = torch.mean(abs_errors**2, dim=1).sqrt() # Approx RMSE for stats
+                abs_errors = self.evaluator.evaluate_batch_full(
+                    population, x_t, y_t, pop_constants, 
+                    strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION),
+                    force_f32=True
+                )
+                fitness_rmse = torch.mean(abs_errors.to(self.dtype)**2, dim=1).sqrt() # Approx RMSE for stats
             else:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 abs_errors = None
@@ -1655,12 +1661,15 @@ class TensorGeneticEngine:
                     # Eliminates multiple .item() / .any() CPU syncs which are very expensive
                     if not hasattr(self, '_hash_powers'):
                         # Cache powers to avoid re-calculating inside the tight loop
-                        self._hash_powers = (31 ** torch.arange(self.max_len, device=self.device)).long()
+                        # Using int64 to avoid overflow issues with structural hashes
+                        self._hash_powers = (31 ** torch.arange(self.max_len, device=self.device)).to(torch.int64)
                     
                     # Pad tokens don't contribute to structural hash
-                    masked_rpn = torch.where(best_rpn != PAD_ID, best_rpn.long(), torch.tensor(0, device=self.device))
+                    # OPTIMIZED: Inline construction of zero-tensor to avoid repeated allocation
+                    # best_rpn is tiny (e.g. 64), sum is instant.
+                    masked_rpn = torch.where(best_rpn != PAD_ID, best_rpn.to(torch.int64), torch.zeros(1, device=self.device, dtype=torch.int64))
                     hash_tensor = torch.sum(masked_rpn * self._hash_powers[:len(best_rpn)])
-                    _curr_rpn_hash = hash_tensor.item() # ONLY ONE SYNC
+                    _curr_rpn_hash = hash_tensor # KEEP ON GPU
                 
                 # Decide whether to skip PSO this round
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
@@ -1675,7 +1684,7 @@ class TensorGeneticEngine:
                 
                 if not _skip_pso:
                     _pso_skip_counter = 0
-                    _last_pso_rpn_hash = _curr_rpn_hash
+                    _last_pso_rpn_hash = _curr_rpn_hash # Store as tensor/None
                     # During stagnation: optimize more individuals with more steps
                     if _in_stagnation:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_STAGNATION)
@@ -1731,22 +1740,28 @@ class TensorGeneticEngine:
             
             # Best Tracking — only consider formulas using ALL variables (if multi-var mode)
             if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                # Compute mask: which individuals use all variables
+                # OPTIMIZED: Vectorized mask calculation without .any() syncs
                 _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
                 for vid in self._var_token_ids:
+                    # (population == vid).any(dim=1) is [B] tensor, NO SYNC
                     _uses_all &= (population == vid).any(dim=1)
-                if _uses_all.any():
-                    _masked_rmse = fitness_rmse.clone()
-                    _masked_rmse[~_uses_all] = float('inf')
-                    min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
-                    min_rmse_val = min_rmse.item()
-                else:
-                    # No formula uses all vars yet — fall back to raw
+                
+                # OPTIMIZED: Avoid _uses_all.any() sync by using masked RMSE
+                _masked_rmse = fitness_rmse.clone()
+                # If formula is not valid (doesn't use all vars), set its RMSE to INF for tracking
+                _masked_rmse[~_uses_all] = float('inf')
+                
+                min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
+                min_rmse_val = min_rmse.item() # ONE SYNC to fetch scalar
+                
+                # If no formula uses all variables, min_rmse_val will be INF.
+                # In that case, we fall back to RAW min to ensure we always have a "best"
+                if min_rmse_val >= 1e18:
                     min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
                     min_rmse_val = min_rmse.item()
             else:
                 min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-                min_rmse_val = min_rmse.item()  # Single sync
+                min_rmse_val = min_rmse.item()  # Simple sync
             
             if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):  # NaN check + tolerance
                 min_idx_val = min_idx.item()
@@ -1787,6 +1802,31 @@ class TensorGeneticEngine:
                     self.best_global_rmse = best_rmse
                     self.best_global_rpn = best_rpn
                     self.best_global_consts = best_consts_vec
+
+                    # --- PHASE 8 Pre-calculation ---
+                    is_first = (last_reported_fitness == float('inf'))
+                    rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
+
+                    # --- PHASE 8: THE SNIPER (Residual Boosting) ---
+                    # When a new best is found, or periodically, try to fit the residual
+                    _boost_interval = getattr(GpuGlobals, 'RESIDUAL_BOOST_INTERVAL', 20)
+                    if generations % _boost_interval == 0 or rel_improvement > 0.01:
+                        try:
+                            _b_str, _b_rmse, _b_rpn, _b_c = self.attempt_residual_boost(
+                                best_rpn, best_consts_vec, x_t, y_t, best_rmse
+                            )
+                            if _b_str is not None and _b_rmse < best_rmse:
+                                print(f"\n[Sniper] BOOST SUCCESSFUL! RMSE: {best_rmse:.6e} -> {_b_rmse:.6e}")
+                                best_rmse = _b_rmse
+                                best_rpn = _b_rpn
+                                best_consts_vec = _b_c
+                                self.best_global_rmse = best_rmse
+                                self.best_global_rpn = best_rpn
+                                self.best_global_consts = best_consts_vec
+                                # Recalculate rel_improvement after booster success
+                                rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
+                        except Exception:
+                            pass # Sniper is experimental
                 
                 # Identify Island
                 island_idx = (min_idx_val // self.island_size) if self.n_islands > 1 else 0
@@ -1814,12 +1854,6 @@ class TensorGeneticEngine:
                     return formula
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
 
-                # Only report to user if improvement is significant (> 0.1%)
-                # Case 1: First best found (last_reported_fitness is inf)
-                # Case 2: Improvement > 0.1%
-                is_first = (last_reported_fitness == float('inf'))
-                rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
-                
                 if callback and (is_first or rel_improvement > 0.001):
                     # Only report to user if fitness is within a reasonable range (not a penalty value)
                     if best_rmse < 1e100:
@@ -1927,8 +1961,10 @@ class TensorGeneticEngine:
                      _best_rmse_at_last_restart = best_rmse
 
                      if _consecutive_restarts >= _escalate_limit:
-                         # TRUE HARD RESTART: solo 1 elite (la mejor fórmula del algoritmo)
-                         n_keep = 1
+                         # TRUE HARD RESTART: 0 elites. Completely wipe the board to prevent the old local-minimum elite
+                         # from instantly duplicating across the entire population via tournament selection.
+                         # The overall global best is still safely stored in `self.best_global_rpn` externally.
+                         n_keep = 0
                          _consecutive_restarts = 0
                          restart_label = "TRUE HARD"
                          _post_restart_cooldown = 50  # 50 gens sin migrar ni inyectar elite
@@ -1937,18 +1973,23 @@ class TensorGeneticEngine:
                          restart_label = "Soft"
 
                      n_random = self.pop_size - n_keep
-                     print(f"[Engine] Global stagnation ({global_stagnation} gens). {restart_label} Restart "
+                     print(f"\n[Engine] Global stagnation ({global_stagnation} gens). {restart_label} Restart "
                            f"(Keeping top {n_keep} elites, streak={_consecutive_restarts}/{_escalate_limit}).")
 
-                     # Identify elites
-                     _, indices = torch.topk(fitness_rmse, n_keep, largest=False)
-                     elites = population[indices]
-                     elite_c = pop_constants[indices]
+                     if n_keep > 0:
+                         # Identify elites
+                         _, indices = torch.topk(fitness_rmse, n_keep, largest=False)
+                         elites = population[indices]
+                         elite_c = pop_constants[indices]
 
-                     # Siempre garantizar que la mejor fórmula ocupe el slot 0
-                     if best_rpn is not None and n_keep >= 1:
-                         elites[0] = best_rpn
-                         elite_c[0] = best_consts_vec
+                         # Siempre garantizar que la mejor fórmula activa ocupe el slot 0
+                         if best_rpn is not None:
+                             elites[0] = best_rpn
+                             elite_c[0] = best_consts_vec
+                     else:
+                         # Empty tensors to concatenate
+                         elites = torch.empty(0, self.max_len, device=self.device, dtype=torch.long)
+                         elite_c = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                      # Generate randoms
                      rand_pop = self.operators.generate_random_population(n_random)
@@ -2150,14 +2191,28 @@ class TensorGeneticEngine:
             
             # --- EVOLUTION STEP (Reproduction) ---
             if GpuGlobals.USE_CUDA_ORCHESTRATOR:
-                # 1. Selection Metric with Complexity Penalty (in-place to reduce allocations)
                 lengths = (population != PAD_ID).sum(dim=1).float()
-                # selection_metric = fitness_rmse * (1.0 + penalty * lengths) + lengths * 1e-6
                 selection_metric = self._selection_metric_buf
+                
+                # 1. Selection Metric with Complexity Penalty (in-place to reduce allocations)
                 torch.mul(lengths, dynamic_complexity_penalty, out=selection_metric)
                 selection_metric.add_(1.0)
-                selection_metric.mul_(fitness_rmse)
-                selection_metric.add_(lengths, alpha=1e-6)
+                
+                # --- SOTA P3: Tarpeian Bloat Control ---
+                if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
+                    avg_len = lengths.mean()
+                    oversized = lengths > avg_len * 1.5
+                    random_mask = torch.rand(self.pop_size, device=self.device) < getattr(GpuGlobals, 'TARPEIAN_PROBABILITY', 0.3)
+                    penalize_mask = oversized & random_mask
+                    temp_fitness = fitness_rmse.clone()
+                    temp_fitness[penalize_mask] = 1e8
+                    selection_metric.mul_(temp_fitness)
+                else:
+                    selection_metric.mul_(fitness_rmse)
+
+                # Additive Complexity Penalty: Prevents zero-cost bloat when RMSE ~ 0
+                additive_weight = getattr(GpuGlobals, 'ADDITIVE_COMPLEXITY_PENALTY_WEIGHT', 0.0)
+                selection_metric.add_(lengths, alpha=(1e-6 + additive_weight))
 
                 # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate.
                 # OPTIMIZED: removed .any() CPU syncs — always apply penalty (mul by mask = same result,
@@ -2227,6 +2282,16 @@ class TensorGeneticEngine:
                         _norm_ages = individual_ages.to(self.dtype) / _age_max
                         selection_metric.add_(_norm_ages, alpha=_alps_pw)
                 
+                # --- [END of Penalty Calculation Block] ---
+                
+                # --- SOTA P4: Lexicase Penalty Injection ---
+                # Fix: Lexicase C++ tournament ignores `selection_metric` and solely uses `abs_errors`.
+                # We extract the pure penalty portion and add it across all test cases.
+                if getattr(GpuGlobals, 'USE_LEXICASE_SELECTION', False) and abs_errors is not None:
+                    penalty_offset = selection_metric - fitness_rmse
+                    torch.clamp_(penalty_offset, min=0.0) # Ensure no negative offset
+                    abs_errors.add_(penalty_offset.unsqueeze(1))
+
                 # Adaptive tournament size: reduce during stagnation to allow more diversity.
                 # Durante global stagnation extendida (>20 gens), bajar floor a 2 para
                 # reducir presión de selección y dar tiempo a estructuras nuevas de crecer.
@@ -2320,8 +2385,22 @@ class TensorGeneticEngine:
                 selection_metric = self._selection_metric_buf
                 torch.mul(lengths, dynamic_complexity_penalty, out=selection_metric)
                 selection_metric.add_(1.0)
-                selection_metric.mul_(fitness_rmse)
-                selection_metric.add_(lengths, alpha=1e-6)
+                
+                # --- SOTA P3: Tarpeian Bloat Control ---
+                if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
+                    avg_len = lengths.mean()
+                    oversized = lengths > avg_len * 1.5
+                    random_mask = torch.rand(self.pop_size, device=self.device) < getattr(GpuGlobals, 'TARPEIAN_PROBABILITY', 0.3)
+                    penalize_mask = oversized & random_mask
+                    temp_fitness = fitness_rmse.clone()
+                    temp_fitness[penalize_mask] = 1e8
+                    selection_metric.mul_(temp_fitness)
+                else:
+                    selection_metric.mul_(fitness_rmse)
+
+                # Additive Complexity Penalty
+                additive_weight = getattr(GpuGlobals, 'ADDITIVE_COMPLEXITY_PENALTY_WEIGHT', 0.0)
+                selection_metric.add_(lengths, alpha=(1e-6 + additive_weight))
 
                 # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate
                 trivial_mask = lengths <= float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS)

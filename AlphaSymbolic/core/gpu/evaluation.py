@@ -138,21 +138,19 @@ class GPUEvaluator:
             
             # Process Validity within chunk: (Stack OK) AND (No Kernel Error)
             is_valid = (sp == 1) & (err == 0)
+            is_valid_pt = is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds)
             
-            # Penalize: Replace invalid, NaNs or Infs with INF_VAL
-            # This must be done BEFORE calculating diff to avoid INF/NaN leakage
-            f_preds = torch.where(is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds), 
-                                  f_preds, 
-                                  self._inf_tensor)
+            # Penalize: Replace invalid, NaNs or Infs temporarily with 0.0 for math stability
+            f_preds_safe = torch.where(is_valid_pt, f_preds, torch.zeros_like(f_preds))
             
             # Reshape to [current_B, N]
-            preds_mat = f_preds.view(current_B, N_samples)
+            preds_mat = f_preds_safe.view(current_B, N_samples)
+            valid_mat = is_valid_pt.view(current_B, N_samples)
+            ind_is_valid = valid_mat.all(dim=1)
             
             # Compare (Broadcasting y_target [1, N])
             if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
                 # RMSLE: log(pred + 1) - log(target + 1)
-                # We use abs() to handle negative predictions gracefully, though ideally models shouldn't produce them for count data.
-                # Clamp to avoid log(0)
                 log_pred = torch.log(torch.abs(preds_mat) + 1.0)
                 
                 diff = log_pred - log_target_chunk
@@ -173,6 +171,9 @@ class GPUEvaluator:
                                               self._inf_tensor, 
                                               mse))
                                           
+            # Apply absolute penalty to completely invalid individuals AFTER log scale
+            metric_score = torch.where(ind_is_valid, metric_score, self._inf_tensor)
+            
             # Write directly to pre-allocated buffer
             final_rmse[i:end_i] = metric_score
              
@@ -218,7 +219,10 @@ class GPUEvaluator:
         
         # Reshape to [B, N_samples]
         valid_matrix = sample_valid.view(population.shape[0], N_samples)
+        ind_is_valid = valid_matrix.all(dim=1)
+        
         preds = final_preds.view(population.shape[0], N_samples)
+        preds = torch.where(valid_matrix, preds, torch.zeros_like(preds))
         target = y_target.flatten().unsqueeze(0).expand_as(preds)
         
         if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
@@ -229,10 +233,8 @@ class GPUEvaluator:
             diff = log_pred - log_target
             sq_err = diff**2
             
-            # Masking: Use high penalty for invalid cases
-            # PENALTY must be significantly larger than any possible real target error
-            masked_sq_err = torch.where(valid_matrix, sq_err, self._inf_tensor)
-            loss = masked_sq_err.mean(dim=1)
+            loss = sq_err.mean(dim=1)
+            loss = torch.where(ind_is_valid, loss, self._inf_tensor)
             return loss, preds
             
         else:
@@ -240,12 +242,11 @@ class GPUEvaluator:
             sq_err = (preds - target)**2
             sq_err = torch.clamp(sq_err, max=1e10)
             
-            # Masking: Use INF_VAL penalty
-            masked_sq_err = torch.where(valid_matrix, sq_err, self._inf_tensor)
-            loss = masked_sq_err.mean(dim=1)
+            loss = sq_err.mean(dim=1)
+            loss = torch.where(ind_is_valid, loss, self._inf_tensor)
             return loss, preds
     
-    def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
+    def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0, force_f32: bool = False) -> torch.Tensor:
         B, L = population.shape
         y_flat = y_target.flatten()
         n_samples = y_flat.shape[0]
@@ -271,8 +272,12 @@ class GPUEvaluator:
         # Logic mirrors evaluate_batch but returns full [B, D] errors
         max_chunk_inds = 100000 # Smaller chunk size for full matrix (D=25 -> 2.5M elems per chunk)
         
+        # Determine output dtype (Optimization for Lexicase memory bandwidth)
+        out_dtype = torch.float32 if force_f32 else self.dtype
+        inf_val_out = 1e20 if force_f32 else self.INF_VAL
+
         # Pre-allocate output buffer (avoid torch.cat at the end)
-        all_abs_errors = torch.full((B, D), self.INF_VAL, device=self.device, dtype=self.dtype)
+        all_abs_errors = torch.full((B, D), inf_val_out, device=self.device, dtype=out_dtype)
         
         # Pre-process Target [1, D]
         target_matrix_chunk = y_target.flatten().unsqueeze(0) 
@@ -288,23 +293,23 @@ class GPUEvaluator:
             final_preds, sp, has_error = self._run_vm(sub_pop, x_for_vm, sub_c, strict_mode=strict_mode)
 
             # Validity: (Stack OK) AND (No Kernel Error)
-            is_valid = (sp == 1) & (has_error == 0)
+            is_valid = (sp == 1) & (has_error == 0) & ~torch.isnan(final_preds) & ~torch.isinf(final_preds)
             
             # Penalize
-            final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
-                                      final_preds, 
-                                      self._inf_tensor)
+            final_preds = torch.where(is_valid, final_preds, torch.zeros_like(final_preds))
             
             # Reshape to [current_B, D]
             preds_matrix = final_preds.view(current_B, D)
+            valid_matrix = is_valid.view(current_B, D)
+            ind_is_valid = valid_matrix.all(dim=1).unsqueeze(1).expand(current_B, D)
             
             # Broadcast Target
             # target is [1, D], preds is [cur_B, D] => Broadcast works automatically
             abs_err = torch.abs(preds_matrix - target_matrix_chunk)
             
-            abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
-                                  self._inf_tensor, 
-                                  abs_err)
+            abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err) | ~ind_is_valid, 
+                                  torch.tensor(inf_val_out, device=self.device, dtype=out_dtype), 
+                                  abs_err.to(out_dtype))
             
             # Write directly to pre-allocated buffer
             all_abs_errors[i:end_i] = abs_err
