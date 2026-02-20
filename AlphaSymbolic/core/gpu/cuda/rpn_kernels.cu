@@ -11,9 +11,9 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 // Stack size for RPN
-// Max formula length is 30 tokens → max stack depth ~15 levels.
-// Reduced from 64 to 32 → frees registers → higher SM occupancy.
-#define STACK_SIZE 32
+// Max formula length is 64 tokens -> max stack depth ~32 levels.
+// Previously reduced from 64 to 32 -> frees registers -> higher SM occupancy. We increased length so we revert to 64.
+#define STACK_SIZE 64
 
 // Templated Constants?
 // We will cast inside functions

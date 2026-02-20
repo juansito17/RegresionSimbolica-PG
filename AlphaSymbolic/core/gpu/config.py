@@ -55,26 +55,26 @@ class GpuGlobals:
     GENERATIONS = 1_000_000
     
     # Islands
-    NUM_ISLANDS = 50              # OPTIMIZED: 50 islas de 80k c/u → más diversidad (era 25)
+    NUM_ISLANDS = 20              # RELIEVED: 20 larger islands (50k each) instead of 50 small ones (20k).
     MIN_POP_PER_ISLAND = 80
     
     # Migration
-    MIGRATION_INTERVAL = 30                    # OPTIMIZED: más aislamiento (era 15)
+    MIGRATION_INTERVAL = 30                    # SLOWER: Let islands deviate more before mixing (was 100 or 10)
     MIGRATION_INTERVAL_STAGNATION = 25         # Slower migration during island stagnation
     MIGRATION_INTERVAL_GLOBAL_STAGNATION = 300 # NEW: durante global stagnation > 20 → casi no migrar para mantener islas aisladas
     MIGRATION_STAGNATION_THRESHOLD = 10
     MIGRATION_SIZE = 80                # OPTIMIZED: más individuos por migración (era 50)
 
     # Stagnation & Restarts
-    STAGNATION_LIMIT = 15              # OPTIMIZED: balance entre exploración y escape (was 20→15)
-    GLOBAL_STAGNATION_LIMIT = 40       # ANTI-STAG: 80→40. Escalar restarts más rápido para escapar antes
-    STAGNATION_RANDOM_INJECT_PERCENT = 0.05  # FIX: 5% para no destruir elites durante cooldown (era 0.50)
+    STAGNATION_LIMIT = 40              # INCREASED: More time for local refinement (was 25)
+    GLOBAL_STAGNATION_LIMIT = 120      # INCREASED: Let the species breathe before wiping (was 60)
+    STAGNATION_RANDOM_INJECT_PERCENT = 0.10  # Reduced slightly to keep more elites during plateau.
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
-    CATACLYSM_ELITE_PERCENT = 0.06     # FIX: cataclismos más agresivos — menos elites = más diversidad (era 0.12)
+    CATACLYSM_ELITE_PERCENT = 0.04     # Mantenemos pocos elites para forzar diversidad
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
-    SOFT_RESTART_ELITE_RATIO = 0.04    # FIX: muy pocos elites en restart → fuerza diversidad estructural (era 0.15)
+    SOFT_RESTART_ELITE_RATIO = 0.001   # ULTRA-LOW: Solo 1k elites de 1M (era 0.04) — fuerza nuevas estructuras.
     ESCALATE_RESTART_LIMIT = 1         # ANTI-STAG: 2→1. TRUE HARD restart después del 1er soft restart sin mejora
     
     USE_STRUCTURAL_RESTART_INJECTION = False  # Sin bias de estructura — búsqueda completamente aleatoria
@@ -91,13 +91,14 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = False
+    USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "log(((((lgamma(x0) * pi) + ((1 + 1.10762465)**(e + lgamma((x0 - 3.24382305))))) - lgamma(fact(x1))) + (sqrt(x0)**((exp(2) - x1)**x2))))"
+    INITIAL_FORMULA_STRING = ""
 
-    USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
+    USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
+    MAX_FORMULA_LENGTH = 64
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
@@ -105,7 +106,7 @@ class GpuGlobals:
 
     # Constants — reduced from 15 to 8: typical formulas use 3-5 constants.
     # Smaller K = faster PSO (47% fewer dimensions to optimize).
-    MAX_CONSTANTS = 8
+    MAX_CONSTANTS = 10                 # INCREASED: Más flexibilidad estructural (era 8)
     CONSTANT_MIN_VALUE = -25.0
     CONSTANT_MAX_VALUE = 25.0
     CONSTANT_INT_MIN_VALUE = -25
@@ -146,9 +147,9 @@ class GpuGlobals:
         0.02 * (1.0 if USE_OP_MOD else 0.0),
         0.10 * (1.0 if USE_OP_SIN else 0.0),
         0.10 * (1.0 if USE_OP_COS else 0.0),
-        0.10 * (1.0 if USE_OP_TAN else 0.0),
-        0.05 * (1.0 if USE_OP_LOG else 0.0),
-        0.05 * (1.0 if USE_OP_EXP else 0.0),
+        0.05 * (1.0 if USE_OP_TAN else 0.0), # REDUCED: Tan suele ser inestable
+        0.08 * (1.0 if USE_OP_LOG else 0.0), # INCREASED log/exp weight
+        0.08 * (1.0 if USE_OP_EXP else 0.0),
         # OPTIMIZED: fact/lgamma/pow aumentados para N-Queens (fórmula objetivo usa lgamma)
         0.08 * (1.0 if USE_OP_FACT else 0.0),
         0.01 * (1.0 if USE_OP_FLOOR else 0.0),
@@ -166,19 +167,19 @@ class GpuGlobals:
     #                  5. GENETIC OPERATORS
     # ============================================================
     # Rates
-    BASE_MUTATION_RATE = 0.18      # OPTIMIZED: más exploración estructural (era 0.15)
-    DEFAULT_CROSSOVER_RATE = 0.60
+    BASE_MUTATION_RATE = 0.30      # AGGRESSIVE: 30% mutation to break local optima (was 0.22)
+    DEFAULT_CROSSOVER_RATE = 0.40  # REDUCED: More mutation, less crossover.
     
     # Adaptive Mutation
-    MUTATION_RATE_CAP = 0.50       # Reduced from 0.70 to prevent destroying elites during long plateaus
-    MUTATION_RAMP_PER_GEN = 0.015
-    MUTATION_STAGNATION_TRIGGER = 5
+    MUTATION_RATE_CAP = 0.60       # INCREASED: Cap más alto (era 0.50)
+    MUTATION_RAMP_PER_GEN = 0.02
+    MUTATION_STAGNATION_TRIGGER = 8
     
     # Selection
-    DEFAULT_TOURNAMENT_SIZE = 5
+    DEFAULT_TOURNAMENT_SIZE = 6    # INCREASED: Higher pressure to favor structural winners (was 4)
     TOURNAMENT_SIZE_FLOOR = 3
-    TOURNAMENT_ADAPTIVE_DIVISOR = 6
-    BASE_ELITE_PERCENTAGE = 0.12
+    TOURNAMENT_ADAPTIVE_DIVISOR = 5
+    BASE_ELITE_PERCENTAGE = 0.12   # INCREASED: Keep more good structures (was 0.10)
     
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
@@ -290,9 +291,9 @@ class GpuGlobals:
 
     # L-BFGS-B Constant Optimizer
     USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
-    BFGS_INTERVAL = 30             # Run L-BFGS-B every 30 gens
-    BFGS_TOP_K = 15                # Only refine the absolute top 15 elites island-wide
-    BFGS_MAX_ITER = 3
+    BFGS_INTERVAL = 10             # OPTIMIZED: Run L-BFGS-B every 10 gens (Phase 6 speed)
+    BFGS_TOP_K = 50                # Refine top 50 elites island-wide
+    BFGS_MAX_ITER = 20             # OPTIMIZED: 20 iterations (Cheaper with native gradients)
     
     # Simplification
     USE_SIMPLIFICATION = True

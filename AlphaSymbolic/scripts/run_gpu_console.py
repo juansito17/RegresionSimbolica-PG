@@ -170,7 +170,7 @@ if __name__ == "__main__":
     
     # Engine will use Globals defaults for pop_size and n_islands
     # INCREASED max_constants to 10 to support complex seeds with many literals
-    engine = TensorGeneticEngine(num_variables=3, max_constants=GpuGlobals.MAX_CONSTANTS)
+    engine = TensorGeneticEngine(num_variables=3, max_constants=GpuGlobals.MAX_CONSTANTS, max_len=GpuGlobals.MAX_FORMULA_LENGTH)
     
     start_time_global = time.time()
     

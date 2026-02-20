@@ -21,7 +21,7 @@ from .simplification import GPUSimplifier
 from .gpu_simplifier import GPUSymbolicSimplifier
 
 class TensorGeneticEngine:
-    def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None, model=None):
+    def __init__(self, device=None, pop_size=None, max_len=None, num_variables=1, max_constants=5, n_islands=None, model=None):
         # Device selection respects FORCE_CPU_MODE
         if device:
             self.device = device
@@ -34,6 +34,7 @@ class TensorGeneticEngine:
         # Defaults from Globals
         if pop_size is None: pop_size = GpuGlobals.POP_SIZE
         if n_islands is None: n_islands = GpuGlobals.NUM_ISLANDS
+        if max_len is None: max_len = getattr(GpuGlobals, 'MAX_FORMULA_LENGTH', 30)
         
         self.n_islands = n_islands
         if pop_size % n_islands != 0:
