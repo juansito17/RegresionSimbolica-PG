@@ -15,12 +15,12 @@ import time
 import csv
 import datetime
 
-from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES, VARIABLES
+from AlphaSymbolic.core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES, VARIABLES
 from data.synthetic_data import DataGenerator
 from ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
-from core.loss import QuantileLoss
+from AlphaSymbolic.core.loss import QuantileLoss
 from search.hybrid_search import hybrid_solve
-from core.grammar import ExpressionTree, simplify_formula
+from AlphaSymbolic.core.grammar import ExpressionTree, simplify_formula
 from utils.data_utils import normalize_batch
 
 

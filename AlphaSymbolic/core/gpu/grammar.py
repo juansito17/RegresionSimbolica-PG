@@ -1,7 +1,7 @@
 
 import torch
 from typing import List, Tuple, Dict, Optional
-from core.grammar import OPERATORS
+from AlphaSymbolic.core.grammar import OPERATORS
 
 # --- GPU GRAMMAR ENCODING (RPN / Postfix) ---
 PAD_ID = 0

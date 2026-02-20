@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import time
 import gradio as gr
 
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 from search.beam_search import BeamSearch
 from search.mcts import MCTS
 from search.hybrid_search import hybrid_solve

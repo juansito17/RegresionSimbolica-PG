@@ -139,7 +139,7 @@ def _parse_formula_to_rpn(formula_str):
     Reuses ExpressionTree from grammar.py.
     Returns list of tokens in RPN order.
     """
-    from core.grammar import ExpressionTree
+    from AlphaSymbolic.core.grammar import ExpressionTree
     
     f_norm = formula_str.replace('**', '^')
     tree = ExpressionTree.from_infix(f_norm)
@@ -256,7 +256,7 @@ def strict_eval_cpu(formula_str, x_data):
     """
     Vía 3: Evalúa con ExpressionTree.evaluate de grammar.py (semántica estricta).
     """
-    from core.grammar import ExpressionTree
+    from AlphaSymbolic.core.grammar import ExpressionTree
     
     f_norm = formula_str.replace('**', '^')
     tree = ExpressionTree.from_infix(f_norm)
@@ -303,8 +303,8 @@ def gpu_eval(formula_str, x_np, y_np, num_variables=1, use_strict=False):
     """
     import torch
     import traceback
-    from core.gpu.engine import TensorGeneticEngine
-    from core.gpu.config import GpuGlobals
+    from AlphaSymbolic.core.gpu.engine import TensorGeneticEngine
+    from AlphaSymbolic.core.gpu.config import GpuGlobals
     
     # Detect which ops the formula needs and temporarily enable them
     needed_ops = _detect_formula_ops(formula_str)

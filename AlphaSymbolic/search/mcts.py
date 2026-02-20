@@ -2,7 +2,7 @@ import math
 import numpy as np
 import torch
 import copy
-from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES, OPERATOR_STAGES
+from AlphaSymbolic.core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES, OPERATOR_STAGES
 from utils.optimize_constants import optimize_constants
 from utils.data_utils import normalize_batch
 

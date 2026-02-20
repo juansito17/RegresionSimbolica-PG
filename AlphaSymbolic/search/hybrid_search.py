@@ -5,11 +5,11 @@ from typing import List, Dict, Any, Optional
 import concurrent.futures
 import os
 
-from core.gp_bridge import GPEngine
+from AlphaSymbolic.core.gp_bridge import GPEngine
 from search.beam_search import BeamSearch, beam_solve
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 try:
-    from core.gpu import TensorGeneticEngine
+    from AlphaSymbolic.core.gpu import TensorGeneticEngine
 except ImportError:
     TensorGeneticEngine = None
     print("Warning: Could not import TensorGeneticEngine (PyTorch/CUDA missing?)")
@@ -21,7 +21,7 @@ def _run_gp_worker(args):
     """
     x_list, y_list, seeds, timeout, binary_path = args
     import numpy as np
-    from core.grammar import ExpressionTree
+    from AlphaSymbolic.core.grammar import ExpressionTree
     engine = GPEngine(binary_path=binary_path)
     # Give each worker a slight timeout variance to avoid file lock collisions if using temp files
     # or just to spread load. But GPEngine handles unique tmp files so it should be fine.
@@ -138,7 +138,7 @@ def hybrid_solve(
     if TensorGeneticEngine and use_gpu_gp:
         try:
             # Use cached engine if available
-            from core.gpu.config import GpuGlobals
+            from AlphaSymbolic.core.gpu.config import GpuGlobals
             
             # Default to Globals if not provided
             tgt_pop = pop_size if pop_size is not None else GpuGlobals.POP_SIZE

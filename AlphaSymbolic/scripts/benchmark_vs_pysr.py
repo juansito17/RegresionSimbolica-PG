@@ -167,8 +167,8 @@ def _count_ast_nodes(formula_str: str) -> int:
 def run_alphasybolic(problem: BenchmarkProblem, timeout_sec: int = 30, use_sniper: bool = True, use_structural_seeds: bool = True) -> MethodResult:
     """Ejecuta AlphaSymbolic en un problema — single run con todo el tiempo disponible + BFGS."""
     import torch
-    from core.gpu import TensorGeneticEngine
-    from core.gpu.config import GpuGlobals
+    from AlphaSymbolic.core.gpu import TensorGeneticEngine
+    from AlphaSymbolic.core.gpu.config import GpuGlobals
     
     x_train, y_train, x_test, y_test = problem.generate_data()
     

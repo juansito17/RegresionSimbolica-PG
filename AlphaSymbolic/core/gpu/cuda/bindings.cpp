@@ -65,6 +65,60 @@ void run_rpn_cuda(
     );
 }
 
+// Phase 6 Backward Wrapper
+void launch_rpn_backward(
+    const torch::Tensor& population,
+    const torch::Tensor& x,
+    const torch::Tensor& constants,
+    const torch::Tensor& grad_output,
+    torch::Tensor& grad_constants,
+    int PAD_ID, int id_x_start, 
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val
+);
+
+void run_rpn_backward_cuda(
+    torch::Tensor population, 
+    torch::Tensor x,
+    torch::Tensor constants, 
+    torch::Tensor grad_output,
+    torch::Tensor grad_constants,
+    int PAD_ID, int id_x_start, 
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val
+) {
+    launch_rpn_backward(
+        population, x, constants, grad_output, grad_constants,
+        PAD_ID, id_x_start, 
+        id_C, id_pi, id_e,
+        id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
+        op_add, op_sub, op_mul, op_div, op_pow, op_mod,
+        op_sin, op_cos, op_tan,
+        op_log, op_exp,
+        op_sqrt, op_abs, op_neg,
+        op_fact, op_floor, op_ceil, op_sign,
+        op_gamma, op_lgamma,
+        op_asin, op_acos, op_atan,
+        pi_val, e_val
+    );
+}
+
 // Forward declaration for decoder
 std::vector<std::string> decode_rpn(
     torch::Tensor population, 
@@ -276,8 +330,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("precompute_subtree_starts", &launch_precompute_subtree_starts, "Precompute Subtree Starts (CUDA)");
     m.def("generate_random_rpn", &launch_generate_random_rpn, "Random RPN Generation (CUDA)");
 
-    // Phase 6: Fused PSO
+    // Phase 6: Fused PSO and Autograd
     m.def("fused_pso", &launch_fused_pso, "Fused PSO (Eval+PSO in single kernel)");
+    m.def("eval_rpn_backward", &run_rpn_backward_cuda, "RPN Backward Pass (CUDA)");
 }
 
 

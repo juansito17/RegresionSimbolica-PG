@@ -18,8 +18,8 @@ import os
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.model import AlphaSymbolicModel
-from core.grammar import VOCABULARY, ExpressionTree
+from AlphaSymbolic.core.model import AlphaSymbolicModel
+from AlphaSymbolic.core.grammar import VOCABULARY, ExpressionTree
 from search.beam_search import beam_solve
 from search.mcts import MCTS
 from utils.optimize_constants import optimize_constants

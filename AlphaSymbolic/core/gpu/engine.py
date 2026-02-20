@@ -3,7 +3,7 @@ import torch
 import time
 import re
 from typing import List, Tuple, Optional
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 
 from .config import GpuGlobals
 from .sniper import Sniper

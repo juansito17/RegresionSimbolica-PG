@@ -6,13 +6,93 @@ from .config import GpuGlobals
 from .evaluation import GPUEvaluator
 from .operators import GPUOperators
 
+class RPNBackwardFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, population, constants, x, y_target, vm):
+        # Forward pass: Evaluate formulas
+        B = population.shape[0]
+        K = constants.shape[1]
+        D = x.shape[1]
+        
+        preds = torch.empty((B, D), device=constants.device, dtype=constants.dtype)
+        sp_out = torch.empty((B, D), device=constants.device, dtype=torch.int32)
+        error_out = torch.zeros((B, D), device=constants.device, dtype=torch.uint8)
+        
+        x_cuda = x
+        if x.ndim == 2 and x.shape[0] == D and x.shape[1] != D:
+            x_cuda = x.T.contiguous()
+        elif not x.is_contiguous():
+            x_cuda = x.contiguous()
+            
+        import rpn_cuda_native
+        
+        rpn_cuda_native.eval_rpn(
+            population.contiguous(),
+            x_cuda,
+            constants.contiguous(),
+            preds,
+            sp_out,
+            error_out,
+            vm.PAD_ID, vm.id_x_start,
+            vm.id_C, vm.id_pi, vm.id_e,
+            vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_4, vm.id_5, vm.id_6, vm.id_10,
+            vm.op_add, vm.op_sub, vm.op_mul, vm.op_div, vm.op_pow, vm.op_mod,
+            vm.op_sin, vm.op_cos, vm.op_tan,
+            vm.op_log, vm.op_exp,
+            vm.op_sqrt, vm.op_abs, vm.op_neg,
+            vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
+            vm.op_gamma, vm.op_lgamma,
+            vm.op_asin, vm.op_acos, vm.op_atan,
+            math.pi, math.e,
+            0 # strict mode false
+        )
+        
+        ctx.save_for_backward(population, constants, x_cuda)
+        ctx.vm = vm
+        return preds
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        population, constants, x_cuda = ctx.saved_tensors
+        vm = ctx.vm
+        
+        grad_constants = torch.zeros_like(constants)
+        import rpn_cuda_native
+        
+        rpn_cuda_native.eval_rpn_backward(
+            population.contiguous(),
+            x_cuda,
+            constants.contiguous(),
+            grad_output.contiguous(),
+            grad_constants,
+            vm.PAD_ID, vm.id_x_start,
+            vm.id_C, vm.id_pi, vm.id_e,
+            vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_4, vm.id_5, vm.id_6, vm.id_10,
+            vm.op_add, vm.op_sub, vm.op_mul, vm.op_div, vm.op_pow, vm.op_mod,
+            vm.op_sin, vm.op_cos, vm.op_tan,
+            vm.op_log, vm.op_exp,
+            vm.op_sqrt, vm.op_abs, vm.op_neg,
+            vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
+            vm.op_gamma, vm.op_lgamma,
+            vm.op_asin, vm.op_acos, vm.op_atan,
+            math.pi, math.e
+        )
+        return None, grad_constants, None, None, None
+
+def evaluate_with_gradients(population, constants, x, y_target, vm):
+    """Encapsulates the PyTorch function application."""
+    preds = RPNBackwardFunction.apply(population, constants, x, y_target, vm)
+    diff = preds - y_target.unsqueeze(0)
+    mse = (diff ** 2).mean(dim=1)
+    loss = mse.sum()
+    return loss, torch.sqrt(mse.detach())
+
 class GPUOptimizer:
     def __init__(self, evaluator: GPUEvaluator, operators: GPUOperators, device, dtype=torch.float64):
         self.evaluator = evaluator
         self.operators = operators
         self.device = device
         self.dtype = dtype
-        # Detect fused PSO availability once
         try:
             import rpn_cuda_native
             self._has_fused_pso = hasattr(rpn_cuda_native, 'fused_pso')
@@ -20,6 +100,8 @@ class GPUOptimizer:
         except ImportError:
             self._has_fused_pso = False
             self._rpn_cuda = None
+
+
 
     def optimize_constants(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, steps=10, lr=0.1):
         """
@@ -73,107 +155,72 @@ class GPUOptimizer:
                               x: torch.Tensor, y_target: torch.Tensor,
                               top_k: int = 50, max_iter: int = 30) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimización de constantes via Adam vectorizado con gradientes numéricos (diferencias finitas).
+        Optimización SOTA de constantes vía L-BFGS-B (Native CUDA Autograd).
         
-        FIX Bug7: El L-BFGS-B original nunca optimizaba nada porque el VM CUDA no soporta
-        autograd → loss.requires_grad = False siempre → backward() nunca se llamaba →
-        LBFGS divergía o retornaba los mismos constantes. 
-        
-        REEMPLAZADO por: Adam vectorizado con diferencias finitas.
-        - UN solo batch de evaluate_batch por paso de gradiente (NO loop Python por individuo)
-        - Evalúa B×2K formulas por paso (40×16=640 en batch único = 1 kernel CUDA launch)
-        - 20 pasos × 640 evals = 12800 evaluaciones pero solo 20 launches → muy eficiente
-        - No necesita autograd — solo valores de función
-
-        Args:
-            population:  [B, L] formulas (uint8) — ya son top-K del engine
-            constants:   [B, K] constantes iniciales
-            x, y_target: datos de evaluación
-            top_k:       cuántos individuos optimizar (<=B)
-            max_iter:    pasos de Adam
-
-        Returns:
-            (refined_consts [B, K], best_errs [B])
+        Reemplaza las Diferencias Finitas emuladas: ahora provee derivadas parciales EXACTAS 
+        y de alta velocidad desde C++. Utiliza el optimizador real de PyTorch L-BFGS
+        para encontrar los coeficientes sub-escala.
         """
         B, K = constants.shape
-        if K == 0 or top_k <= 0 or B == 0:
+        if K == 0 or top_k <= 0 or B == 0 or not self._has_fused_pso:
             return constants, torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
 
         actual_k = min(top_k, B)
+        pop_k = population[:actual_k].contiguous()
+        c = constants[:actual_k].clone().to(self.dtype)
         
-        # Trabajamos solo en los primeros actual_k
-        pop_k = population[:actual_k].contiguous()       # [actual_k, L]
-        c = constants[:actual_k].clone().to(self.dtype)  # [actual_k, K]
-        
-        # Baseline fitness antes de optimizar
         best_errs_k = self.evaluator.evaluate_batch(pop_k, x, y_target, c)
         best_c_k = c.clone()
         
-        if K == 0:
-            result = constants.clone()
-            result[:actual_k] = best_c_k
-            full_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
-            full_errs[:actual_k] = best_errs_k
-            return result, full_errs
+        # PyTorch L-BFGS requires require_grad=True
+        c.requires_grad_(True)
         
-        # ---- Adam state ----
-        m = torch.zeros_like(c)   # primer momento
-        v = torch.zeros_like(c)   # segundo momento
-        beta1, beta2, eps_adam = 0.9, 0.999, 1e-8
-        lr = 0.08
-        fd_eps = 1e-3  # epsilon para diferencias finitas
+        # High precision Newton Optimizer
+        optimizer = torch.optim.LBFGS(
+            [c],
+            lr=1.0,  # Line search handles the true step
+            max_iter=max_iter,
+            max_eval=max_iter * 2,
+            tolerance_grad=1e-7,
+            tolerance_change=1e-9,
+            history_size=10,
+            line_search_fn="strong_wolfe"
+        )
         
-        # Pre-expand population para batch completo de finite-diffs:
-        # Para cada individuo i y dimensión k necesitamos c[i, k] ± fd_eps
-        # Total filas = actual_k * K * 2 (+ y - para cada dimensión)
-        total_rows = actual_k * K * 2
-        # [actual_k * K * 2, L] — cada individuo repetido 2K veces
-        pop_expanded = pop_k.repeat_interleave(K * 2, dim=0)  # [total_rows, L]
+        vm = self.evaluator.vm
+        current_errs_k = None
         
-        # Pre-computar índices y signos de perturbación (constantes por toda la optimización)
-        # Layout: fila (i*2K + 2k) → individuo i, constante k, perturb +
-        #         fila (i*2K + 2k+1) → individuo i, constante k, perturb -
-        k_idx_base = torch.arange(K, device=self.device).repeat_interleave(2)  # [2K]: 0,0,1,1,...
-        k_idx = k_idx_base.unsqueeze(0).expand(actual_k, K * 2).reshape(total_rows)  # [total_rows]
-        sign_base = torch.tensor([1.0, -1.0] * K, device=self.device, dtype=self.dtype)  # [2K]
-        sign_pert = sign_base.unsqueeze(0).expand(actual_k, K * 2).reshape(total_rows)   # [total_rows]
-        row_idx = torch.arange(total_rows, device=self.device)
-        fd_delta = sign_pert * fd_eps  # pre-multiplicado
-        
-        for step in range(max_iter):
-            # Construir tensor de constantes perturbadas [total_rows, K]
-            c_pert = c.unsqueeze(1).expand(actual_k, K * 2, K).clone().reshape(total_rows, K)
-            c_pert[row_idx, k_idx] += fd_delta
-            c_pert.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+        def closure():
+            nonlocal current_errs_k
+            optimizer.zero_grad()
             
-            # UN solo batch eval
-            errs_flat = self.evaluator.evaluate_batch(pop_expanded, x, y_target, c_pert)  # [total_rows]
+            # Predict & Accumulate Gradients via Native C++ Reverse AD
+            loss, rmses = evaluate_with_gradients(pop_k, c, x, y_target, vm)
             
-            # Reshape: [actual_k, K, 2] → grad = (f+ - f-) / (2*eps)
-            errs_kd = errs_flat.reshape(actual_k, K, 2)
-            grad = (errs_kd[:, :, 0] - errs_kd[:, :, 1]) / (2.0 * fd_eps)  # [actual_k, K]
+            if loss.requires_grad:
+                loss.backward()
             
-            # Clip gradients (estabilidad numérica)
-            grad.clamp_(-1e6, 1e6)
+            # Clamp gradients for stability if needed
+            if c.grad is not None:
+                c.grad.data.clamp_(-1e4, 1e4)
+                
+            current_errs_k = rmses
+            return loss
+
+        # Run optimization
+        try:
+            optimizer.step(closure)
+        except Exception as e:
+            # Fallback if line-search or domain restrictions blow up
+            pass
             
-            # Adam update
-            t = step + 1
-            m = beta1 * m + (1.0 - beta1) * grad
-            v = beta2 * v + (1.0 - beta2) * grad ** 2
-            m_hat = m / (1.0 - beta1 ** t)
-            v_hat = v / (1.0 - beta2 ** t)
-            c = c - lr * m_hat / (v_hat.sqrt() + eps_adam)
-            c.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+        c_final = c.detach().clamp(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+        final_errs_k = self.evaluator.evaluate_batch(pop_k, x, y_target, c_final)
         
-        # Evaluación final
-        final_errs_k = self.evaluator.evaluate_batch(pop_k, x, y_target, c)
-        
-        # Solo actualizar si mejoró (never worsen)
         improved = torch.isfinite(final_errs_k) & (final_errs_k < best_errs_k)
-        best_c_k[improved] = c[improved]
+        best_c_k[improved] = c_final[improved]
         best_errs_k[improved] = final_errs_k[improved]
         
-        # Construir output completo [B, K]
         result_consts = constants.clone()
         result_consts[:actual_k] = best_c_k
         full_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)

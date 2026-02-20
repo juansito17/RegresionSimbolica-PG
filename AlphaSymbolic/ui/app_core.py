@@ -3,8 +3,8 @@ Core state and model management for AlphaSymbolic Gradio App.
 """
 import torch
 import os
-from core.model import AlphaSymbolicModel
-from core.grammar import VOCABULARY
+from AlphaSymbolic.core.model import AlphaSymbolicModel
+from AlphaSymbolic.core.grammar import VOCABULARY
 
 from collections import deque
 import time

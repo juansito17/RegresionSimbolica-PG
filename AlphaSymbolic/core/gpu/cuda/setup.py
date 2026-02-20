@@ -19,7 +19,8 @@ setup(
                 'fused_pso_kernels.cu',
                 'decoder.cpp',
                 'simplify_kernels.cu',
-                'genrand_kernels.cu'
+                'genrand_kernels.cu',
+                'backward_kernels.cu'
             ],
             extra_compile_args={
                 'cxx': ['/O2', '/std:c++17'],

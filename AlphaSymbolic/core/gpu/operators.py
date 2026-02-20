@@ -3,7 +3,7 @@ import torch
 import random
 import numpy as np
 from typing import List, Tuple
-from core.grammar import OPERATORS, ExpressionTree
+from AlphaSymbolic.core.grammar import OPERATORS, ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 

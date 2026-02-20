@@ -11,12 +11,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from search.hybrid_search import hybrid_solve
 from ui.app_core import get_model
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 from utils.optimize_constants import optimize_constants, substitute_constants, convert_and_extract_constants
 from search.phase_manager import PhaseManager
 
 # --- CONFIGURATION ---
-from core.gpu.config import GpuGlobals
+from AlphaSymbolic.core.gpu.config import GpuGlobals
 X_FULL = np.array(GpuGlobals.PROBLEM_X_FILTERED, dtype=np.float64)
 Y_FULL = GpuGlobals.PROBLEM_Y_FULL
 
@@ -38,7 +38,7 @@ def extract_structural_skeleton(formula_str):
     Returns the structural skeleton (infix).
     """
     try:
-        from core.grammar import ExpressionTree, Node
+        from AlphaSymbolic.core.grammar import ExpressionTree, Node
         tree = ExpressionTree.from_infix(formula_str)
         if not tree.is_valid: return None
         

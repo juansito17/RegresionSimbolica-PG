@@ -11,9 +11,9 @@ import os
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.model import AlphaSymbolicModel
+from AlphaSymbolic.core.model import AlphaSymbolicModel
 from search.mcts import MCTS
-from core.grammar import VOCABULARY, ExpressionTree
+from AlphaSymbolic.core.grammar import VOCABULARY, ExpressionTree
 from utils.optimize_constants import optimize_constants
 from utils.simplify import simplify_tree
 

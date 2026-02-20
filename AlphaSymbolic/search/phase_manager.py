@@ -1,7 +1,7 @@
 
 import numpy as np
 import torch
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 from utils.optimize_constants import optimize_constants
 
 class PhaseManager:

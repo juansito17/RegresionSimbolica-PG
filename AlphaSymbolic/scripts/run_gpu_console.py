@@ -4,12 +4,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import torch
 import numpy as np
 import time
-from core.gpu import TensorGeneticEngine
+from AlphaSymbolic.core.gpu import TensorGeneticEngine
 
 # Configuration matching C++ Globals
 # --- CONFIGURATION ---
 # Configuration matching C++ Globals
-from core.gpu.config import GpuGlobals
+from AlphaSymbolic.core.gpu.config import GpuGlobals
 
 # --- CONFIGURATION ---
 TARGETS = GpuGlobals.PROBLEM_Y_FULL
@@ -158,7 +158,7 @@ if __name__ == "__main__":
         print("WARNING: GPU NOT DETECTED. Running in CPU emulation mode (Slow).")
         
 
-    from core.gpu.config import GpuGlobals
+    from AlphaSymbolic.core.gpu.config import GpuGlobals
     
     # User can override Globals here
     # GpuGlobals.POP_SIZE and GpuGlobals.NUM_ISLANDS are now strictly taken from config.py 

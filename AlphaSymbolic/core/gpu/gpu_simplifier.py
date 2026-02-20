@@ -104,7 +104,7 @@ class GPUSymbolicSimplifier:
         self.ID_E = self.grammar.token_to_id.get('e', -1)
         
     def _build_arity_table(self):
-        from core.grammar import OPERATORS
+        from AlphaSymbolic.core.grammar import OPERATORS
         # Ensure table is large enough for both vocab and PAD_ID
         max_id = max(self.grammar.id_to_token.keys()) + 1
         max_id = max(max_id, PAD_ID + 1)

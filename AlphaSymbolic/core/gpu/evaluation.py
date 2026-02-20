@@ -1,7 +1,7 @@
 
 import torch
 from typing import Tuple
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 

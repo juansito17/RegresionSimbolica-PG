@@ -3,7 +3,7 @@ Pareto Front Manager for AlphaSymbolic.
 Maintains a set of non-dominated solutions (accuracy vs complexity).
 """
 import numpy as np
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 
 class ParetoSolution:
     def __init__(self, tokens, rmse, complexity, formula_str, constants=None):

@@ -1,7 +1,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree
+from AlphaSymbolic.core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree
 from data.synthetic_data import DataGenerator
 
 class SymbolicEnv(gym.Env):
