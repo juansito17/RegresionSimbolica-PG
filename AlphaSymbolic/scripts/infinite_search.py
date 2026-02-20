@@ -7,13 +7,13 @@ import random
 import sys
 
 # Add project root to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from search.hybrid_search import hybrid_solve
-from ui.app_core import get_model
+from AlphaSymbolic.search.hybrid_search import hybrid_solve
+from AlphaSymbolic.ui.app_core import get_model
 from AlphaSymbolic.core.grammar import ExpressionTree
-from utils.optimize_constants import optimize_constants, substitute_constants, convert_and_extract_constants
-from search.phase_manager import PhaseManager
+from AlphaSymbolic.utils.optimize_constants import optimize_constants, substitute_constants, convert_and_extract_constants
+from AlphaSymbolic.search.phase_manager import PhaseManager
 
 # --- CONFIGURATION ---
 from AlphaSymbolic.core.gpu.config import GpuGlobals

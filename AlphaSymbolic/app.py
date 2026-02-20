@@ -5,12 +5,12 @@ With GPU/CPU toggle and search method selection.
 import gradio as gr
 import torch
 
-from ui.app_core import load_model, get_device, get_device_info, set_device, get_training_errors, request_stop_training
-from ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised, train_hybrid_feedback_loop, train_from_memory
-from ui.app_search import solve_formula, generate_example
-from ui.app_benchmark import get_benchmark_tab
-from ui.app_gpu_live import get_gpu_live_tab
-from ui.theme import get_theme, CUSTOM_CSS
+from AlphaSymbolic.ui.app_core import load_model, get_device, get_device_info, set_device, get_training_errors, request_stop_training
+from AlphaSymbolic.ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised, train_hybrid_feedback_loop, train_from_memory
+from AlphaSymbolic.ui.app_search import solve_formula, generate_example
+from AlphaSymbolic.ui.app_benchmark import get_benchmark_tab
+from AlphaSymbolic.ui.app_gpu_live import get_gpu_live_tab
+from AlphaSymbolic.ui.theme import get_theme, CUSTOM_CSS
 import pandas as pd
 import io
 

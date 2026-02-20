@@ -4,7 +4,7 @@ Performance Benchmarking Suite for GPU GP Engine.
 Standard benchmark problems for evaluating symbolic regression performance.
 """
 import sys, os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 import torch
 import numpy as np
 import time

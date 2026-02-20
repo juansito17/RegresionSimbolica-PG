@@ -10,14 +10,14 @@ import time
 import gradio as gr
 
 from AlphaSymbolic.core.grammar import ExpressionTree
-from search.beam_search import BeamSearch
-from search.mcts import MCTS
-from search.hybrid_search import hybrid_solve
-from utils.simplify import simplify_tree
-from search.pareto import ParetoFront
-from utils.detect_pattern import detect_pattern
-from utils.optimize_constants import optimize_constants, substitute_constants
-from ui.app_core import get_model
+from AlphaSymbolic.search.beam_search import BeamSearch
+from AlphaSymbolic.search.mcts import MCTS
+from AlphaSymbolic.search.hybrid_search import hybrid_solve
+from AlphaSymbolic.utils.simplify import simplify_tree
+from AlphaSymbolic.search.pareto import ParetoFront
+from AlphaSymbolic.utils.detect_pattern import detect_pattern
+from AlphaSymbolic.utils.optimize_constants import optimize_constants, substitute_constants
+from AlphaSymbolic.ui.app_core import get_model
 
 
 def parse_data(x_str, y_str):

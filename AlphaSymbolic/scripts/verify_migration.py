@@ -5,7 +5,7 @@ import torch
 import time
 
 # Add project root to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from AlphaSymbolic.core.gpu.engine import TensorGeneticEngine
 from AlphaSymbolic.core.gpu.config import GpuGlobals

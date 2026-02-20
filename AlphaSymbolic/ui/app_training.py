@@ -17,11 +17,11 @@ import datetime
 
 from AlphaSymbolic.core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES, VARIABLES
 from data.synthetic_data import DataGenerator
-from ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
+from AlphaSymbolic.ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
 from AlphaSymbolic.core.loss import QuantileLoss
-from search.hybrid_search import hybrid_solve
+from AlphaSymbolic.search.hybrid_search import hybrid_solve
 from AlphaSymbolic.core.grammar import ExpressionTree, simplify_formula
-from utils.data_utils import normalize_batch
+from AlphaSymbolic.utils.data_utils import normalize_batch
 
 
 def get_allowed_token_mask(stage, vocab_size, device):

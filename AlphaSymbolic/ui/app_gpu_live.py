@@ -8,8 +8,8 @@ import html
 from typing import List, Optional
 from AlphaSymbolic.core.gpu import TensorGeneticEngine
 from AlphaSymbolic.core.gpu.config import GpuGlobals
-from ui.app_search import parse_data, create_fit_plot, generate_example
-from ui.app_core import get_device
+from AlphaSymbolic.ui.app_search import parse_data, create_fit_plot, generate_example
+from AlphaSymbolic.ui.app_core import get_device
 import pandas as pd
 
 # Global state to manage the live engine

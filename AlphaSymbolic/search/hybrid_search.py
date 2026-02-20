@@ -6,7 +6,7 @@ import concurrent.futures
 import os
 
 from AlphaSymbolic.core.gp_bridge import GPEngine
-from search.beam_search import BeamSearch, beam_solve
+from AlphaSymbolic.search.beam_search import BeamSearch, beam_solve
 from AlphaSymbolic.core.grammar import ExpressionTree
 try:
     from AlphaSymbolic.core.gpu import TensorGeneticEngine

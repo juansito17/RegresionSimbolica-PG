@@ -2,7 +2,7 @@
 import numpy as np
 import torch
 from AlphaSymbolic.core.grammar import ExpressionTree
-from utils.optimize_constants import optimize_constants
+from AlphaSymbolic.utils.optimize_constants import optimize_constants
 
 class PhaseManager:
     def __init__(self, model, device):

@@ -12,10 +12,10 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AlphaSymbolic.core.model import AlphaSymbolicModel
-from search.mcts import MCTS
+from AlphaSymbolic.search.mcts import MCTS
 from AlphaSymbolic.core.grammar import VOCABULARY, ExpressionTree
-from utils.optimize_constants import optimize_constants
-from utils.simplify import simplify_tree
+from AlphaSymbolic.utils.optimize_constants import optimize_constants
+from AlphaSymbolic.utils.simplify import simplify_tree
 
 def solve_problem(target_x, target_y, model_path="alpha_symbolic_model.pth", simulations=500):
     """

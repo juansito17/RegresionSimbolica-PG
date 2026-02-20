@@ -5,8 +5,8 @@ Explores multiple formula candidates in parallel, keeping top-K at each step.
 import torch
 import numpy as np
 from AlphaSymbolic.core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree, OPERATOR_STAGES
-from utils.optimize_constants import optimize_constants
-from utils.data_utils import normalize_batch
+from AlphaSymbolic.utils.optimize_constants import optimize_constants
+from AlphaSymbolic.utils.data_utils import normalize_batch
 
 class BeamSearch:
     def __init__(self, model, device, beam_width=10, max_length=30, curriculum_stage=None, num_variables=1):

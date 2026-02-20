@@ -20,13 +20,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AlphaSymbolic.core.model import AlphaSymbolicModel
 from AlphaSymbolic.core.grammar import VOCABULARY, ExpressionTree
-from search.beam_search import beam_solve
-from search.mcts import MCTS
-from utils.optimize_constants import optimize_constants
-from utils.simplify import simplify_tree
-from search.pareto import ParetoFront
+from AlphaSymbolic.search.beam_search import beam_solve
+from AlphaSymbolic.search.mcts import MCTS
+from AlphaSymbolic.utils.optimize_constants import optimize_constants
+from AlphaSymbolic.utils.simplify import simplify_tree
+from AlphaSymbolic.search.pareto import ParetoFront
 from data.pattern_memory import PatternMemory
-from utils.detect_pattern import detect_pattern, summarize_pattern
+from AlphaSymbolic.utils.detect_pattern import detect_pattern, summarize_pattern
 
 
 def solve_pro(target_x, target_y, 
