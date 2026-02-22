@@ -167,15 +167,16 @@ void launch_tournament_selection(
     const torch::Tensor& errors,
     const torch::Tensor& rand_idx,
     const torch::Tensor& rand_cases,
-    torch::Tensor& selected_idx,
-    const torch::Tensor& lengths
+    torch::Tensor& winner_idx,
+    const torch::Tensor& lengths,
+    const torch::Tensor& mad_eps
 );
 
 void launch_pso_update(
-    torch::Tensor& pos,
-    torch::Tensor& vel,
-    const torch::Tensor& pbest,
-    const torch::Tensor& gbest,
+    torch::Tensor& particles,
+    torch::Tensor& velocities,
+    const torch::Tensor& pbest_pos,
+    const torch::Tensor& gbest_pos,
     const torch::Tensor& r1,
     const torch::Tensor& r2,
     float w, float c1, float c2
@@ -203,6 +204,7 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor arity_1_ids,     // [n1] int64
     torch::Tensor arity_2_ids,     // [n2] int64
     torch::Tensor mutation_bank,   // [BankSize, L] or Empty
+    torch::Tensor mad_eps,         // [N_data] or Empty (Phase 3)
     float mutation_rate,
     float crossover_rate,
     int tournament_size,
@@ -222,7 +224,7 @@ std::vector<torch::Tensor> evolve_generation(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    int n_islands = 1
+    int n_islands
 );
 
 // --- Phase 6 Forward Declaration: Fused PSO ---
@@ -296,7 +298,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     
     // Phase 3
     m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)",
-        py::arg("fitness"), py::arg("errors"), py::arg("rand_idx"), py::arg("rand_cases"), py::arg("selected_idx"), py::arg("lengths"));
+        py::arg("fitness"), py::arg("errors"), py::arg("rand_idx"), py::arg("rand_cases"), py::arg("selected_idx"), py::arg("lengths"), py::arg("mad_eps") = torch::empty({0}, torch::kFloat32));
     m.def("pso_update", &launch_pso_update, "PSO Update (CUDA)");
     m.def("pso_update_bests", &launch_pso_update_bests, "PSO Update Bests (CUDA)");
 
@@ -305,7 +307,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("population"), py::arg("constants"), py::arg("fitness"), py::arg("abs_errors"),
         py::arg("X"), py::arg("Y_target"), py::arg("lengths"), // Added lengths
         py::arg("token_arities"), py::arg("arity_0_ids"), py::arg("arity_1_ids"), py::arg("arity_2_ids"),
-        py::arg("mutation_bank"),
+        py::arg("mutation_bank"), py::arg("mad_eps"),
         py::arg("mutation_rate"), py::arg("crossover_rate"),
         py::arg("tournament_size"),
         py::arg("pso_steps"), py::arg("pso_particles"),

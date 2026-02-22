@@ -89,8 +89,8 @@ class Sniper:
         """
         try:
             from scipy.optimize import curve_fit
-            x_np = x_t.cpu().numpy().astype(np.float64).flatten()
-            y_np = y_t.cpu().numpy().astype(np.float64).flatten()
+            x_np = x_t.cpu().numpy().astype(np.float32).flatten()
+            y_np = y_t.cpu().numpy().astype(np.float32).flatten()
             y_var = np.var(y_np)
             if y_var < 1e-12:
                 return None
@@ -185,8 +185,8 @@ class Sniper:
         Returns formula string if found, else None.
         """
         try:
-            x_np = x_t.cpu().numpy().astype(np.float64)
-            y_np = y_t.cpu().numpy().astype(np.float64)
+            x_np = x_t.cpu().numpy().astype(np.float32)
+            y_np = y_t.cpu().numpy().astype(np.float32)
             
             best_formula = None
             best_mse = float('inf')
@@ -379,8 +379,8 @@ class Sniper:
         """
         try:
             from scipy.optimize import curve_fit
-            x_np = x_t.cpu().numpy().astype(np.float64)
-            y_np = y_t.cpu().numpy().astype(np.float64)
+            x_np = x_t.cpu().numpy().astype(np.float32)
+            y_np = y_t.cpu().numpy().astype(np.float32)
             
             # Only if x has values that allow log
             if np.any(x_np <= -1):
@@ -462,8 +462,8 @@ class Sniper:
         """
         try:
             from scipy.optimize import curve_fit
-            x_np = x_t.cpu().numpy().astype(np.float64).flatten()
-            y_np = y_t.cpu().numpy().astype(np.float64).flatten()
+            x_np = x_t.cpu().numpy().astype(np.float32).flatten()
+            y_np = y_t.cpu().numpy().astype(np.float32).flatten()
             
             # Skip if x contains zeros (division by x^n would fail)
             x_abs_min = np.min(np.abs(x_np))
@@ -536,23 +536,28 @@ class Sniper:
             if y_var < 1e-12:
                 return None
             
-            for name, model, p0, n_pow, ftype in templates:
-                try:
-                    popt, _ = curve_fit(model, x_np, y_np, p0=p0, maxfev=3000)
-                    y_pred = model(x_np, *popt)
-                    if not np.all(np.isfinite(y_pred)):
+            import warnings
+            from scipy.optimize import OptimizeWarning
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                warnings.simplefilter("ignore", OptimizeWarning)
+                for name, model, p0, n_pow, ftype in templates:
+                    try:
+                        popt, _ = curve_fit(model, x_np, y_np, p0=p0, maxfev=3000)
+                        y_pred = model(x_np, *popt)
+                        if not np.all(np.isfinite(y_pred)):
+                            continue
+                        ss_res = np.sum((y_np - y_pred) ** 2)
+                        ss_tot = np.sum((y_np - np.mean(y_np)) ** 2)
+                        r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+                        
+                        if r2 > best_r2:
+                            formula = self._build_composite_formula(ftype, n_pow, popt)
+                            if formula:
+                                best_formula = formula
+                                best_r2 = r2
+                    except Exception:
                         continue
-                    ss_res = np.sum((y_np - y_pred) ** 2)
-                    ss_tot = np.sum((y_np - np.mean(y_np)) ** 2)
-                    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
-                    
-                    if r2 > best_r2:
-                        formula = self._build_composite_formula(ftype, n_pow, popt)
-                        if formula:
-                            best_formula = formula
-                            best_r2 = r2
-                except Exception:
-                    continue
             
             return best_formula
         except Exception:

@@ -22,10 +22,10 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 #define PSO_STACK_SIZE 64
-#define PSO_MAX_L 64
-#define PSO_MAX_K 15
-#define PSO_MAX_D 64      // max data samples
-#define PSO_MAX_PARTICLES 32
+#define PSO_MAX_L 128
+#define PSO_MAX_K 32
+#define PSO_MAX_D 1024      // max data samples
+#define PSO_MAX_PARTICLES 64
 
 // ===================== Device: Inline RPN Evaluator =====================
 // Evaluates a single formula on a single data point, with given constants.

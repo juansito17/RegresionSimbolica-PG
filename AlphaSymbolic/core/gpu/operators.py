@@ -425,6 +425,49 @@ class GPUOperators:
         final_stack = deltas.sum(dim=1)
         return (final_stack == 1)
 
+    def _compute_depth(self, population: torch.Tensor, starts_mat: torch.Tensor = None) -> torch.Tensor:
+        """
+        Computes the maximum depth of each RPN tree in the population.
+        Vectorized O(L) forward pass.
+        Returns tensor [B] with max depth (1-indexed) per tree.
+        """
+        B, L = population.shape
+        device = self.device
+        if starts_mat is None:
+            starts_mat = self._get_subtree_ranges(population)
+            
+        arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1).long()]
+        arities[population == PAD_ID] = 0
+        is_pad = (population == PAD_ID)
+        
+        depths = torch.zeros(B, L, dtype=torch.long, device=device)
+        
+        for j in range(L):
+            ar = arities[:, j]
+            if j == 0:
+                depths[:, 0] = torch.where(is_pad[:, 0], 0, 1)
+                continue
+                
+            is_term = (ar == 0) & ~is_pad[:, j]
+            is_unary = (ar == 1) & ~is_pad[:, j]
+            is_binary = (ar == 2) & ~is_pad[:, j]
+            
+            cur_depth = torch.where(is_term, 1, 0)
+            
+            if is_unary.any():
+                cur_depth = torch.where(is_unary, 1 + depths[:, j-1], cur_depth)
+                
+            if is_binary.any():
+                right_depth = depths[:, j-1]
+                left_child_end = (starts_mat[:, j-1] - 1).clamp(0, L - 1)
+                left_depth = depths.gather(1, left_child_end.unsqueeze(1)).squeeze(1)
+                max_child_depth = torch.max(right_depth, left_depth)
+                cur_depth = torch.where(is_binary, 1 + max_child_depth, cur_depth)
+                
+            depths[:, j] = torch.where(is_pad[:, j], 0, cur_depth)
+            
+        return depths.max(dim=1).values
+
     def _infix_list_to_rpn(self, formulas: list) -> torch.Tensor:
         batch_rpn = []
         for formula_str in formulas:
@@ -782,16 +825,15 @@ class GPUOperators:
             invalid_c2 = invalid_pre_2 | invalid_mid_2 | invalid_post_2
             c2[invalid_c2] = PAD_ID
         
-        # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite de NODOS (Longitud) ---
-        # NOTA: Aunque el nombre diga "Depth", históricamente se usa como límite de longitud (total de nodos).
-        # Ver Bug N7.
+        # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite real de PROFUNDIDAD ---
+        # FIX N7: Ahora calcula la profundidad real del árbol, no la longitud del tensor.
         if GpuGlobals.USE_HARD_DEPTH_LIMIT:
             hard_limit = GpuGlobals.MAX_TREE_DEPTH_HARD_LIMIT
-            c1_len = (c1 != PAD_ID).sum(dim=1)
-            c2_len = (c2 != PAD_ID).sum(dim=1)
-            # Si un hijo excede el límite de longitud, revertir al padre original
-            too_long_1 = c1_len > hard_limit
-            too_long_2 = c2_len > hard_limit
+            c1_depth = self._compute_depth(c1)
+            c2_depth = self._compute_depth(c2)
+            # Si un hijo excede el límite de profundidad, revertir al padre original
+            too_long_1 = c1_depth > hard_limit
+            too_long_2 = c2_depth > hard_limit
             if too_long_1.any():
                 c1[too_long_1] = parents_1[too_long_1]
             if too_long_2.any():

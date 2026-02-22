@@ -167,8 +167,8 @@ class GpuGlobals:
     #                  5. GENETIC OPERATORS
     # ============================================================
     # Rates
-    BASE_MUTATION_RATE = 0.30      # AGGRESSIVE: 30% mutation to break local optima (was 0.22)
-    DEFAULT_CROSSOVER_RATE = 0.40  # REDUCED: More mutation, less crossover.
+    BASE_MUTATION_RATE = 0.22      # REVERTED: 22% (was 0.30) to reduce structural noise.
+    DEFAULT_CROSSOVER_RATE = 0.50  # INCREASED: 50% (was 0.40) to drive convergence via SBX and structural exchange.
     
     # Adaptive Mutation
     MUTATION_RATE_CAP = 0.60       # INCREASED: Cap más alto (era 0.50)
@@ -176,10 +176,15 @@ class GpuGlobals:
     MUTATION_STAGNATION_TRIGGER = 8
     
     # Selection
-    DEFAULT_TOURNAMENT_SIZE = 7    # OPTIMIZED: Extreme pressure. Forces population to adopt deep mutations instantly.
+    DEFAULT_TOURNAMENT_SIZE = 7    # OPTIMIZED: Balance between exploration and exploitation.
     TOURNAMENT_SIZE_FLOOR = 3
     TOURNAMENT_ADAPTIVE_DIVISOR = 5
-    BASE_ELITE_PERCENTAGE = 0.12   # INCREASED: Keep more good structures (was 0.10)
+    BASE_ELITE_PERCENTAGE = 0.12   # Keep good structures
+    
+    # Adaptive Evolution (Ported from AdvancedFeatures.cpp)
+    USE_ADAPTIVE_PARAMETERS = True      # Enable dynamic mutation/tournament size
+    ADAPTIVE_STAGNATION_TRIGGER = 8     # Gens to wait before increasing aggression
+    MAX_AGGRESSION_FACTOR = 2.0         # Max scaling for mutation/crossover rates
     
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
@@ -189,7 +194,7 @@ class GpuGlobals:
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
     # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
     # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
-    HEADLESS_CHICKEN_RATE = 0.30       # OPTIMIZED: 30% of crossovers mutate with pure random trees.
+    HEADLESS_CHICKEN_RATE = 0.10       # REDUCED: Focus on exploiting good parents (was 0.30)
     
     # --- SOTA P1: Depth-Fair Crossover ---
     # Standard crossover picks a random NODE as swap point → large subtrees dominate selection.
@@ -203,10 +208,10 @@ class GpuGlobals:
     # giving younger, freshly produced individuals a better chance.
     # Layer 0 is periodically reseeded with fresh random individuals.
     # Based on: Hornby (2006) — no single algorithm dominates ALPS.
-    USE_ALPS = True                    # Enable age-layered selection pressure
+    USE_ALPS = False                   # DISABLED: Destroys fast convergence (from benchmark)
     ALPS_AGE_GAP = 10                  # Gens between layer boundaries (layer_idx = age // gap)
     ALPS_MAX_LAYER = 5                 # Max layer index (beyond = capped, treated as =max)
-    ALPS_AGE_PENALTY_WEIGHT = 0.05    # Weight of age penalty in selection_metric
+    ALPS_AGE_PENALTY_WEIGHT = 0.02    # REDUCED: Allow older elites more survival time (was 0.05)
     ALPS_LAYER0_RESEED_INTERVAL = 50  # Every N gens, reseed layer-0 individuals from scratch
     ALPS_LAYER0_RESEED_FRACTION = 0.01 # Fraction of pop_size to reseed as fresh individuals
 
@@ -240,10 +245,10 @@ class GpuGlobals:
     # PySR uses this natively; AlphaSymbolic now has it too.
     # Non-dominated sort is O(N²) — we run it on a sampled subset (PARETO_SAMPLE_K)
     # and blend the resulting rank into the selection metric.
-    USE_PARETO_SELECTION = True        # Enable NSGA-II Pareto blending
+    USE_PARETO_SELECTION = False       # DISABLED: Slows down numerical convergence (from benchmark)
     PARETO_SAMPLE_K = 2000             # Subset size for Pareto sort (per island sample)
-    PARETO_RANK_WEIGHT = 0.15          # How much Pareto rank adds to selection_metric
-    PARETO_INTERVAL = 15               # OPTIMIZED: Run Pareto sort every N generations (amortize cost)
+    PARETO_RANK_WEIGHT = 0.05          # REDUCED: 0.15 was suppressing valid structural candidates (was 0.15)
+    PARETO_INTERVAL = 10               # Frequency of Pareto updates
     PARETO_MAX_FRONT_SIZE = 30
 
 
@@ -256,10 +261,10 @@ class GpuGlobals:
     FORCE_STRICT_VALIDATION = True     # Strict math Mode (No protected operators)
     
     # Penalties
-    COMPLEXITY_PENALTY = 0.04          # Multiplicative penalty (raised from 0.02)
-    ADDITIVE_COMPLEXITY_PENALTY_WEIGHT = 0.001 # REDUCED: 0.005 was too aggressive, hindering exploration
-    TRIVIAL_FORMULA_PENALTY = 1.5
-    NO_VARIABLE_PENALTY = 2.5
+    COMPLEXITY_PENALTY = 0.01          # REVERTED: 0.01 allows more complex formulas to compete (was 0.04)
+    ADDITIVE_COMPLEXITY_PENALTY_WEIGHT = 0.0 # DISABLED: Too aggressive (was 0.001)
+    TRIVIAL_FORMULA_PENALTY = 1.0
+    NO_VARIABLE_PENALTY = 1.5
     
     # Bloat Control
     USE_TARPEIAN_CONTROL = True        # Randomly assign worst fitness to bloated formulas
@@ -318,10 +323,11 @@ class GpuGlobals:
     # ============================================================
     #                  8. ADVANCED FEATURES
     # ============================================================
-    # Selection Strategies
     # LEXICASE: Habilidad experimental activada. Evalúa fitness punto por punto.
     # Essential for escaping deep N-Queens local minima (e.g. 0.017).
-    USE_LEXICASE_SELECTION = True
+    USE_LEXICASE_SELECTION = False
+    USE_LEXICASE_SUB_SAMPLING = True    # SPEED: Sample a subset of points for Lexicase
+    LEXICASE_SUB_SAMPLE_SIZE = 128      # Memory-efficient subset size (RTX 3050 friendly)
     
     # Pattern Memory
     USE_PATTERN_MEMORY = True

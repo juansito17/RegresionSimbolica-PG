@@ -145,8 +145,18 @@ class GPUOptimizer:
         falls back to multi-kernel approach otherwise.
         """
         # Try fused kernel first (single CUDA launch, ~5-10x faster for PSO portion).
-        # The fused kernel supports both float32 and float64 via AT_DISPATCH_FLOATING_TYPES.
-        if self._has_fused_pso:
+        # Fused kernel has hardcoded limits to preserve shared memory / stack space.
+        D = y.numel()
+        L = population.shape[1]
+        K = constants.shape[1]
+        
+        can_use_fused = (self._has_fused_pso and 
+                        D <= 1024 and 
+                        L <= 128 and 
+                        K <= 32 and 
+                        num_particles <= 64)
+        
+        if can_use_fused:
             return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
         
         return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
