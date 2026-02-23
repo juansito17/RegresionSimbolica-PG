@@ -1,4 +1,3 @@
-
 import torch
 import math
 from typing import Tuple
@@ -96,9 +95,11 @@ class GPUOptimizer:
         try:
             import rpn_cuda_native
             self._has_fused_pso = hasattr(rpn_cuda_native, 'fused_pso')
-            self._rpn_cuda = rpn_cuda_native if self._has_fused_pso else None
+            self._has_lbfgs = hasattr(rpn_cuda_native, 'lbfgs_optimize')
+            self._rpn_cuda = rpn_cuda_native if (self._has_fused_pso or self._has_lbfgs) else None
         except ImportError:
             self._has_fused_pso = False
+            self._has_lbfgs = False
             self._rpn_cuda = None
 
 
@@ -165,24 +166,103 @@ class GPUOptimizer:
                               x: torch.Tensor, y_target: torch.Tensor,
                               top_k: int = 50, max_iter: int = 30) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimización SOTA de constantes vía L-BFGS-B (Native CUDA Autograd).
+        Optimization SOTA of constants via L-BFGS-B.
         
-        Reemplaza las Diferencias Finitas emuladas: ahora provee derivadas parciales EXACTAS 
-        y de alta velocidad desde C++. Utiliza el optimizador real de PyTorch L-BFGS
-        para encontrar los coeficientes sub-escala.
+        PRIORITY: Use native CUDA kernel if available (zero CPU-GPU sync).
+        FALLBACK: PyTorch L-BFGS (CPU line search) if kernel not available.
         """
         B, K = constants.shape
-        if K == 0 or top_k <= 0 or B == 0 or not self._has_fused_pso:
+        if K == 0 or top_k <= 0 or B == 0:
             return constants, torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
 
         actual_k = min(top_k, B)
         pop_k = population[:actual_k].contiguous()
         c = constants[:actual_k].clone().to(self.dtype)
         
+        # Initial fitness
         best_errs_k = self.evaluator.evaluate_batch(pop_k, x, y_target, c)
         best_c_k = c.clone()
         
-        # PyTorch L-BFGS requires require_grad=True
+        # Try CUDA L-BFGS kernel first
+        if self._has_lbfgs and actual_k <= 64:  # Kernel has limits
+            try:
+                result = self._lbfgs_cuda(pop_k, c, x, y_target, max_iter)
+                if result is not None:
+                    c_final, final_errs_k = result
+                    
+                    # Accept only improvements
+                    improved = torch.isfinite(final_errs_k) & (final_errs_k < best_errs_k)
+                    best_c_k[improved] = c_final[improved]
+                    best_errs_k[improved] = final_errs_k[improved]
+                    
+                    result_consts = constants.clone()
+                    result_consts[:actual_k] = best_c_k
+                    full_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+                    full_errs[:actual_k] = best_errs_k
+                    
+                    return result_consts, full_errs
+            except Exception as e:
+                print(f"[L-BFGS CUDA] Kernel failed, falling back to PyTorch: {e}")
+        
+        # Fallback: PyTorch L-BFGS (CPU line search)
+        return self._lbfgs_pytorch_fallback(pop_k, c, x, y_target, best_errs_k, best_c_k, constants, max_iter)
+
+    def _lbfgs_cuda(self, population: torch.Tensor, constants: torch.Tensor,
+                    x: torch.Tensor, y_target: torch.Tensor, max_iter: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Call the native CUDA L-BFGS-B kernel.
+        """
+        B, L = population.shape
+        K = constants.shape[1]
+        D = y_target.numel()
+        
+        # Ensure x is [Vars, D] for the kernel
+        x_cuda = x
+        if x.ndim == 2 and x.shape[0] == D and x.shape[1] != D:
+            x_cuda = x.T.contiguous()
+        
+        # Output buffer
+        out_rmse = torch.empty(B, device=self.device, dtype=self.dtype)
+        
+        # Get opcode IDs from the evaluator's VM
+        vm = self.evaluator.vm
+        
+        self._rpn_cuda.lbfgs_optimize(
+            population.to(torch.int64),  # Kernel expects int64
+            constants,
+            x_cuda,
+            y_target,
+            out_rmse,
+            max_iter,                # max_iter
+            10,                      # history_size
+            1e-7,                    # gtol
+            GpuGlobals.CONSTANT_MIN_VALUE,
+            GpuGlobals.CONSTANT_MAX_VALUE,
+            # OpCode IDs
+            vm.PAD_ID, vm.id_x_start,
+            vm.id_C, vm.id_pi, vm.id_e,
+            vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_4, vm.id_5, vm.id_6, vm.id_10,
+            vm.op_add, vm.op_sub, vm.op_mul, vm.op_div, vm.op_pow, vm.op_mod,
+            vm.op_sin, vm.op_cos, vm.op_tan,
+            vm.op_log, vm.op_exp,
+            vm.op_sqrt, vm.op_abs, vm.op_neg,
+            vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
+            vm.op_gamma, vm.op_lgamma,
+            vm.op_asin, vm.op_acos, vm.op_atan,
+            math.pi, math.e
+        )
+        
+        return constants, out_rmse
+
+    def _lbfgs_pytorch_fallback(self, pop_k: torch.Tensor, c: torch.Tensor,
+                                 x: torch.Tensor, y_target: torch.Tensor,
+                                 best_errs_k: torch.Tensor, best_c_k: torch.Tensor,
+                                 constants: torch.Tensor, max_iter: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Fallback L-BFGS using PyTorch (runs on CPU for line search).
+        """
+        actual_k = pop_k.shape[0]
+        
         c.requires_grad_(True)
         
         # High precision Newton Optimizer
@@ -233,7 +313,7 @@ class GPUOptimizer:
         
         result_consts = constants.clone()
         result_consts[:actual_k] = best_c_k
-        full_errs = torch.full((B,), float('inf'), device=self.device, dtype=self.dtype)
+        full_errs = torch.full((constants.shape[0],), float('inf'), device=self.device, dtype=self.dtype)
         full_errs[:actual_k] = best_errs_k
         
         return result_consts, full_errs

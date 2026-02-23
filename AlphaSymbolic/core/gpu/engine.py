@@ -1768,65 +1768,99 @@ class TensorGeneticEngine:
                 except Exception:
                     pass  # Non-fatal: BFGS puede fallar en fórmulas no diferenciables
             
-            # Best Tracking — ASYNC optimization to reduce CPU-GPU syncs
-            # Key insight: We only need to sync when there's a meaningful improvement.
-            # Strategy: Keep best RMSE on GPU, compare there first, only sync on improvement.
+            # Best Tracking — CUDA Kernel for zero CPU sync until improvement
+            # Uses batch_update_best kernel to track best individual entirely on GPU
             
-            # Lazy init of GPU-side best tracking
+            # Lazy init of GPU-side best tracking tensors (for kernel)
             if not hasattr(self, '_gpu_best_rmse'):
-                self._gpu_best_rmse = torch.tensor(float('inf'), device=self.device, dtype=self.dtype)
-                self._gpu_best_idx = torch.tensor(0, device=self.device, dtype=torch.long)
+                self._gpu_best_rmse = torch.tensor([1e10], device=self.device, dtype=torch.float32)
+                self._gpu_best_rpn = torch.zeros(self.max_len, dtype=torch.uint8, device=self.device)
+                self._gpu_best_consts = torch.zeros(self.max_constants, dtype=torch.float32, device=self.device)
                 self._sync_counter = 0
+                self._cached_best_rmse_cpu = float('inf')
+                self._cached_best_idx_cpu = 0
             
-            # Get current minimum (stays on GPU)
-            if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                # Vectorized mask calculation without .any() syncs
-                _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
-                for vid in self._var_token_ids:
-                    _uses_all &= (population == vid).any(dim=1)
+            # Try CUDA Best Tracker kernel
+            try:
+                import rpn_cuda_native
+                # Prepare fitness (must be float32 for kernel)
+                fit_f32 = fitness_rmse.float() if fitness_rmse.dtype != torch.float32 else fitness_rmse
                 
-                _masked_rmse = fitness_rmse.clone()
-                _masked_rmse[~_uses_all] = float('inf')
-                min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
+                # Apply variable diversity penalty mask if needed
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                    for vid in self._var_token_ids:
+                        _uses_all &= (population == vid).any(dim=1)
+                    fit_f32 = fit_f32.clone()
+                    fit_f32[~_uses_all] = float('inf')
                 
-                # Fallback if all INF
-                if min_rmse >= 1e18:
-                    min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-            else:
-                min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-            
-            # GPU-side comparison: only sync if there's an improvement
-            # This avoids .item() call on every generation
-            _improved_gpu = min_rmse < (self._gpu_best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
-            
-            # Increment sync counter
-            self._sync_counter += 1
-            
-            # Only sync to CPU when:
-            # 1. GPU detected improvement, OR
-            # 2. Every N generations for progress reporting
-            _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
-            
-            if _improved_gpu or (self._sync_counter % _force_sync_interval == 0):
-                # Now we sync - but only once
-                min_rmse_val = min_rmse.item()
+                # Call CUDA kernel to update best (all GPU, no sync)
+                rpn_cuda_native.batch_update_best(
+                    population,
+                    pop_constants.float() if pop_constants.dtype != torch.float32 else pop_constants,
+                    fit_f32,
+                    self._gpu_best_rpn,
+                    self._gpu_best_consts,
+                    self._gpu_best_rmse,
+                    1e-9  # tolerance
+                )
                 
-                if _improved_gpu:
-                    min_idx_val = min_idx.item()
-                    self._gpu_best_rmse.fill_(min_rmse_val)
-                    self._gpu_best_idx.fill_(min_idx_val)
+                # Increment sync counter
+                self._sync_counter += 1
+                
+                # Only sync to CPU when reporting or significant improvement
+                _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
+                _gpu_rmse = self._gpu_best_rmse[0].item()  # Single sync
+                
+                _improved = _gpu_rmse < (self._cached_best_rmse_cpu - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+                
+                if _improved or (self._sync_counter % _force_sync_interval == 0):
+                    min_rmse_val = _gpu_rmse
+                    min_idx_val = 0  # Kernel stores best in position 0
+                    
+                    if _improved:
+                        self._cached_best_rmse_cpu = min_rmse_val
                 else:
-                    min_idx_val = self._gpu_best_idx.item()
-            else:
-                # No sync needed - use cached CPU values
-                min_rmse_val = self._gpu_best_rmse.item()
-                min_idx_val = self._gpu_best_idx.item()
+                    min_rmse_val = self._cached_best_rmse_cpu
+                    min_idx_val = 0
+                    
                 min_rmse = self._gpu_best_rmse
+                
+            except (ImportError, RuntimeError):
+                # Fallback to original method if kernel unavailable
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                    for vid in self._var_token_ids:
+                        _uses_all &= (population == vid).any(dim=1)
+                    _masked_rmse = fitness_rmse.clone()
+                    _masked_rmse[~_uses_all] = float('inf')
+                    min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
+                    if min_rmse >= 1e18:
+                        min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+                else:
+                    min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+                
+                self._sync_counter += 1
+                _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
+                _improved_gpu = min_rmse < (getattr(self, '_gpu_best_rmse_fallback', min_rmse) - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+                
+                if _improved_gpu or (self._sync_counter % _force_sync_interval == 0):
+                    min_rmse_val = min_rmse.item()
+                    if _improved_gpu:
+                        min_idx_val = min_idx.item()
+                        self._gpu_best_rmse_fallback = min_rmse_val
+                    else:
+                        min_idx_val = getattr(self, '_cached_best_idx_cpu', 0)
+                else:
+                    min_rmse_val = getattr(self, '_gpu_best_rmse_fallback', float('inf'))
+                    min_idx_val = getattr(self, '_cached_best_idx_cpu', 0)
             
             # NaN check using the value we have
             if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
-                candidate_rpn = population[min_idx_val]
-                candidate_consts = pop_constants[min_idx_val]
+                # Use the RPN that the kernel already stored in _gpu_best_rpn
+                # This is the ACTUAL best individual, not population[min_idx_val]
+                candidate_rpn = self._gpu_best_rpn.clone()
+                candidate_consts = self._gpu_best_consts.clone().to(self.dtype)
                 
                 # Semantic variable check — reject formulas with dead variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
@@ -1922,7 +1956,7 @@ class TensorGeneticEngine:
                         callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             elif min_rmse_val == min_rmse_val and best_rpn is not None and min_rmse_val <= (best_rmse + GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
                 # Tie-break by simplicity for equivalent fitness.
-                min_idx_val = min_idx.item()
+                # min_idx_val already defined in both CUDA kernel and fallback paths
                 candidate_rpn = population[min_idx_val]
                 candidate_consts = pop_constants[min_idx_val]
                 cand_size = self.get_tree_size(candidate_rpn)
@@ -2061,7 +2095,7 @@ class TensorGeneticEngine:
                              elite_c[0] = best_consts_vec
                      else:
                          # Empty tensors to concatenate
-                         elites = torch.empty(0, self.max_len, device=self.device, dtype=torch.long)
+                         elites = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype)
                          elite_c = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                      # Generate randoms
@@ -2093,7 +2127,7 @@ class TensorGeneticEngine:
                         if n_basis > 0:
                             basis_pop, basis_consts = self._generate_polynomial_basis(n_basis)
                         else:
-                            basis_pop = torch.empty(0, self.max_len, device=self.device, dtype=torch.long)
+                            basis_pop = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype)
                             basis_consts = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                         rand_pop = self.operators.generate_random_population(n_rand)
@@ -2133,7 +2167,7 @@ class TensorGeneticEngine:
                             keep_pop = population[keep_idx]
                             keep_const = pop_constants[keep_idx]
                         else:
-                            keep_pop = torch.empty(0, self.max_len, device=self.device, dtype=torch.long)
+                            keep_pop = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype)
                             keep_const = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                         n_rand = self.pop_size - n_keep

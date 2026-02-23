@@ -1,4 +1,3 @@
-
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 import os
@@ -21,7 +20,9 @@ setup(
                 'simplify_kernels.cu',
                 'genrand_kernels.cu',
                 'backward_kernels.cu',
-                'diversity_kernels.cu'
+                'diversity_kernels.cu',
+                'lbfgs_kernels.cu',       # L-BFGS-B optimizer kernel
+                'best_tracker_kernels.cu'  # Best tracking kernel
             ],
             extra_compile_args={
                 'cxx': ['/O2', '/std:c++17'],

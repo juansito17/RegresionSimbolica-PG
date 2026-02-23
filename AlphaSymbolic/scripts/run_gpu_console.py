@@ -151,14 +151,19 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
 
 if __name__ == "__main__":
     print("Starting Genetic Algorithm (GPU Mode)...")
+    sys.stdout.flush()
     
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     else:
         print("WARNING: GPU NOT DETECTED. Running in CPU emulation mode (Slow).")
-        
+    sys.stdout.flush()
 
+    print("Loading configuration...")
+    sys.stdout.flush()
     from AlphaSymbolic.core.gpu.config import GpuGlobals
+    print(f"Config loaded: POP_SIZE={GpuGlobals.POP_SIZE}, NUM_ISLANDS={GpuGlobals.NUM_ISLANDS}")
+    sys.stdout.flush()
     
     # User can override Globals here
     # GpuGlobals.POP_SIZE and GpuGlobals.NUM_ISLANDS are now strictly taken from config.py 
