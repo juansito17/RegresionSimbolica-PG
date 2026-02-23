@@ -13,13 +13,14 @@ class GPUEvaluator:
         self.dtype = dtype
         
         # Max Float safe value
-        # FIX BUG-6: 1e30 is too close to float32 max (~3.4e38) and can overflow
-        # when squared or used in operations. Use 1e20 which is safe for:
-        # - sqrt(1e20) = 1e10 (OK)
-        # - mean([1e20]) = 1e20 (OK)
-        # - 1e20^2 = 1e40 (would overflow, but we avoid squaring penalty values)
+        # FIX BUG-3: 1e20 squared = 1e40 which OVERFLOWS float32 (max ~3.4e38).
+        # Use 1e15 which is safe for:
+        # - sqrt(1e15) = 3.16e7 (OK)
+        # - mean([1e15]) = 1e15 (OK)
+        # - 1e15^2 = 1e30 (OK, well under 3.4e38)
+        # - 10 * 1e15 = 1e16 (OK)
         # For float64, 1e100 is safe.
-        self.INF_VAL = 1e20 if dtype == torch.float32 else 1e100
+        self.INF_VAL = 1e15 if dtype == torch.float32 else 1e100
         
         # P1-4: Pre-create cached scalar tensor to avoid repeated allocations
         self._inf_tensor = torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype)

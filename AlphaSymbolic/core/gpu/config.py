@@ -93,12 +93,17 @@ class GpuGlobals:
     USE_INITIAL_POP_CACHE = False
     USE_INITIAL_FORMULA = True        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))"
+    # Fitness = 0.00422584, Size = 64
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
+
+    # Fitness = 0.00255508, Size = 112
+    #INITIAL_FORMULA_STRING = "(((((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (12.8453083 / lgamma((x0 - fact(((pi**(fact(x1)**(-(x2)))) / (exp(e) - x0))))))) + (x0 + fact(((6**(pi**(-(x2)))) / ((exp(pi) + (((e + sqrt(e))**(x1 - (x0 - (lgamma(x0) - (x0 + fact(((lgamma((lgamma(x0) - x0)) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))))))) - x0)) - x0))))))))) + -0.00326262) + (0.00013408 * x0)) + -0.0003895)" 
+
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
-    MAX_FORMULA_LENGTH = 64
+    MAX_FORMULA_LENGTH = 128
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60

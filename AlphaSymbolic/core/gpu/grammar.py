@@ -69,7 +69,7 @@ class GPUGrammar:
                 self.operators.append('gamma')
                 self.operators.append('lgamma')
             if GpuGlobals.USE_OP_ASIN:  self.operators.append('asin')
-            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos')
+            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos')  # FIX Bug 1: Usar 'acos' en lugar de 'C' para evitar colisión con constante
             if GpuGlobals.USE_OP_ATAN:  self.operators.append('atan')
             if GpuGlobals.USE_OP_FLOOR: self.operators.append('floor')
             if GpuGlobals.USE_OP_CEIL:  self.operators.append('ceil')

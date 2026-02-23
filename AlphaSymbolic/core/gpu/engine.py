@@ -1956,9 +1956,11 @@ class TensorGeneticEngine:
                         callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             elif min_rmse_val == min_rmse_val and best_rpn is not None and min_rmse_val <= (best_rmse + GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
                 # Tie-break by simplicity for equivalent fitness.
-                # min_idx_val already defined in both CUDA kernel and fallback paths
-                candidate_rpn = population[min_idx_val]
-                candidate_consts = pop_constants[min_idx_val]
+                # BUG FIX: Use _gpu_best_rpn instead of population[min_idx_val]
+                # min_idx_val is 0 when using CUDA kernel, and population[0] is NOT the best individual
+                # The kernel stores the actual best in _gpu_best_rpn
+                candidate_rpn = self._gpu_best_rpn.clone()
+                candidate_consts = self._gpu_best_consts.clone().to(self.dtype)
                 cand_size = self.get_tree_size(candidate_rpn)
                 best_size = self.get_tree_size(best_rpn)
 
