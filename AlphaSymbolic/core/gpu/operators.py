@@ -65,7 +65,7 @@ class GPUOperators:
         """
         Ensure a fraction of the population uses all available variables.
         Replaces random terminal positions with missing variable tokens.
-        Fully vectorized — no Python per-individual loops.
+        Uses CUDA kernel for variable presence detection when available.
         """
         if self.num_variables <= 1 or GpuGlobals.VAR_FORCE_SEED_PERCENT <= 0:
             return population
@@ -78,6 +78,73 @@ class GPUOperators:
         
         subset = population[:n_force]  # [n_force, max_len]
         
+        # ============ CUDA FAST PATH ============
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'compute_var_presence') and population.is_cuda:
+            try:
+                import rpn_cuda_native
+                
+                # Compute variable presence for all individuals at once
+                var_presence = torch.empty(n_force, dtype=torch.int32, device=device)
+                id_x_start = self.grammar.token_to_id.get('x0', 
+                            self.grammar.token_to_id.get('x', 1))
+                
+                rpn_cuda_native.compute_var_presence(
+                    subset, var_presence, PAD_ID, id_x_start, self.num_variables
+                )
+                
+                # Target mask: all variables present
+                all_vars_mask = (1 << self.num_variables) - 1  # e.g., 3 variables -> 0b111
+                
+                # Find individuals missing variables
+                missing_mask = var_presence != all_vars_mask
+                
+                # Process each variable that's missing
+                for vi in range(self.num_variables):
+                    var_name = f'x{vi}'
+                    vid = self.grammar.token_to_id.get(var_name, -1)
+                    if vid <= 0:
+                        continue
+                    
+                    var_bit = 1 << vi
+                    
+                    # Check if this variable is missing
+                    missing_this = (var_presence & var_bit) == 0
+                    n_missing = missing_this.sum().item()
+                    
+                    if n_missing == 0:
+                        continue
+                    
+                    missing_idx = missing_this.nonzero(as_tuple=True)[0]
+                    missing_pop = subset[missing_idx]
+                    
+                    # Find terminal positions (arity-0 tokens, non-PAD)
+                    is_term = torch.zeros_like(missing_pop, dtype=torch.bool)
+                    for tid in self.arity_0_ids:
+                        is_term |= (missing_pop == tid.item())
+                    
+                    has_any = is_term.any(dim=1)
+                    if not has_any.any():
+                        continue
+                    
+                    valid_idx = has_any.nonzero(as_tuple=True)[0]
+                    valid_pop = missing_pop[valid_idx]
+                    valid_term = is_term[valid_idx]
+                    
+                    rand_w = torch.rand_like(valid_term.float()) * valid_term.float()
+                    pos = rand_w.argmax(dim=1)
+                    valid_pop[torch.arange(valid_idx.shape[0], device=device), pos] = vid
+                    
+                    missing_pop[valid_idx] = valid_pop
+                    
+                    # Update var_presence for newly added variable
+                    var_presence[missing_idx[valid_idx]] |= var_bit
+                
+                return population
+                
+            except Exception:
+                pass  # Fall through to PyTorch fallback
+        
+        # ============ PyTorch FALLBACK ============
         for vi in range(self.num_variables):
             var_name = f'x{vi}'
             vid = self.grammar.token_to_id.get(var_name, -1)
@@ -856,23 +923,89 @@ class GPUOperators:
         if not GpuGlobals.PREVENT_DUPLICATES:
             return population, constants, 0
         
-        # GPU Accelerated Deduplication (Probabilistic Hashing)
-        # 1. Compute Hash for each individual (Row)
-        # Using pre-computed random weights for semantic hashing
+        B = population.shape[0]
+        curr_L = population.shape[1]
+        
+        # ============ CUDA FAST PATH (No CPU Sync) ============
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'compute_population_hashes') and population.is_cuda:
+            try:
+                # 1. Compute structural hashes on GPU
+                hashes = torch.empty(B, dtype=torch.long, device=self.device)
+                var_presence = torch.empty(B, dtype=torch.int32, device=self.device)
+                
+                # Get variable token start ID
+                id_x_start = self.grammar.token_to_id.get('x0', 
+                            self.grammar.token_to_id.get('x', 1))
+                
+                rpn_cuda_native.compute_population_hashes(
+                    population, hashes, var_presence,
+                    PAD_ID, id_x_start, self.num_variables
+                )
+                
+                # 2. Structural dedup on GPU (atomic hash table)
+                # Hash table size: 2^20 = 1M entries
+                HASH_TABLE_SIZE = 1 << 20
+                hash_table = torch.full((HASH_TABLE_SIZE,), -1, dtype=torch.long, device=self.device)
+                duplicate_mask = torch.zeros(B, dtype=torch.int32, device=self.device)
+                original_index = torch.zeros(B, dtype=torch.long, device=self.device)
+                
+                rpn_cuda_native.structural_dedup(hashes, hash_table, duplicate_mask, original_index)
+                
+                # 3. Get replacement positions on GPU
+                replacement_positions = torch.empty(B, dtype=torch.long, device=self.device)
+                n_replacements = torch.zeros(1, dtype=torch.long, device=self.device)
+                
+                n_dups = rpn_cuda_native.get_replacement_positions(
+                    duplicate_mask, replacement_positions, n_replacements
+                )
+                
+                if n_dups == 0:
+                    return population, constants, 0
+                
+                # 4. Generate replacements
+                dup_indices = replacement_positions[:n_dups]
+                fresh_pop = self.generate_random_population(n_dups)
+
+                # Handle shape mismatch
+                if fresh_pop.shape[1] != curr_L:
+                    if fresh_pop.shape[1] < curr_L:
+                        pad = torch.full(
+                            (n_dups, curr_L - fresh_pop.shape[1]), PAD_ID,
+                            dtype=fresh_pop.dtype, device=self.device
+                        )
+                        fresh_pop = torch.cat([fresh_pop, pad], dim=1)
+                    else:
+                        fresh_pop = fresh_pop[:, :curr_L]
+
+                # Constants for replacements
+                K = constants.shape[1]
+                if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                    fresh_consts = torch.randint(
+                        GpuGlobals.CONSTANT_INT_MIN_VALUE, 
+                        GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
+                        (n_dups, K), device=self.device, dtype=torch.long
+                    ).to(self.dtype)
+                else:
+                    fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=self.dtype).uniform_(
+                        GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE
+                    )
+                
+                population[dup_indices] = fresh_pop
+                constants[dup_indices] = fresh_consts
+                
+                return population, constants, n_dups
+                
+            except Exception as e:
+                # Fall through to PyTorch fallback
+                pass
+        
+        # ============ PyTorch FALLBACK ============
+        # Original probabilistic hashing implementation
         if not hasattr(self, 'dedup_weights'):
-             # Lazy init
              self.dedup_weights = torch.randint(-9223372036854775807, 9223372036854775807, (self.max_len,), device=self.device, dtype=torch.long)
              
-        # Hash: (B, L) * (L,) -> Sum -> (B,)
-        # Use simple dot product equivalent with implicit wrapping for int64
-        # We assume max_len matches population L. If L < max_len?
-        curr_L = population.shape[1]
         if curr_L != self.dedup_weights.shape[0]:
-             # Resize or re-init?
-             # Just slice if smaller, or re-init if larger
              if curr_L > self.dedup_weights.shape[0]:
-                 # FIX B3: Se usaba '...' (Ellipsis) como argumento de torch.randint,
-                 # lo que lanza TypeError en tiempo de ejecucion. Corregido con argumentos validos.
                  self.dedup_weights = torch.randint(
                      -9223372036854775807, 9223372036854775807,
                      (curr_L,), device=self.device, dtype=torch.long
@@ -881,50 +1014,28 @@ class GPUOperators:
         else:
              weights = self.dedup_weights
              
-        # FIX N4: population is uint8; multiplying by int64 weights in uint8 causes
-        # silent overflow (e.g. 200*256 mod 256 = 0), producing false hash collisions.
-        # Cast to long() first so the full int64 range is used for hashing.
         hashes = (population.long() * weights).sum(dim=1)
-        
-        # 2. Unique on Hashes (1D is fast)
-        # return_inverse gives indices such that hashes = unique[inverse]
         _, inverse_indices = torch.unique(hashes, sorted=False, return_inverse=True)
-        
-        # 3. Find Duplicates
-        # Sort inverse indices to find groups of identical hashes
         sorted_inv, sorted_idx = torch.sort(inverse_indices)
-        
-        # Mask where sorted_inv[i] == sorted_inv[i-1] -> Duplicate
         mask_dup = torch.zeros_like(sorted_inv, dtype=torch.bool)
         mask_dup[1:] = (sorted_inv[1:] == sorted_inv[:-1])
-        
-        # Indices of duplicates (in original population)
         dup_indices = sorted_idx[mask_dup]
         n_dups = dup_indices.shape[0]
         
         if n_dups == 0:
             return population, constants, 0
             
-        # In-place replacement — no need to clone entire 1M population
-        # Generate replacements (ancho = self.max_len, puede diferir de curr_L)
         fresh_pop = self.generate_random_population(n_dups)
-
-        # FIX B3-shape: generate_random_population devuelve ancho self.max_len.
-        # Si curr_L != self.max_len (e.g. poblacion con L extendido), hay que
-        # ajustar fresh_pop para que sea asignable a population[dup_indices].
         if fresh_pop.shape[1] != curr_L:
             if fresh_pop.shape[1] < curr_L:
-                # Padear con PAD_ID hasta curr_L
                 pad = torch.full(
                     (n_dups, curr_L - fresh_pop.shape[1]), PAD_ID,
                     dtype=fresh_pop.dtype, device=self.device
                 )
                 fresh_pop = torch.cat([fresh_pop, pad], dim=1)
             else:
-                # Truncar (no deberia ocurrir normalmente)
                 fresh_pop = fresh_pop[:, :curr_L]
 
-        # Constants for replacements - use integer range if FORCE_INTEGER_CONSTANTS
         K = constants.shape[1]
         if GpuGlobals.FORCE_INTEGER_CONSTANTS:
             fresh_consts = torch.randint(

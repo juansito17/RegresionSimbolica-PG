@@ -286,6 +286,39 @@ void launch_generate_random_rpn(
     float bin_weight     // OPTIMIZED: peso categoria binaria
 );
 
+// --- Diversity Kernels Forward Declarations (Structural Hash & Dedup) ---
+void launch_compute_population_hashes(
+    const torch::Tensor& population,
+    torch::Tensor& hashes,
+    torch::Tensor& var_presence,
+    int PAD_ID,
+    int id_x_start,
+    int num_vars
+);
+
+void launch_structural_dedup(
+    const torch::Tensor& hashes,
+    torch::Tensor& hash_table,
+    torch::Tensor& duplicate_mask,
+    torch::Tensor& original_index
+);
+
+int64_t launch_count_unique(const torch::Tensor& duplicate_mask);
+
+int64_t launch_get_replacement_positions(
+    const torch::Tensor& duplicate_mask,
+    torch::Tensor& replacement_positions,
+    torch::Tensor& n_replacements
+);
+
+void launch_compute_var_presence(
+    const torch::Tensor& population,
+    torch::Tensor& var_presence,
+    int PAD_ID,
+    int id_x_start,
+    int num_vars
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)",
@@ -335,6 +368,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Phase 6: Fused PSO and Autograd
     m.def("fused_pso", &launch_fused_pso, "Fused PSO (Eval+PSO in single kernel)");
     m.def("eval_rpn_backward", &run_rpn_backward_cuda, "RPN Backward Pass (CUDA)");
+
+    // Diversity Kernels: Structural Hash & Deduplication
+    m.def("compute_population_hashes", &launch_compute_population_hashes, 
+        "Compute structural hashes for population (CUDA)",
+        py::arg("population"), py::arg("hashes"), py::arg("var_presence"),
+        py::arg("PAD_ID"), py::arg("id_x_start"), py::arg("num_vars"));
+    
+    m.def("structural_dedup", &launch_structural_dedup,
+        "Find duplicate formulas via structural hash (CUDA)",
+        py::arg("hashes"), py::arg("hash_table"), py::arg("duplicate_mask"), py::arg("original_index"));
+    
+    m.def("count_unique", &launch_count_unique,
+        "Count unique formulas (CUDA)",
+        py::arg("duplicate_mask"));
+    
+    m.def("get_replacement_positions", &launch_get_replacement_positions,
+        "Get positions of duplicates for replacement (CUDA)",
+        py::arg("duplicate_mask"), py::arg("replacement_positions"), py::arg("n_replacements"));
+    
+    m.def("compute_var_presence", &launch_compute_var_presence,
+        "Compute variable presence bitmask for population (CUDA)",
+        py::arg("population"), py::arg("var_presence"),
+        py::arg("PAD_ID"), py::arg("id_x_start"), py::arg("num_vars"));
 }
 
 
