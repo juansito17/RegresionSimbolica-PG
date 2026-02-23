@@ -3,9 +3,23 @@ Pattern Memory System for GPU GP Engine - GPU-Native Version.
 
 Stores successful subtrees/patterns using GPU tensor storage with hash-based
 indexing. No CPU loops or .tolist() calls.
+
+OPTIMIZED: Uses CUDA structural hash kernel for consistent, fast hashing.
 """
 import torch
 from typing import Tuple
+
+# Try to import CUDA hash kernel
+try:
+    from sys import path as sys_path
+    from os import path as os_path
+    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
+    if cuda_path not in sys_path: sys_path.append(cuda_path)
+    
+    import rpn_cuda_native
+    CUDA_HASH_AVAILABLE = hasattr(rpn_cuda_native, 'compute_population_hashes')
+except ImportError:
+    CUDA_HASH_AVAILABLE = False
 
 
 class PatternMemory:
@@ -59,19 +73,44 @@ class PatternMemory:
         self.total_recorded = 0
         self.total_injected = 0
     
-    def _compute_pattern_hash(self, patterns: torch.Tensor) -> torch.Tensor:
+    def _compute_pattern_hash(self, patterns: torch.Tensor, use_cuda: bool = True) -> torch.Tensor:
         """
         Compute hash for each pattern in batch. Pure GPU operation.
         
         Args:
             patterns: [N, L] tensor of pattern tokens
+            use_cuda: Whether to use CUDA kernel if available
             
         Returns:
             [N] tensor of hashes
         """
-        L = patterns.shape[1]
-        weights = self.hash_weights[:L]
-        return (patterns * weights).sum(dim=1)
+        if use_cuda and CUDA_HASH_AVAILABLE:
+            # Use CUDA kernel for structural hashing
+            N, L = patterns.shape
+            
+            # Ensure uint8 type for kernel
+            if patterns.dtype != torch.uint8:
+                patterns = patterns.to(torch.uint8)
+            
+            # Prepare outputs
+            hashes = torch.empty(N, dtype=torch.long, device=self.device)
+            var_presence = torch.empty(N, dtype=torch.int32, device=self.device)
+            
+            # Call CUDA kernel (PAD_ID=0, id_x_start=1, num_vars=1 for patterns)
+            # Note: For patterns we don't care about variable presence, but the kernel requires it
+            rpn_cuda_native.compute_population_hashes(
+                patterns, hashes, var_presence,
+                0,  # PAD_ID
+                1,  # id_x_start (assuming x0 starts at ID 1)
+                1   # num_vars (simplified for patterns)
+            )
+            
+            return hashes
+        else:
+            # Fallback: simple weighted hash (pure PyTorch)
+            L = patterns.shape[1]
+            weights = self.hash_weights[:L]
+            return (patterns * weights).sum(dim=1)
     
     def record_subtrees(self, population: torch.Tensor, fitness: torch.Tensor, 
                         grammar, min_size: int = 3, max_size: int = 10):

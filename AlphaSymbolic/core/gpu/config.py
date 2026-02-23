@@ -91,9 +91,9 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = True        # PURE GP: No fixed starting points
+    USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (10 / lgamma(x0))) + (x0 + fact(((6.11744595**(3**(-(x2)))) / ((exp(pi) + ((4**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))"
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))"
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 

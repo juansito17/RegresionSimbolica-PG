@@ -1768,33 +1768,63 @@ class TensorGeneticEngine:
                 except Exception:
                     pass  # Non-fatal: BFGS puede fallar en fórmulas no diferenciables
             
-            # Best Tracking — only consider formulas using ALL variables (if multi-var mode)
+            # Best Tracking — ASYNC optimization to reduce CPU-GPU syncs
+            # Key insight: We only need to sync when there's a meaningful improvement.
+            # Strategy: Keep best RMSE on GPU, compare there first, only sync on improvement.
+            
+            # Lazy init of GPU-side best tracking
+            if not hasattr(self, '_gpu_best_rmse'):
+                self._gpu_best_rmse = torch.tensor(float('inf'), device=self.device, dtype=self.dtype)
+                self._gpu_best_idx = torch.tensor(0, device=self.device, dtype=torch.long)
+                self._sync_counter = 0
+            
+            # Get current minimum (stays on GPU)
             if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                # OPTIMIZED: Vectorized mask calculation without .any() syncs
+                # Vectorized mask calculation without .any() syncs
                 _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
                 for vid in self._var_token_ids:
-                    # (population == vid).any(dim=1) is [B] tensor, NO SYNC
                     _uses_all &= (population == vid).any(dim=1)
                 
-                # OPTIMIZED: Avoid _uses_all.any() sync by using masked RMSE
                 _masked_rmse = fitness_rmse.clone()
-                # If formula is not valid (doesn't use all vars), set its RMSE to INF for tracking
                 _masked_rmse[~_uses_all] = float('inf')
-                
                 min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
-                min_rmse_val = min_rmse.item() # ONE SYNC to fetch scalar
                 
-                # If no formula uses all variables, min_rmse_val will be INF.
-                # In that case, we fall back to RAW min to ensure we always have a "best"
-                if min_rmse_val >= 1e18:
+                # Fallback if all INF
+                if min_rmse >= 1e18:
                     min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-                    min_rmse_val = min_rmse.item()
             else:
                 min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-                min_rmse_val = min_rmse.item()  # Simple sync
             
-            if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):  # NaN check + tolerance
-                min_idx_val = min_idx.item()
+            # GPU-side comparison: only sync if there's an improvement
+            # This avoids .item() call on every generation
+            _improved_gpu = min_rmse < (self._gpu_best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+            
+            # Increment sync counter
+            self._sync_counter += 1
+            
+            # Only sync to CPU when:
+            # 1. GPU detected improvement, OR
+            # 2. Every N generations for progress reporting
+            _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
+            
+            if _improved_gpu or (self._sync_counter % _force_sync_interval == 0):
+                # Now we sync - but only once
+                min_rmse_val = min_rmse.item()
+                
+                if _improved_gpu:
+                    min_idx_val = min_idx.item()
+                    self._gpu_best_rmse.fill_(min_rmse_val)
+                    self._gpu_best_idx.fill_(min_idx_val)
+                else:
+                    min_idx_val = self._gpu_best_idx.item()
+            else:
+                # No sync needed - use cached CPU values
+                min_rmse_val = self._gpu_best_rmse.item()
+                min_idx_val = self._gpu_best_idx.item()
+                min_rmse = self._gpu_best_rmse
+            
+            # NaN check using the value we have
+            if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
                 candidate_rpn = population[min_idx_val]
                 candidate_consts = pop_constants[min_idx_val]
                 

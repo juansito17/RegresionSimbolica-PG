@@ -585,7 +585,9 @@ class GPUOperators:
         """
         Performs arity-safe mutation on the population.
         """
-        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'mutate_population'):
+        # BUG FIX: Check if population is on CUDA before using CUDA kernel
+        # The CUDA kernel requires tensors to be on GPU, not CPU
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'mutate_population') and population.is_cuda:
              # CUDA Fast Path
              B, L = population.shape
              rand_floats = torch.rand(population.shape, device=self.device, dtype=torch.float32)
@@ -607,7 +609,10 @@ class GPUOperators:
         mask = torch.rand_like(population, dtype=self.dtype) < mutation_rate
         mask = mask & (population != PAD_ID)
         
-        current_arities = self.token_arity[population]
+        # BUG FIX: Clamp population values to valid range and use long indexing
+        # Also ensure token_arity is on the same device as population
+        token_arity_local = self.token_arity.to(population.device)
+        current_arities = token_arity_local[population.long()]
         
         if len(self.arity_0_ids) > 0:
             rand_idx_0 = torch.randint(0, len(self.arity_0_ids), population.shape, device=self.device)
