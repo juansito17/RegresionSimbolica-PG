@@ -48,6 +48,7 @@ env/
 .venv/
 .env
 .pytest_cache/
+*.egg-info/
 
 # Data, Caches & Logs
 logs/
