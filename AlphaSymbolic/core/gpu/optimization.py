@@ -422,11 +422,20 @@ class GPUOptimizer:
         # Particle 1..P: perturbed
         
         pos = constants.unsqueeze(1).repeat(1, num_particles, 1) # [B, P, K]
+        
+        # BUG-PSO-2 FIX: scale jitter to 15% of const range (was fixed σ=1)
+        const_range = float(getattr(GpuGlobals, 'CONSTANT_MAX_VALUE', 10.0)) - float(getattr(GpuGlobals, 'CONSTANT_MIN_VALUE', -10.0))
+        jitter_sigma = const_range * 0.15
+        
         # Jitter
-        noise = torch.randn(B, num_particles - 1, K, device=self.device, dtype=self.dtype) * 1.0
+        noise = torch.randn(B, num_particles - 1, K, device=self.device, dtype=self.dtype) * jitter_sigma
         pos[:, 1:, :] += noise
         
-        vel = torch.randn_like(pos) * 0.1
+        # Clamp to bounds immediately after jitter
+        pos.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+        
+        vel_sigma = const_range * 0.02
+        vel = torch.randn_like(pos) * vel_sigma
         vel = vel.reshape(-1, K) # [B*P, K]
         
         # Flatten for batch evaluation
@@ -450,6 +459,9 @@ class GPUOptimizer:
         
         # Loop
         for step in range(steps):
+            # SOTA: Adaptive inertia (IPSO) w_max -> 0.4
+            w_curr = w - (w - 0.4) * (step / (steps - 1 if steps > 1 else 1))
+
             # 3. Evaluate Batch
             # shape [B*P]
             errors = self.evaluator.evaluate_batch(pop_expanded, x, y, flat_pos)
@@ -479,7 +491,7 @@ class GPUOptimizer:
                 reshaped_err = pbest_err.view(B, num_particles)
                 min_errs, min_indices = torch.min(reshaped_err, dim=1) # [B]
                 
-                improved_g = min_errs < gbest_err
+                improved_g = (min_errs < gbest_err) & torch.isfinite(min_errs)
                 if improved_g.any():
                     gbest_err[improved_g] = min_errs[improved_g]
                     
@@ -506,7 +518,7 @@ class GPUOptimizer:
                 
                 rpn_cuda_native.pso_update(
                     pos_3d, vel_3d, pbest_3d, gbest_pos, r1_3d, r2_3d,
-                    w, c1, c2
+                    w_curr, c1, c2
                 )
             else:
                  # PyTorch Fallback
@@ -515,10 +527,11 @@ class GPUOptimizer:
                  
                  gbest_expanded = gbest_pos.repeat_interleave(num_particles, dim=0)
                  
-                 vel = w * vel + c1 * r1 * (pbest_pos - flat_pos) + c2 * r2 * (gbest_expanded - flat_pos)
+                 vel = w_curr * vel + c1 * r1 * (pbest_pos - flat_pos) + c2 * r2 * (gbest_expanded - flat_pos)
                  flat_pos += vel
             
             # Handle Bounds
             flat_pos.clamp_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+
 
         return gbest_pos, gbest_err

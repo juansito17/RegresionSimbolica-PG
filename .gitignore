@@ -77,6 +77,8 @@ pattern_memory.json
 hh.py
 comparison_results.txt
 build_log_v2.txt
+AlphaSymbolic/notebooks/AlphaSymbolic_Colab.ipynb
+Code/notebooks/GoogleColab_Project.ipynb
 
 # GPU / CUDA specific
 AlphaSymbolic/core/gpu/cache/

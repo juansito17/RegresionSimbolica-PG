@@ -25,7 +25,7 @@ setup(
                 'best_tracker_kernels.cu'  # Best tracking kernel
             ],
             extra_compile_args={
-                'cxx': ['/O2', '/std:c++17'],
+                'cxx': ['/O2', '/std:c++17'] if os.name == 'nt' else ['-O3', '-std=c++17'],
                 # -O3: máxima optimización
                 # --use_fast_math: instrucciones FP rápidas (rsqrt, fma, etc.)
                 # -diag-suppress 221: silencia truncation warning (1e300 -> float32)

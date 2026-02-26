@@ -51,7 +51,7 @@ class GpuGlobals:
     # ============================================================
     # Population Size
     # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
-    POP_SIZE = 1_000_000
+    POP_SIZE = 500_000
     GENERATIONS = 1_000_000
     
     # Islands
@@ -96,8 +96,8 @@ class GpuGlobals:
     # Fitness = 0.00422584, Size = 64
     #INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
 
-    # Fitness = 0.00203398, Size = 120
-    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (10.95489311 / lgamma((x0 - fact(((((pi**(x1**(-(x2))))**(fact((1 / 6))**(-(x2))))**(x1**(-(x2)))) / (exp(e) - x0))))))) + (x0 + fact(((6**(pi**(-(x2)))) / ((exp(pi) + (((e + sqrt(e))**(x1 - (x0 - (lgamma(x0) - (x0 + fact(((lgamma(x0) - x0) / (fact(((exp(3) * (fact(x1)**(-(x2)))) / ((x0**(-((x0 - x0)))) - 2))) - 2)))))))) - x0)) - x0)))))))))" 
+    # Fitness = 0.00142575, Size = 128
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - (x0 + fact(-8.19257164))) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (((25**(-(x2))) + ((log((-(-11.09804344))) - sqrt(x1)) + 10)) / lgamma((x0 - fact((((5**(fact((x1 / 5))**3))**(x1**(2 - x1))) / (exp(e) - x0))))))) + (x0 + fact(((6**(pi**(-(x2)))) / ((exp(pi) + (((e + sqrt(e))**(x1 - (x0 - (lgamma(x0) - (x0 + fact(((lgamma(x0) - x0) / (fact(((exp(3) * (2**(-(x2)))) / (((x1 / 3) - 2) - 2))) - 2)))))))) - x0)) - x0)))))))))" 
 
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")

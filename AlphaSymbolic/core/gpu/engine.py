@@ -1330,6 +1330,16 @@ class TensorGeneticEngine:
         if seeds:
 
             seed_pop, seed_consts = self.load_population_from_strings(seeds)
+            if seed_pop is not None and getattr(GpuGlobals, 'USE_SIMPLIFICATION', True):
+                 # For seeds: ONLY apply structural folding (neg(neg(C)) → C, log(neg(C)) → C, etc.)
+                 # Do NOT apply literal-to-C promotion — it converts fixed grammar constants like
+                 # lgamma(3) into free PSO parameters, breaking the seed's mathematical structure.
+                 for _ in range(5):
+                     seed_pop, seed_consts, n_pf = self.gpu_simplifier._apply_parametric_constant_folding(seed_pop, seed_consts)
+                     if n_pf == 0:
+                         break
+                     seed_pop, _ = self.gpu_simplifier._compact_formulas(seed_pop)
+            
             if seed_pop is not None:
                 n = min(len(seeds), self.pop_size) # Safety
                 if n > 0:
@@ -2647,18 +2657,20 @@ class TensorGeneticEngine:
                         curr = min(chunk_size, total_cross - c_ptr)
                         sub_idx = parents_idx[c_ptr : c_ptr + curr]
                         parents = population[sub_idx]
+                        parents_consts = pop_constants[sub_idx]
+                        
                         # --- SOTA P0: Headless Chicken Crossover ---
-                        # HEADLESS_CHICKEN_RATE% of pairs get a fresh random parent 2,
-                        # forcing structural exploration even in converged populations.
                         _chicken_rate = float(getattr(GpuGlobals, 'HEADLESS_CHICKEN_RATE', 0.15))
                         if _chicken_rate > 0:
-                            offspring = self.operators.headless_chicken_crossover(
-                                parents, pop_constants[sub_idx], 1.0, _chicken_rate
+                            offspring, off_consts = self.operators.headless_chicken_crossover(
+                                parents, parents_consts, 1.0, _chicken_rate
                             )
                         else:
-                            offspring = self.operators.crossover_population(parents, 1.0)
+                            offspring, off_consts = self.operators.crossover_population(
+                                parents, parents_consts, 1.0
+                            )
                         next_pop[p_ptr : p_ptr + curr] = offspring
-                        next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                        next_c[p_ptr : p_ptr + curr] = off_consts
                         p_ptr += curr
                         c_ptr += curr
 
@@ -2670,15 +2682,31 @@ class TensorGeneticEngine:
                         curr = min(chunk_size, total_mut - m_ptr)
                         sub_idx = parents_idx[m_ptr : m_ptr + curr]
                         parents = population[sub_idx]
-                        offspring = parents.clone()
+                        parents_consts = pop_constants[sub_idx]
+                        
+                        # Split mutants: 50% point, 50% subtree
                         n_p = curr // 2
                         n_s = curr - n_p
+                        
+                        off_pop = torch.empty_like(parents)
+                        off_c = torch.empty_like(parents_consts)
+                        
                         if n_p > 0:
-                            offspring[:n_p] = self.operators.mutate_population(offspring[:n_p], current_mutation_rate)
+                            p_pop, p_c = self.operators.mutate_population(
+                                parents[:n_p], parents_consts[:n_p], current_mutation_rate
+                            )
+                            off_pop[:n_p] = p_pop
+                            off_c[:n_p] = p_c
+                            
                         if n_s > 0:
-                            offspring[n_p:] = self.operators.subtree_mutation(offspring[n_p:], 1.0)
-                        next_pop[p_ptr : p_ptr + curr] = offspring
-                        next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                            s_pop, s_c = self.operators.subtree_mutation(
+                                parents[n_p:], parents_consts[n_p:], 1.0
+                            )
+                            off_pop[n_p:] = s_pop
+                            off_c[n_p:] = s_c
+                            
+                        next_pop[p_ptr : p_ptr + curr] = off_pop
+                        next_c[p_ptr : p_ptr + curr] = off_c
                         p_ptr += curr
                         m_ptr += curr
 

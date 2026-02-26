@@ -439,15 +439,33 @@ class GPUSymbolicSimplifier:
                 starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_modulo_rules(pop, starts_cache); n_pass += n
             pop, n = self._apply_constant_folding(pop, starts_cache); n_pass += n
+            # Literal-to-C promotion: fold f(literal) → C[value] inside main loop
+            if constants is not None:
+                pop, constants, n_lp = self._apply_literal_promotion(pop, constants)
+                n_pass += n_lp
+                if n_lp > 0:
+                    starts_cache = None  # Invalidate cache (new C tokens added)
             pop, n = self._compact_formulas(pop); n_pass += n
             if n_pass.item() == 0: break
             total_simplified += n_pass
 
-        # Validation Step: Revert rows that became invalid (unbalanced)
+        # Validation: Revert rows that became invalid (unbalanced)
         is_valid = self._validate_batch_stack(pop)
         if not is_valid.all():
             invalid_indices = torch.where(~is_valid)[0]
             pop[invalid_indices] = original_population[invalid_indices]
+
+        # Post-validation: Literal-to-C promotion + Parametric constant folding.
+        # Applied after validation so reverts cannot undo constant value updates.
+        # Combined converging loop: each round can chain   lit→C then C-op→C.
+        # Example: exp(lgamma(3))  →  exp(C[0.693])  →  C[2.0]  (2 iterations)
+        if constants is not None:
+            for _ in range(8):
+                pop, constants, n_lp = self._apply_literal_promotion(pop, constants)
+                pop, constants, n_pf = self._apply_parametric_constant_folding(pop, constants)
+                if n_lp + n_pf == 0:
+                    break
+                pop, _ = self._compact_formulas(pop)
 
         return pop, constants, total_simplified.item()
     
@@ -1286,6 +1304,267 @@ class GPUSymbolicSimplifier:
                     counts += match_close.long()
         
         return pop, counts.sum()
+
+    def _apply_parametric_constant_folding(
+        self,
+        population: torch.Tensor,
+        constants: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Fold unary/binary operators whose arguments are exclusively parametric
+        'C' tokens (free constants from the constants array).
+
+        Examples:
+          neg(C[-8.28])     -> C[8.28]       (negate in-place, remove neg)
+          log(C[11.09])     -> C[2.406]      (apply log in-place, remove log)
+          add(C[1], C[2])   -> C[3]          (merge into first slot, remove second C+op)
+
+        Unary fold: op removed, C slot value updated.
+        Binary fold: op + second C removed; first C slot gets result.
+        Only finite results are committed.
+        """
+        if constants is None or constants.numel() == 0:
+            return population, constants, 0
+
+        B, L = population.shape
+        K = constants.shape[1]
+        pop = population.clone()
+        consts = constants.clone()
+        n_folded = 0
+
+        id_C = self.grammar.token_to_id.get('C', -1)
+        if id_C == -1:
+            return pop, consts, 0
+
+        max_id = self.arity_table.size(0)
+
+        def _c_map(p):
+            """c_map[b, j] = cumulative index (0-based) of the j-th C in formula b."""
+            return torch.cumsum((p.long() == id_C), dim=1) - 1
+
+        # ── Unary Folding: unary_op(C) → C (updated) ──────────────────────────
+        c_map = _c_map(pop)
+        rows_all = torch.arange(B, device=self.device)
+
+        for j in range(1, L):
+            op = pop[:, j].long()
+            op_c = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_c].clone()
+            arity[op >= max_id] = 0
+
+            arg_is_C = (pop[:, j - 1].long() == id_C)
+            mask = (arity == 1) & arg_is_C & (op != PAD_ID)
+            if not mask.any():
+                continue
+
+            slot = c_map[:, j - 1].clamp(0, K - 1)
+            val = consts[rows_all, slot]
+
+            res = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            applied = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+            def _try(op_ids_or_id, fn):
+                if isinstance(op_ids_or_id, int):
+                    if op_ids_or_id == -1:
+                        return
+                    tid = torch.tensor([op_ids_or_id], device=self.device, dtype=torch.long)
+                else:
+                    tid = op_ids_or_id
+                    if tid.numel() == 0:
+                        return
+                m = mask & is_op_in(op, tid)
+                if m.any():
+                    r = fn(val[m])
+                    res[m] = r
+                    applied[m] = True
+
+            _try(self.OP_NEG_IDS,    lambda v: -v)
+            _try(self.OP_LOG_IDS,    lambda v: torch.log(v))
+            _try(self.OP_EXP_IDS,    lambda v: torch.exp(v))
+            _try(self.OP_SQRT_IDS,   lambda v: torch.sqrt(v))
+            _try(self.OP_ABS_IDS,    lambda v: torch.abs(v))
+            _try(self.OP_FACT_IDS,   lambda v: torch.exp(torch.lgamma(v + 1.0)))
+            _try(self.OP_GAMMA_IDS,  lambda v: torch.exp(torch.lgamma(v)))
+            _try(self.OP_LGAMMA_IDS, lambda v: torch.lgamma(v))
+            _try(self.OP_SIN,        lambda v: torch.sin(v))
+            _try(self.OP_COS,        lambda v: torch.cos(v))
+            _try(self.OP_TAN,        lambda v: torch.tan(v))
+            _try(self.OP_ASIN,       lambda v: torch.asin(v))
+            _try(self.OP_ACOS,       lambda v: torch.acos(v))
+            _try(self.OP_ATAN,       lambda v: torch.atan(v))
+            _try(self.OP_FLOOR,      lambda v: torch.floor(v))
+            _try(self.OP_CEIL,       lambda v: torch.ceil(v))
+            _try(self.OP_SIGN,       lambda v: torch.sign(v))
+
+            commit = applied & torch.isfinite(res)
+            if commit.any():
+                cr = torch.nonzero(commit, as_tuple=True)[0]
+                consts[cr, slot[commit]] = res[commit].to(consts.dtype)
+                pop[commit, j] = PAD_ID            # remove operator token
+                c_map = _c_map(pop)                # recompute (PAD doesn't shift C idx)
+                n_folded += int(commit.sum().item())
+
+        return pop, consts, n_folded
+
+    def _apply_literal_promotion(
+        self,
+        population: torch.Tensor,
+        constants: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Promote operations on grammar literals into parametric C slots.
+
+        Unary pattern  (2 tokens → 1):
+            [lit, op]  →  [C]   e.g. lgamma(3) → C[0.6931]
+        Binary pattern (3 tokens → 1):
+            [lit1, lit2, op]  →  [C]  e.g. pi + e → C[5.860]
+
+        A token is a 'literal' if val_table[token_id] is finite (i.e. it is a
+        numeric grammar constant: 0,1,2,3,pi,e,...).
+        C tokens and variables are NOT literals.
+
+        The promoted value is stored in the first free slot of the constants
+        array (slot index = current number of C tokens in the formula).
+        Promotion is skipped if the slot array is already full.
+        """
+        if not hasattr(self, '_cached_val_table'):
+            return population, constants, 0
+
+        pop = population  # modify in-place (caller owns clone)
+        consts = constants
+        B, L = pop.shape
+        K = consts.shape[1]
+        id_C = self.grammar.token_to_id.get('C', -1)
+        if id_C < 0:
+            return pop, consts, 0
+
+        max_id = self.arity_table.size(0)
+        val_table = self._cached_val_table          # [max_id] — NaN for non-literals
+        rows_all = torch.arange(B, device=self.device)
+        n_promoted = 0
+
+        def _is_lit(token_ids: torch.Tensor) -> torch.Tensor:
+            """True where the token is a finite grammar literal (not C, not var)."""
+            tc = token_ids.clamp(0, max_id - 1)
+            v = val_table[tc]
+            return torch.isfinite(v) & (token_ids != PAD_ID)
+
+        def _val(token_ids: torch.Tensor) -> torch.Tensor:
+            tc = token_ids.clamp(0, max_id - 1)
+            return val_table[tc]
+
+        def _free_slot(p: torch.Tensor) -> torch.Tensor:
+            """First free slot per formula = number of C tokens already in formula."""
+            return (p.long() == id_C).sum(dim=1)  # [B]
+
+        def _apply_unary_op(op_ids: torch.Tensor, vals: torch.Tensor, fn) -> tuple:
+            """Return (res, applied_mask) for a given unary op tensor and function."""
+            res = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            applied = torch.zeros(B, dtype=torch.bool, device=self.device)
+            return res, applied  # updated below
+
+        # ── Unary: [lit, op] → [C] ─────────────────────────────────────────────
+        for j in range(1, L):
+            op  = pop[:, j].long()
+            op_c = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_c].clone()
+            arity[op >= max_id] = 0
+
+            arg_is_lit = _is_lit(pop[:, j - 1].long())
+            free = _free_slot(pop)
+            has_room = free < K
+            mask = (arity == 1) & arg_is_lit & has_room & (op != PAD_ID)
+            if not mask.any():
+                continue
+
+            val_arg = _val(pop[:, j - 1].long())
+
+            res   = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            appld = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+            def _try(op_ids_or_id, fn):
+                nonlocal res, appld
+                if isinstance(op_ids_or_id, int):
+                    if op_ids_or_id < 0:
+                        return
+                    m = mask & (op == op_ids_or_id)
+                else:
+                    if op_ids_or_id.numel() == 0:
+                        return
+                    m = mask & (op.unsqueeze(1) == op_ids_or_id.unsqueeze(0)).any(dim=1)
+                if not m.any():
+                    return
+                try:
+                    r = fn(val_arg[m])
+                    res[m] = r
+                    appld[m] = True
+                except Exception:
+                    pass
+
+            _try(self.OP_NEG_IDS,    lambda v: -v)
+            _try(self.OP_LOG_IDS,    lambda v: torch.log(v))
+            _try(self.OP_EXP_IDS,    lambda v: torch.exp(v))
+            _try(self.OP_SQRT_IDS,   lambda v: torch.sqrt(v))
+            _try(self.OP_ABS_IDS,    lambda v: torch.abs(v))
+            _try(self.OP_FACT_IDS,   lambda v: torch.exp(torch.lgamma(v + 1.0)))
+            _try(self.OP_GAMMA_IDS,  lambda v: torch.exp(torch.lgamma(v)))
+            _try(self.OP_LGAMMA_IDS, lambda v: torch.lgamma(v))
+            _try(self.OP_SIN,        lambda v: torch.sin(v))
+            _try(self.OP_COS,        lambda v: torch.cos(v))
+            _try(self.OP_TAN,        lambda v: torch.tan(v))
+            _try(self.OP_FLOOR,      lambda v: torch.floor(v))
+            _try(self.OP_CEIL,       lambda v: torch.ceil(v))
+            _try(self.OP_ABS_ID if hasattr(self,'OP_ABS_ID') else -1, lambda v: torch.abs(v))
+
+            commit = appld & torch.isfinite(res)
+            if commit.any():
+                cr    = torch.nonzero(commit, as_tuple=True)[0]
+                slots = free[commit]
+                consts[cr, slots] = res[commit].to(consts.dtype)
+                pop[commit, j - 1] = id_C   # literal → C
+                pop[commit, j]     = PAD_ID  # op → PAD
+                n_promoted += int(commit.sum().item())
+
+        # ── Binary: [lit1, lit2, op] → [C] ─────────────────────────────────────
+        for j in range(2, L):
+            op   = pop[:, j].long()
+            op_c = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_c].clone()
+            arity[op >= max_id] = 0
+
+            both_lit = _is_lit(pop[:, j - 2].long()) & _is_lit(pop[:, j - 1].long())
+            free = _free_slot(pop)
+            has_room = free < K
+            mask = (arity == 2) & both_lit & has_room & (op != PAD_ID)
+            if not mask.any():
+                continue
+
+            v1 = _val(pop[:, j - 2].long())
+            v2 = _val(pop[:, j - 1].long())
+
+            res   = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            appld = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+            m = mask & (op == self.OP_PLUS);  res[m] = v1[m] + v2[m]; appld |= m
+            m = mask & (op == self.OP_MINUS); res[m] = v1[m] - v2[m]; appld |= m
+            m = mask & (op == self.OP_MULT);  res[m] = v1[m] * v2[m]; appld |= m
+            m = mask & (op == self.OP_DIV) & (v2 != 0)
+            res[m] = v1[m] / v2[m]; appld |= m
+            if self.OP_POW_IDS.numel() > 0:
+                m = mask & (op.unsqueeze(1) == self.OP_POW_IDS.unsqueeze(0)).any(dim=1)
+                res[m] = v1[m].pow(v2[m]); appld |= m
+
+            commit = appld & torch.isfinite(res)
+            if commit.any():
+                cr    = torch.nonzero(commit, as_tuple=True)[0]
+                slots = free[commit]
+                consts[cr, slots] = res[commit].to(consts.dtype)
+                pop[commit, j - 2] = id_C   # first arg → C (new slot)
+                pop[commit, j - 1] = PAD_ID
+                pop[commit, j]     = PAD_ID
+                n_promoted += int(commit.sum().item())
+
+        return pop, consts, n_promoted
 
     def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # FIX B6: El count anterior era is_pad.any(dim=1).sum(), que equivale al numero de

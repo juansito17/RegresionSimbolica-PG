@@ -581,36 +581,41 @@ class GPUOperators:
             return torch.empty((0, self.max_len), device=self.device, dtype=self.pop_dtype)
         return torch.tensor(batch_rpn, device=self.device, dtype=self.pop_dtype)
 
-    def mutate_population(self, population: torch.Tensor, mutation_rate: float) -> torch.Tensor:
+    def mutate_population(self, population: torch.Tensor, constants: torch.Tensor, mutation_rate: float) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Performs arity-safe mutation on the population.
+        Now preserves constants for point mutations.
         """
+        population = population.clone()
+        constants = constants.clone()
+        
         # BUG FIX: Check if population is on CUDA before using CUDA kernel
-        # The CUDA kernel requires tensors to be on GPU, not CPU
         if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'mutate_population') and population.is_cuda:
              # CUDA Fast Path
+             # Note: Original native kernel might not handle constants yet.
+             # If so, we'll need to repair after returning.
              B, L = population.shape
              rand_floats = torch.rand(population.shape, device=self.device, dtype=torch.float32)
              rand_ints = torch.randint(0, 2**30, population.shape, device=self.device, dtype=torch.long)
              
-             # In-place modification? No, clone to be safe (or in-place if allowed)
-             # PyTorch usually clones for mutation.
-             mutated_pop = population.clone()
-             
              rpn_cuda_native.mutate_population(
-                 mutated_pop, rand_floats, rand_ints,
+                 population, rand_floats, rand_ints,
                  self.token_arity_int,
                  self.arity_0_ids, self.arity_1_ids, self.arity_2_ids,
                  mutation_rate, PAD_ID
              )
-             return mutated_pop
+             
+             # Repair constants alignment if RPN changed
+             # (Point mutation doesn't break RPN structure, but can change 'C' count)
+             population, constants, _ = self.repair_invalid_population(population, constants)
+             return population, constants
 
         # Fallback to PyTorch
+        B, L = population.shape
+        K = constants.shape[1]
         mask = torch.rand_like(population, dtype=self.dtype) < mutation_rate
         mask = mask & (population != PAD_ID)
         
-        # BUG FIX: Clamp population values to valid range and use long indexing
-        # Also ensure token_arity is on the same device as population
         token_arity_local = self.token_arity.to(population.device)
         current_arities = token_arity_local[population.long()]
         
@@ -632,18 +637,59 @@ class GPUOperators:
         else:
              replacements_2 = population
              
-        mutated_pop = population.clone()
+        # Guardar constantes originales para mapeo
+        id_C = self.grammar.token_to_id.get('C', PAD_ID)
+        is_c_orig = (population == id_C)
+        c_map_orig = torch.cumsum(is_c_orig.long(), dim=1) - 1
         
+        # Aplicar mutación a RPN
         mask_0 = mask & (current_arities == 0)
-        mutated_pop = torch.where(mask_0, replacements_0, mutated_pop)
+        population = torch.where(mask_0, replacements_0, population)
         
         mask_1 = mask & (current_arities == 1)
-        mutated_pop = torch.where(mask_1, replacements_1, mutated_pop)
+        population = torch.where(mask_1, replacements_1, population)
         
         mask_2 = mask & (current_arities == 2)
-        mutated_pop = torch.where(mask_2, replacements_2, mutated_pop)
+        population = torch.where(mask_2, replacements_2, population)
         
-        return mutated_pop
+        # Realinear constantes
+        is_c_new = (population == id_C)
+        next_c = torch.zeros_like(constants)
+        
+        if is_c_new.any():
+            c_idx_new = torch.cumsum(is_c_new.long(), dim=1) - 1
+            
+            # Si una posición era 'C' y sigue siendo 'C', mantiene el valor.
+            # Si era otra cosa y se convirtió en 'C', recibe valor aleatorio.
+            # Si era 'C' y se convirtió en otra cosa, el valor se pierde.
+            
+            # Mascara de los que eran 'C' y siguen siéndolo
+            still_c = is_c_orig & is_c_new
+            # Mascara de los nuevos 'C'
+            became_c = (~is_c_orig) & is_c_new
+            
+            # Map constants from old to new
+            if still_c.any():
+                src_idx = c_map_orig[still_c]
+                dst_idx = c_idx_new[still_c]
+                rows = torch.nonzero(still_c, as_tuple=True)[0]
+                
+                # Scatter values
+                next_c[rows, dst_idx] = constants[rows, src_idx]
+                
+            if became_c.any():
+                # Random initialization for new constants
+                rows = torch.nonzero(became_c, as_tuple=True)[0]
+                dst_idx = c_idx_new[became_c]
+                
+                # Jitter original or uniform? Let's use uniform as it is a "new" constant.
+                new_vals = torch.empty(len(rows), device=self.device, dtype=self.dtype).uniform_(
+                    GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE
+                )
+                next_c[rows, dst_idx] = new_vals
+
+        return population, next_c
+
 
     def _get_subtree_ranges(self, population: torch.Tensor) -> torch.Tensor:
         """
@@ -759,15 +805,14 @@ class GPUOperators:
 
         return end_idx
 
-    def crossover_population(self, parents: torch.Tensor, crossover_rate: float) -> torch.Tensor:
-
+    def crossover_population(self, parents: torch.Tensor, constants: torch.Tensor, crossover_rate: float) -> Tuple[torch.Tensor, torch.Tensor]:
         # FIX B1: Clonar entrada para evitar mutacion in-place del tensor original.
-        # Si 'parents' es una vista de la poblacion principal (ej. population[sub_idx]),
-        # escribir en ella corrompe los individuos originales que no participaron en el cruce.
         parents = parents.clone()
+        constants = constants.clone()
         B, L = parents.shape
+        K = constants.shape[1]
         n_pairs = int(B * 0.5 * crossover_rate)
-        if n_pairs == 0: return parents.clone()
+        if n_pairs == 0: return parents.clone(), constants.clone()
         
         perm = torch.randperm(B, device=self.device)
         p1_idx = perm[:n_pairs*2:2]
@@ -775,6 +820,8 @@ class GPUOperators:
         
         parents_1 = parents[p1_idx]
         parents_2 = parents[p2_idx]
+        consts_1 = constants[p1_idx]
+        consts_2 = constants[p2_idx]
         
         starts_1_mat = self._get_subtree_ranges(parents_1)
         starts_2_mat = self._get_subtree_ranges(parents_2)
@@ -785,16 +832,10 @@ class GPUOperators:
         # Sample crossover points
         _depth_fair = getattr(GpuGlobals, 'DEPTH_FAIR_CROSSOVER', False)
         if _depth_fair:
-            # --- SOTA P1: Depth-Fair Crossover ---
-            # Instead of uniform-over-nodes (biased toward large subtrees),
-            # sample a random DEPTH first, then pick uniformly at that depth.
-            # Weights each depth equally → small subtrees get fair representation.
-            # Fallback to classic uniform sampling if depth computation fails.
             try:
                 end_1 = self._depth_fair_sample(parents_1, valid_mask_1)
                 end_2 = self._depth_fair_sample(parents_2, valid_mask_2)
             except Exception:
-                # Fallback: original uniform sampling
                 probs_1 = valid_mask_1.float() + 1e-6
                 probs_2 = valid_mask_2.float() + 1e-6
                 end_1 = torch.multinomial(probs_1, 1).squeeze(1)
@@ -805,7 +846,6 @@ class GPUOperators:
             end_1 = torch.multinomial(probs_1, 1).squeeze(1)
             end_2 = torch.multinomial(probs_2, 1).squeeze(1)
 
-        
         start_1 = starts_1_mat.gather(1, end_1.unsqueeze(1)).squeeze(1)
         start_2 = starts_2_mat.gather(1, end_2.unsqueeze(1)).squeeze(1)
         
@@ -815,11 +855,14 @@ class GPUOperators:
         len_2_pre = start_2
         len_2_sub = end_2 - start_2 + 1
         
+        id_C = self.grammar.token_to_id.get('C', PAD_ID)
+        
         if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'crossover_splicing') and parents.is_cuda:
              # CUDA Fast Splicing
-             # Allocate children
              c1 = torch.full((n_pairs, L), PAD_ID, dtype=self.pop_dtype, device=self.device)
              c2 = torch.full((n_pairs, L), PAD_ID, dtype=self.pop_dtype, device=self.device)
+             c1_c = torch.zeros((n_pairs, K), dtype=self.dtype, device=self.device)
+             c2_c = torch.zeros((n_pairs, K), dtype=self.dtype, device=self.device)
              
              rpn_cuda_native.crossover_splicing(
                  parents_1, parents_2,
@@ -827,13 +870,21 @@ class GPUOperators:
                  start_2, end_2,
                  c1, c2, PAD_ID
              )
+             
+             # Native Constant Splicing
+             if hasattr(rpn_cuda_native, 'crossover_constants'):
+                 rpn_cuda_native.crossover_constants(
+                     parents_1, parents_2,
+                     consts_1, consts_2,
+                     start_1, end_1, start_2, end_2,
+                     c1_c, c2_c,
+                     n_pairs, L, K, id_C
+                 )
+             else:
+                 c1_c = consts_1.clone()
+                 c2_c = consts_2.clone()
         else:
-            # PyTorch Fallback - FIX N9: Crossover producía RPNs inválidos
-            # Problemas identificados:
-            # 1. Los tensores escalares no se broadcastean correctamente
-            # 2. La asignación in-place de PAD_ID falla con tensores no escribibles
-            # 3. Selección de fuente incorrecta para las secciones post-crossover
-            
+            # PyTorch Fallback
             grid = torch.arange(L, device=self.device).unsqueeze(0).expand(n_pairs, L)
             
             # Child 1: pre from p1, mid from p2, post from p1
@@ -842,38 +893,51 @@ class GPUOperators:
             mask_c1_mid = (grid >= len_1_pre.unsqueeze(1)) & (grid < cut_1.unsqueeze(1))
             mask_c1_post = (grid >= cut_1.unsqueeze(1))
             
-            # Índices de origen para cada sección del hijo 1
-            # Pre: índice directo de parents_1
-            # Mid: índice mapeado a parents_2 (subtree)
-            # Post: índice mapeado a parents_1 (después del subtree eliminado)
             idx_from_p1_c1 = torch.where(mask_c1_pre, grid, 
                                 torch.where(mask_c1_post, grid - cut_1.unsqueeze(1) + end_1.unsqueeze(1) + 1, grid))
             idx_from_p2_c1 = grid - len_1_pre.unsqueeze(1) + start_2.unsqueeze(1)
             
-            # Seleccionar fuente: p1 para pre/post, p2 para mid
-            use_p2_c1 = mask_c1_mid.long()  # 1 si viene de p2, 0 si viene de p1
+            use_p2_c1 = mask_c1_mid.long() 
             
-            # Gather con selección de fuente
             safe_idx_p1_c1 = torch.clamp(idx_from_p1_c1, 0, L-1)
             safe_idx_p2_c1 = torch.clamp(idx_from_p2_c1, 0, L-1)
             val_p1_c1 = parents_1.gather(1, safe_idx_p1_c1)
             val_p2_c1 = parents_2.gather(1, safe_idx_p2_c1)
             c1 = torch.where(use_p2_c1 == 1, val_p2_c1, val_p1_c1)
             
-            # Marcar posiciones inválidas como PAD
-            # Pre: válido si idx < len(original_p1) 
-            # Mid: válido si idx_from_p2 < len(original_p2)
-            # Post: válido si idx_from_p1 < len(original_p1)
             len_p1 = (parents_1 != PAD_ID).sum(dim=1)
             len_p2 = (parents_2 != PAD_ID).sum(dim=1)
             
-            invalid_pre = mask_c1_pre & (grid >= len_p1.unsqueeze(1))
-            invalid_mid = mask_c1_mid & (idx_from_p2_c1 >= len_p2.unsqueeze(1))
-            invalid_post = mask_c1_post & (idx_from_p1_c1 >= len_p1.unsqueeze(1))
-            invalid_c1 = invalid_pre | invalid_mid | invalid_post
+            invalid_c1 = (mask_c1_pre & (grid >= len_p1.unsqueeze(1))) | \
+                         (mask_c1_mid & (idx_from_p2_c1 >= len_p2.unsqueeze(1))) | \
+                         (mask_c1_post & (idx_from_p1_c1 >= len_p1.unsqueeze(1)))
             c1[invalid_c1] = PAD_ID
             
-            # Child 2: pre from p2, mid from p1, post from p2
+            # --- Constant Splicing Child 1 ---
+            is_c_p1 = (parents_1 == id_C)
+            is_c_p2 = (parents_2 == id_C)
+            c_map_p1 = torch.cumsum(is_c_p1.long(), dim=1) - 1
+            c_map_p2 = torch.cumsum(is_c_p2.long(), dim=1) - 1
+            
+            is_c_c1 = (c1 == id_C)
+            c1_c = torch.zeros((n_pairs, K), device=self.device, dtype=self.dtype)
+            
+            if is_c_c1.any():
+                idx_in_vcl_1 = torch.where(use_p2_c1 == 0, 
+                                          c_map_p1.gather(1, safe_idx_p1_c1),
+                                          c_map_p2.gather(1, safe_idx_p2_c1))
+                c1_c_idx = torch.cumsum(is_c_c1.long(), dim=1) - 1
+                mask_valid_c1 = is_c_c1 & (c1_c_idx < K) & (idx_in_vcl_1 >= 0) & (idx_in_vcl_1 < K)
+                if mask_valid_c1.any():
+                    vals_from_source = torch.where(use_p2_c1 == 0,
+                                                  consts_1.gather(1, idx_in_vcl_1.clamp(0, K-1)),
+                                                  consts_2.gather(1, idx_in_vcl_1.clamp(0, K-1)))
+                    # Use (row, col) indexing for correct 2D assignment
+                    row_ids, _ = torch.nonzero(mask_valid_c1, as_tuple=True)
+                    col_ids = c1_c_idx[mask_valid_c1].clamp(0, K-1)
+                    c1_c[row_ids, col_ids] = vals_from_source[mask_valid_c1]
+
+            # Child 2 logic
             cut_2 = len_2_pre + len_1_sub
             mask_c2_pre = (grid < len_2_pre.unsqueeze(1))
             mask_c2_mid = (grid >= len_2_pre.unsqueeze(1)) & (grid < cut_2.unsqueeze(1))
@@ -883,7 +947,7 @@ class GPUOperators:
                                 torch.where(mask_c2_post, grid - cut_2.unsqueeze(1) + end_2.unsqueeze(1) + 1, grid))
             idx_from_p1_c2 = grid - len_2_pre.unsqueeze(1) + start_1.unsqueeze(1)
             
-            use_p1_c2 = mask_c2_mid.long()  # 1 si viene de p1, 0 si viene de p2
+            use_p1_c2 = mask_c2_mid.long() 
             
             safe_idx_p2_c2 = torch.clamp(idx_from_p2_c2, 0, L-1)
             safe_idx_p1_c2 = torch.clamp(idx_from_p1_c2, 0, L-1)
@@ -891,38 +955,54 @@ class GPUOperators:
             val_p1_c2 = parents_1.gather(1, safe_idx_p1_c2)
             c2 = torch.where(use_p1_c2 == 1, val_p1_c2, val_p2_c2)
             
-            invalid_pre_2 = mask_c2_pre & (grid >= len_p2.unsqueeze(1))
-            invalid_mid_2 = mask_c2_mid & (idx_from_p1_c2 >= len_p1.unsqueeze(1))
-            invalid_post_2 = mask_c2_post & (idx_from_p2_c2 >= len_p2.unsqueeze(1))
-            invalid_c2 = invalid_pre_2 | invalid_mid_2 | invalid_post_2
+            invalid_c2 = (mask_c2_pre & (grid >= len_p2.unsqueeze(1))) | \
+                         (mask_c2_mid & (idx_from_p1_c2 >= len_p1.unsqueeze(1))) | \
+                         (mask_c2_post & (idx_from_p2_c2 >= len_p2.unsqueeze(1)))
             c2[invalid_c2] = PAD_ID
-        
-        # --- USE_HARD_DEPTH_LIMIT: Truncar hijos que excedan el límite real de PROFUNDIDAD ---
-        # FIX N7: Ahora calcula la profundidad real del árbol, no la longitud del tensor.
+            
+            # --- Constant Splicing Child 2 ---
+            is_c_c2 = (c2 == id_C)
+            c2_c = torch.zeros((n_pairs, K), device=self.device, dtype=self.dtype)
+            if is_c_c2.any():
+                idx_in_vcl_2 = torch.where(use_p1_c2 == 0,
+                                          c_map_p2.gather(1, safe_idx_p2_c2),
+                                          c_map_p1.gather(1, safe_idx_p1_c2))
+                c2_c_idx = torch.cumsum(is_c_c2.long(), dim=1) - 1
+                mask_valid_c2 = is_c_c2 & (c2_c_idx < K) & (idx_in_vcl_2 >= 0) & (idx_in_vcl_2 < K)
+                if mask_valid_c2.any():
+                    vals_from_source = torch.where(use_p1_c2 == 0,
+                                                  consts_2.gather(1, idx_in_vcl_2.clamp(0, K-1)),
+                                                  consts_1.gather(1, idx_in_vcl_2.clamp(0, K-1)))
+                    row_ids, _ = torch.nonzero(mask_valid_c2, as_tuple=True)
+                    col_ids = c2_c_idx[mask_valid_c2].clamp(0, K-1)
+                    c2_c[row_ids, col_ids] = vals_from_source[mask_valid_c2]
+
+        # --- Depth Limit Check ---
         if GpuGlobals.USE_HARD_DEPTH_LIMIT:
             hard_limit = GpuGlobals.MAX_TREE_DEPTH_HARD_LIMIT
             c1_depth = self._compute_depth(c1)
             c2_depth = self._compute_depth(c2)
-            # Si un hijo excede el límite de profundidad, revertir al padre original
             too_long_1 = c1_depth > hard_limit
             too_long_2 = c2_depth > hard_limit
             if too_long_1.any():
                 c1[too_long_1] = parents_1[too_long_1]
+                c1_c[too_long_1] = consts_1[too_long_1]
             if too_long_2.any():
                 c2[too_long_2] = parents_2[too_long_2]
+                c2_c[too_long_2] = consts_2[too_long_2]
         
         parents[p1_idx] = c1
         parents[p2_idx] = c2
+        constants[p1_idx] = c1_c
+        constants[p2_idx] = c2_c
         
-        # FIX N9: Reparar individuos inválidos después del crossover
-        # El crossover de RPN es complejo y puede producir fórmulas inválidas.
-        # Esta reparación asegura que todos los individuos sean RPN válidos.
         valid_mask = self._validate_rpn_batch(parents)
         n_invalid = (~valid_mask).sum().item()
         if n_invalid > 0:
-            parents, _, _ = self.repair_invalid_population(parents, None)
+            parents, constants, _ = self.repair_invalid_population(parents, constants)
         
-        return parents
+        return parents, constants
+
 
     def deduplicate_population(self, population: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
         if not GpuGlobals.PREVENT_DUPLICATES:
@@ -1070,119 +1150,133 @@ class GPUOperators:
         # Implementation if needed, or done in evaluation
         return population, fitness
 
-    def subtree_mutation(self, population: torch.Tensor, mutation_rate: float) -> torch.Tensor:
+    def subtree_mutation(self, population: torch.Tensor, constants: torch.Tensor, mutation_rate: float) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Replaces a random subtree with a newly generated random tree.
         Crucial for structural exploration (Bloat control + Innovation).
+        Now preserves constants in Python fallback.
         """
+        population = population.clone()
+        constants = constants.clone()
         B, L = population.shape
-        # Identify valid subtrees
+        K = constants.shape[1]
+        
         starts_mat = self._get_subtree_ranges(population)
         valid_mask = (starts_mat != -1)
-        
-        # Decide who to mutate
-        mutate_mask = (torch.rand(B, device=self.device) < mutation_rate)
-        
-        # If no valid subtrees for an individual, we can't mutate (skip)
-        has_valid = valid_mask.any(dim=1)
-        mutate_mask = mutate_mask & has_valid
+        mutate_mask = (torch.rand(B, device=self.device) < mutation_rate) & valid_mask.any(dim=1)
         
         if not mutate_mask.any():
-            return population
+            return population, constants
             
-        # Indices of mutants
         mutant_indices = torch.nonzero(mutate_mask).squeeze(1)
         n_mut = mutant_indices.numel()
         
-        # Select random end point for each mutant
-        # We use multinomial on valid positions
         probs = valid_mask[mutate_mask].float() + 1e-6
-        ends = torch.multinomial(probs, 1).squeeze(1) # [n_mut]
-        
-        starts = starts_mat[mutate_mask].gather(1, ends.unsqueeze(1)).squeeze(1) # [n_mut]
-        
-        # Lengths of subtrees to remove
+        ends = torch.multinomial(probs, 1).squeeze(1)
+        starts = starts_mat[mutate_mask].gather(1, ends.unsqueeze(1)).squeeze(1)
         remove_lens = ends - starts + 1
         
-        # Generate NEW random subtrees (RPN)
-        # MAX_TREE_DEPTH_MUTATION limita la profundidad de subtrees generados en mutación.
-        # Genera con max_len corto para forzar árboles pequeños.
-        max_subtree_len = min(self.max_len, GpuGlobals.MAX_TREE_DEPTH_MUTATION * 2 + 1)
+        max_subtree_len = min(L, GpuGlobals.MAX_TREE_DEPTH_MUTATION * 2 + 1)
+        # Generate new RPN subtrees
         replacements_raw = self._generate_small_subtrees(n_mut, max_subtree_len)
-        # Pad to full max_len for splicing
-        replacements = torch.full((n_mut, self.max_len), PAD_ID, dtype=self.pop_dtype, device=self.device)
+        # Generate matching random constants for the replacement subtrees
+        if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+            repl_consts_raw = torch.randint(
+                GpuGlobals.CONSTANT_INT_MIN_VALUE,
+                GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
+                (n_mut, K), device=self.device, dtype=torch.long
+            ).to(self.dtype)
+        else:
+            repl_consts_raw = torch.empty(n_mut, K, device=self.device, dtype=self.dtype).uniform_(
+                GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE
+            )
+        
+        replacements = torch.full((n_mut, L), PAD_ID, dtype=self.pop_dtype, device=self.device)
         replacements[:, :max_subtree_len] = replacements_raw
-        # Determine actual length of replacements (until first PAD)
         repl_lengths = (replacements != PAD_ID).sum(dim=1)
         
-        # Check size constraints
-        # New Len = Old Len - Subtree Len + New Subtree Len
-        # Old Len:
         old_lens = (population[mutant_indices] != PAD_ID).sum(dim=1)
         new_total_lens = old_lens - remove_lens + repl_lengths
-        
-        # Filter those that fit
-        fits = new_total_lens <= self.max_len
+        fits = new_total_lens <= L
         
         if not fits.any():
-            return population
+            return population, constants
             
-        # Apply only to fitting ones
-        # Indices relative to mutant_indices
         valid_idx_rel = torch.nonzero(fits).squeeze(1) 
+        final_mutant_pop_idx = mutant_indices[valid_idx_rel]
         
-        final_mutant_pop_idx = mutant_indices[valid_idx_rel] # Indices in original pop
-        
-        # We construct the new sequences for these
         orig_seqs = population[final_mutant_pop_idx]
         new_seqs = replacements[valid_idx_rel]
+        new_c_repl = repl_consts_raw[valid_idx_rel]
         
         st = starts[valid_idx_rel]
         en = ends[valid_idx_rel]
         r_len = repl_lengths[valid_idx_rel]
         
-        # Construct
+        # Build new sequences and constants
         grid = torch.arange(L, device=self.device).unsqueeze(0).expand(len(valid_idx_rel), L)
-        
-        # Output buffer
         out_seqs = torch.full_like(orig_seqs, PAD_ID)
+        out_consts = torch.zeros((len(valid_idx_rel), K), device=self.device, dtype=self.dtype)
         
-        # Mask Pre: idx < st
+        id_C = self.grammar.token_to_id.get('C', PAD_ID)
+        orig_consts = constants[final_mutant_pop_idx]
+        
+        # Splicing RPN
         mask_pre = grid < st.unsqueeze(1)
-        out_seqs[mask_pre] = orig_seqs[mask_pre]
-        
-        # Mask New: idx >= st and idx < st + r_len
         limit_new = st + r_len
         mask_new = (grid >= st.unsqueeze(1)) & (grid < limit_new.unsqueeze(1))
-        
-        # Extract new content
-        # idx in new_seqs = grid - st
-        gather_idx = grid - st.unsqueeze(1)
-        gather_idx = torch.clamp(gather_idx, 0, L-1)
-        val_new = new_seqs.gather(1, gather_idx)
-        out_seqs[mask_new] = val_new[mask_new]
-        
-        # Mask Post: idx >= limit_new
-        # Source Post start at en + 1
-        # Target Post start at st + r_len
-        # Shift = (en + 1) - (st + r_len)
-        shift = (en + 1) - (st + r_len)
-        src_idx_post = grid + shift.unsqueeze(1)
-        
         mask_post = (grid >= limit_new.unsqueeze(1))
-        # Ensure source valid (within [0, L-1])
-        valid_src = (src_idx_post < L) #& (src_idx_post >= 0)
+        
+        shift = (en + 1) - limit_new
+        src_idx_post = grid + shift.unsqueeze(1)
+        valid_src = (src_idx_post < L)
         mask_post = mask_post & valid_src
         
-        safe_src = torch.clamp(src_idx_post, 0, L-1)
-        val_post = orig_seqs.gather(1, safe_src)
+        out_seqs[mask_pre] = orig_seqs[mask_pre]
         
-        out_seqs[mask_post] = val_post[mask_post]
+        gather_idx_new = (grid - st.unsqueeze(1)).clamp(0, L-1)
+        new_seqs_vals = new_seqs.gather(1, gather_idx_new).to(out_seqs.dtype)
+        out_seqs[mask_new] = new_seqs_vals[mask_new]
         
-        # Write back
+        gather_idx_post = torch.clamp(src_idx_post, 0, L-1)
+        out_seqs[mask_post] = orig_seqs.gather(1, gather_idx_post)[mask_post]
+        
+        # Splicing Constants
+        # 1. Map 'C' in sources
+        c_map_orig = torch.cumsum((orig_seqs == id_C).long(), dim=1) - 1
+        c_map_new = torch.cumsum((new_seqs == id_C).long(), dim=1) - 1
+        
+        # 2. Map 'C' in output
+        is_c_out = (out_seqs == id_C)
+        if is_c_out.any():
+            c_out_idx = torch.cumsum(is_c_out.long(), dim=1) - 1
+            
+            # Determinar fuente constante para cada posición 'C' en la salida
+            # Pre: orig_consts[c_map_orig[grid]]
+            # New: new_c_repl[c_map_new[grid-st]]
+            # Post: orig_consts[c_map_orig[grid+shift]]
+            
+            src_c_idx = torch.where(mask_pre, c_map_orig,
+                                   torch.where(mask_new, c_map_new.gather(1, gather_idx_new),
+                                              c_map_orig.gather(1, gather_idx_post)))
+            
+            mask_valid_c = is_c_out & (c_out_idx < K) & (src_c_idx >= 0) & (src_c_idx < K)
+            if mask_valid_c.any():
+                vals_from_source = torch.where(mask_pre, 
+                                             orig_consts.gather(1, src_c_idx.clamp(0, K-1)),
+                                             torch.where(mask_new,
+                                                        new_c_repl.gather(1, src_c_idx.clamp(0, K-1)),
+                                                        orig_consts.gather(1, src_c_idx.clamp(0, K-1))))
+                # Use (row, col) indexing for correct 2D assignment
+                row_ids, _ = torch.nonzero(mask_valid_c, as_tuple=True)
+                col_ids = c_out_idx[mask_valid_c].clamp(0, K-1)
+                out_consts[row_ids, col_ids] = vals_from_source[mask_valid_c]
+        
         population[final_mutant_pop_idx] = out_seqs
+        constants[final_mutant_pop_idx] = out_consts
         
-        return population
+        return population, constants
+
 
     def repair_invalid_population(self, population: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """Replace invalid RPN individuals with fresh random individuals.
@@ -1270,73 +1364,70 @@ class GPUOperators:
         constants: torch.Tensor,
         crossover_rate: float,
         chicken_rate: float = 0.15,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Headless Chicken Crossover — a classical bloat-control / diversity operator.
-
-        For `chicken_rate` fraction of crossover pairs, replace parent 2 with a
-        freshly generated random individual before crossing. This guarantees
-        structural diversity even when the population has converged to a single
-        locally-optimal tree skeleton.
-
-        Algorithm:
-            1. Select pairs as normal.
-            2. For `chicken_rate` fraction of pairs, overwrite parent2 with random.
-            3. Run standard subtree crossover.
-
-        Args:
-            population:    [B, L] integer tensor (RPN token ids).
-            constants:     [B, K] float tensor of constants.
-            crossover_rate: Fraction of individuals participating in crossover.
-            chicken_rate:  Fraction of crossover pairs with random second parent.
-
-        Returns:
-            New population after crossover (same shape as input).
+        Headless Chicken Crossover. Now preserves constants.
         """
+        population = population.clone()
+        constants = constants.clone()
         B, L = population.shape
+        K = constants.shape[1]
         n_pairs = int(B * 0.5 * crossover_rate)
         if n_pairs == 0:
-            return population
+            return population, constants
 
         perm = torch.randperm(B, device=self.device)
         p1_idx = perm[:n_pairs * 2:2]
         p2_idx = perm[1:n_pairs * 2:2]
 
-        # Decide which pairs get the chicken treatment
         n_p = p1_idx.shape[0]
-        chicken_mask = torch.rand(n_p, device=self.device) < chicken_rate  # [n_p]
+        chicken_mask = torch.rand(n_p, device=self.device) < chicken_rate
 
         parents_1 = population[p1_idx].clone()
         parents_2 = population[p2_idx].clone()
+        consts_1 = constants[p1_idx].clone()
+        consts_2 = constants[p2_idx].clone()
 
         if chicken_mask.any():
             n_chicken = int(chicken_mask.sum().item())
-            # Replace those parent2 slots with fresh random individuals
-            fresh_pop = self.generate_random_population(n_chicken)  # [n_chicken, max_len]
-
-            # Handle length mismatch between fresh_pop and L
+            fresh_pop = self.generate_random_population(n_chicken)
             if fresh_pop.shape[1] < L:
-                pad = torch.full(
-                    (n_chicken, L - fresh_pop.shape[1]), PAD_ID,
-                    dtype=self.pop_dtype, device=self.device
-                )
+                pad = torch.full((n_chicken, L - fresh_pop.shape[1]), PAD_ID,
+                                 dtype=self.pop_dtype, device=self.device)
                 fresh_pop = torch.cat([fresh_pop, pad], dim=1)
             elif fresh_pop.shape[1] > L:
                 fresh_pop = fresh_pop[:, :L]
+            # Fresh constants for the random parents
+            if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                fresh_consts = torch.randint(
+                    GpuGlobals.CONSTANT_INT_MIN_VALUE,
+                    GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
+                    (n_chicken, K), device=self.device, dtype=torch.long
+                ).to(self.dtype)
+            else:
+                fresh_consts = torch.empty(n_chicken, K, device=self.device, dtype=self.dtype).uniform_(
+                    GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE
+                )
 
             parents_2[chicken_mask] = fresh_pop
+            consts_2[chicken_mask] = fresh_consts
 
-        # Now perform regular subtree crossover on (parents_1, parents_2)
-        combined = torch.cat([parents_1, parents_2], dim=0)  # [2*n_p, L]
-        # Interleave so crossover_population sees pairs at adjacent indices
-        interleaved = torch.empty_like(combined)
-        interleaved[0::2] = parents_1
-        interleaved[1::2] = parents_2
+        # Interleave RPN
+        interleaved_rpn = torch.empty((2 * n_p, L), dtype=self.pop_dtype, device=self.device)
+        interleaved_rpn[0::2] = parents_1
+        interleaved_rpn[1::2] = parents_2
+        
+        # Interleave Constants
+        interleaved_consts = torch.empty((2 * n_p, K), dtype=self.dtype, device=self.device)
+        interleaved_consts[0::2] = consts_1
+        interleaved_consts[1::2] = consts_2
 
-        crossed = self.crossover_population(interleaved, crossover_rate=1.0)
+        crossed_rpn, crossed_consts = self.crossover_population(interleaved_rpn, interleaved_consts, crossover_rate=1.0)
 
-        # Write children back to original population
-        population[p1_idx] = crossed[0::2]
-        population[p2_idx] = crossed[1::2]
+        population[p1_idx] = crossed_rpn[0::2]
+        population[p2_idx] = crossed_rpn[1::2]
+        constants[p1_idx] = crossed_consts[0::2]
+        constants[p2_idx] = crossed_consts[1::2]
 
-        return population
+        return population, constants
+
