@@ -1635,7 +1635,32 @@ class TensorGeneticEngine:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 abs_errors = None
             cached_next_fit = None  # Consumed
-            
+
+            # ── BUG-1 FIX: Per-gen variable presence cache ────────────────────────────────────────
+            # `.any(dim=1)` over [1M, 128] + implicit CPU sync ≈ 2-3ms per call.
+            # Was computed 3-5× per gen (PSO, best-tracking, cataclysm, selection_metric).
+            # Now computed ONCE here and reused everywhere. Population is stable until L2440.
+            _cached_var_pen = None       # [B] float: n_missing_vars (for diversity penalty)
+            _cached_has_all_vars = None  # [B] bool: uses ALL _var_token_ids (for best mask)
+            _cached_has_any_var = None   # [B] bool: uses ANY _single_var_id (for no-var penalty)
+
+            if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                _vp = self._var_diversity_buf
+                _vp.fill_(float(len(self._var_token_ids)))
+                _hall = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                for vid in self._var_token_ids:
+                    _pres = (population == vid).any(dim=1)
+                    _vp.sub_(_pres.float())
+                    _hall &= _pres
+                _cached_var_pen = _vp
+                _cached_has_all_vars = _hall
+
+            if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
+                _hav = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
+                for vid in self._single_var_ids:
+                    _hav |= (population == vid).any(dim=1)
+                _cached_has_any_var = _hav
+
             # --- Weighted Fitness (opcional: pondera errores por dificultad) ---
             if GpuGlobals.USE_WEIGHTED_FITNESS and abs_errors is not None:
                 # Ponderar cada caso por su dificultad media (errores más altos pesan más)
@@ -1703,7 +1728,11 @@ class TensorGeneticEngine:
                 
                 # Decide whether to skip PSO this round
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
-                _struct_changed = (_curr_rpn_hash != _last_pso_rpn_hash)
+                # BUG-2 FIX: `tensor != None` is always True in PyTorch → PSO skip never worked.
+                if _last_pso_rpn_hash is None or _curr_rpn_hash is None:
+                    _struct_changed = True
+                else:
+                    _struct_changed = not torch.equal(_curr_rpn_hash, _last_pso_rpn_hash)
                 _skip_pso = (
                     _pso_adaptive and
                     not _in_stagnation and
@@ -1723,14 +1752,19 @@ class TensorGeneticEngine:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
                         pso_steps = GpuGlobals.PSO_STEPS_NORMAL
                     
-                    # Use penalized metric to select top-K for PSO (favor multi-variable)
-                    if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    # BUG-PSO-3 FIX: in stagnation mode mix top-fitness + random candidates.
+                    # Previously: 100% top-K → all near-isomorphic (same lgamma family) → PSO
+                    # refines constants of clones instead of exploring new structures.
+                    # Now: 50% top-fitness (exploit) + 50% random (explore new structures).
+                    if _in_stagnation:
+                        k_top = k_opt // 2
+                        k_rand = k_opt - k_top
+                        _, _top_part = torch.topk(selection_metric if _cached_var_pen is not None else fitness_rmse, k_top, largest=False)
+                        _rand_part = torch.randperm(self.pop_size, device=self.device)[:k_rand]
+                        top_idx = torch.cat([_top_part, _rand_part])
+                    elif _cached_var_pen is not None:
                         _pso_metric = fitness_rmse.clone()
-                        _n_miss = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
-                        _n_miss.fill_(float(len(self._var_token_ids)))
-                        for vid in self._var_token_ids:
-                            _n_miss.sub_((population == vid).any(dim=1).float())
-                        _pso_metric.add_(_n_miss, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                        _pso_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                         _, top_idx = torch.topk(_pso_metric, k_opt, largest=False)
                     else:
                         _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
@@ -1787,7 +1821,11 @@ class TensorGeneticEngine:
                 fit_f32 = fitness_rmse.float() if fitness_rmse.dtype != torch.float32 else fitness_rmse
                 
                 # Apply variable diversity penalty mask if needed
-                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                # BUG-1 FIX: reuse precomputed mask instead of recomputing every gen
+                if _cached_has_all_vars is not None:
+                    fit_f32 = fit_f32.clone()
+                    fit_f32[~_cached_has_all_vars] = float('inf')
+                elif self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
                     _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
                     for vid in self._var_token_ids:
                         _uses_all &= (population == vid).any(dim=1)
@@ -2002,11 +2040,15 @@ class TensorGeneticEngine:
                  # Compute cataclysm metric: prefer multi-variable formulas
                  cat_metric = fitness_rmse.clone()
                  if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                     _n_missing = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
-                     _n_missing.fill_(float(len(self._var_token_ids)))
-                     for vid in self._var_token_ids:
-                         _n_missing.sub_((population == vid).any(dim=1).float())
-                     cat_metric.add_(_n_missing, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                     # BUG-1 FIX: reuse precomputed penalty (population unchanged since precompute)
+                     if _cached_var_pen is not None:
+                         cat_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                     else:
+                         _n_missing = self._var_diversity_buf
+                         _n_missing.fill_(float(len(self._var_token_ids)))
+                         for vid in self._var_token_ids:
+                             _n_missing.sub_((population == vid).any(dim=1).float())
+                         cat_metric.add_(_n_missing, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                  _, sorted_idx = torch.topk(cat_metric, n_elites, largest=False)
                  elites = population[sorted_idx]
                  elite_c = pop_constants[sorted_idx]
@@ -2053,6 +2095,8 @@ class TensorGeneticEngine:
                       pop_constants = torch.cat([elite_c, new_c])
                  
                  stagnation = 0
+                 global_stagnation = 0  # BUG-5 FIX: was missing, caused immediate global restart after cataclysm
+                 _pso_skip_counter = 0
                  continue
 
             # Global Stagnation — total or soft restart
@@ -2338,21 +2382,27 @@ class TensorGeneticEngine:
                 # Penalize constant-only formulas in single-variable problems.
                 # OPTIMIZED: removed .any() CPU sync — penalty is 0 for formulas WITH variables.
                 if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
-                    has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
-                    for vid in self._single_var_ids:
-                        has_var |= (population == vid).any(dim=1)
-                    no_var = ~has_var
+                    # BUG-1 FIX: reuse precomputed mask
+                    if _cached_has_any_var is not None:
+                        no_var = ~_cached_has_any_var
+                    else:
+                        has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
+                        for vid in self._single_var_ids:
+                            has_var |= (population == vid).any(dim=1)
+                        no_var = ~has_var
                     selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
                 
                 # 1b. Variable Diversity Penalty (ADDITIVE): penalize formulas missing variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                    var_pen = self._var_diversity_buf
-                    var_pen.fill_(float(len(self._var_token_ids)))  # start at num_variables
-                    for vid in self._var_token_ids:
-                        var_pen.sub_((population == vid).any(dim=1).float())  # subtract 1 per var found
-                    # var_pen is now n_missing_vars (0..num_vars)
-                    # Additive: selection_metric += PENALTY * n_missing
-                    selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                    # BUG-1 FIX: reuse _cached_var_pen (3 × `.any(dim=1)` over 1M elements saved)
+                    if _cached_var_pen is not None:
+                        selection_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                    else:
+                        var_pen = self._var_diversity_buf
+                        var_pen.fill_(float(len(self._var_token_ids)))
+                        for vid in self._var_token_ids:
+                            var_pen.sub_((population == vid).any(dim=1).float())
+                        selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
                 # --- SOTA P1: Pareto NSGA-II blending ---
                 # Every PARETO_INTERVAL gens, compute Pareto ranks on a sample of PARETO_SAMPLE_K

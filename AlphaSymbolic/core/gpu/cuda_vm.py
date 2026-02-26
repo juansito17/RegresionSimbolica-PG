@@ -137,3 +137,59 @@ class CudaRPNVM:
         )
         
         return out_preds, out_sp, out_error
+
+    def eval_fused(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor,
+                   y_target: torch.Tensor, strict_mode: int = 0) -> torch.Tensor:
+        """
+        Fused eval: block-per-individual kernel — returns [B] RMSE directly.
+
+        - 0 warp divergence (all threads in a block run the same program)
+        - Program cached in shared memory (17× less global reads)
+        - RMSE computed by warp shuffle inside kernel (no B*D intermediate buffer)
+
+        population: [B, L]
+        x:          [Vars, D]
+        constants:  [B, K]
+        y_target:   [D]
+        Returns:    [B] RMSE float32
+        """
+        if rpn_cuda is None or not hasattr(rpn_cuda, 'eval_rpn_fused'):
+            raise RuntimeError("eval_rpn_fused not available — recompile CUDA extension.")
+
+        B = population.shape[0]
+        dtype = x.dtype
+
+        if not population.is_contiguous():  population = population.contiguous()
+        if not x.is_contiguous():           x = x.contiguous()
+        if not y_target.is_contiguous():    y_target = y_target.contiguous()
+
+        if constants is None:
+            key = (B, dtype)
+            if key not in self._empty_constants_cache:
+                self._empty_constants_cache[key] = torch.empty((B, 0), device=self.device, dtype=dtype)
+            constants = self._empty_constants_cache[key]
+        else:
+            if not constants.is_contiguous(): constants = constants.contiguous()
+            if constants.dtype != dtype:      constants = constants.to(dtype)
+
+        # Pre-allocate output (reuse across calls)
+        rmse_key = ('fused', B, dtype)
+        if rmse_key not in self._output_cache:
+            self._output_cache[rmse_key] = torch.empty(B, dtype=dtype, device=self.device)
+        out_rmse = self._output_cache[rmse_key]
+
+        rpn_cuda.eval_rpn_fused(
+            population, x, constants, y_target, out_rmse,
+            self.PAD_ID, self.id_x_start,
+            self.id_C, self.id_pi, self.id_e,
+            self.id_0, self.id_1, self.id_2, self.id_3, self.id_4, self.id_5, self.id_6, self.id_10,
+            self.op_add, self.op_sub, self.op_mul, self.op_div, self.op_pow, self.op_mod,
+            self.op_sin, self.op_cos, self.op_tan, self.op_log, self.op_exp,
+            self.op_sqrt, self.op_abs, self.op_neg,
+            self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
+            self.op_gamma, self.op_lgamma,
+            self.op_asin, self.op_acos, self.op_atan,
+            3.14159265359, 2.718281828,
+            strict_mode
+        )
+        return out_rmse

@@ -94,10 +94,10 @@ class GpuGlobals:
     USE_INITIAL_FORMULA = True        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
     # Fitness = 0.00422584, Size = 64
-    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
+    #INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
 
-    # Fitness = 0.00255508, Size = 112
-    #INITIAL_FORMULA_STRING = "(((((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (12.8453083 / lgamma((x0 - fact(((pi**(fact(x1)**(-(x2)))) / (exp(e) - x0))))))) + (x0 + fact(((6**(pi**(-(x2)))) / ((exp(pi) + (((e + sqrt(e))**(x1 - (x0 - (lgamma(x0) - (x0 + fact(((lgamma((lgamma(x0) - x0)) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))))))) - x0)) - x0))))))))) + -0.00326262) + (0.00013408 * x0)) + -0.0003895)" 
+    # Fitness = 0.00203398, Size = 120
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (10.95489311 / lgamma((x0 - fact(((((pi**(x1**(-(x2))))**(fact((1 / 6))**(-(x2))))**(x1**(-(x2)))) / (exp(e) - x0))))))) + (x0 + fact(((6**(pi**(-(x2)))) / ((exp(pi) + (((e + sqrt(e))**(x1 - (x0 - (lgamma(x0) - (x0 + fact(((lgamma(x0) - x0) / (fact(((exp(3) * (fact(x1)**(-(x2)))) / ((x0**(-((x0 - x0)))) - 2))) - 2)))))))) - x0)) - x0)))))))))" 
 
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
@@ -193,7 +193,7 @@ class GpuGlobals:
     
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
-    DEDUPLICATION_INTERVAL = 50
+    DEDUPLICATION_INTERVAL = 100   # SPEED: menos overhead de escaneo (era 50)
     
     # --- SOTA P0: Headless Chicken Crossover ---
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
@@ -293,11 +293,11 @@ class GpuGlobals:
     # ============================================================
     # Particle Swarm Optimization (PSO)
     USE_NANO_PSO = True
-    PSO_INTERVAL = 2
+    PSO_INTERVAL = 3               # SPEED: cada 3 gens libera más GPU al GA (era 2)
     PSO_PARTICLES = 30
     PSO_STEPS_NORMAL = 40          # OPTIMIZED: más pasos por individuo (was 25→40)
     PSO_STEPS_STAGNATION = 80      # FIX: más pasos para escapar mínimo local (was 40→60→80)
-    PSO_K_NORMAL = 400             # OPTIMIZED: menos individuos, más profundidad (was 800→400)
+    PSO_K_NORMAL = 200             # SPEED: menos individuos en modo normal (era 400)
     PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
     PSO_STAGNATION_THRESHOLD = 10
     # ANTI-STAG: PSO adaptativo. Si el best_rpn no cambió desde el último PSO run,
@@ -307,7 +307,7 @@ class GpuGlobals:
 
     # L-BFGS-B Constant Optimizer
     USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
-    BFGS_INTERVAL = 10             # OPTIMIZED: Run L-BFGS-B every 10 gens (Phase 6 speed)
+    BFGS_INTERVAL = 15             # SPEED: Run L-BFGS-B every 15 gens (era 10)
     BFGS_TOP_K = 50                # Refine top 50 elites island-wide
     BFGS_MAX_ITER = 20             # OPTIMIZED: 20 iterations (Cheaper with native gradients)
     

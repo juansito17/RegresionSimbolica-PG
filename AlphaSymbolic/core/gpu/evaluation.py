@@ -44,15 +44,12 @@ class GPUEvaluator:
     def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
         """
         Evaluates the RPN population on the GPU over multiple samples.
-        x: [Vars, Samples]
-        y_target: [Samples]
-        constants: [PopSize, K]
-        Returns: RMSE per individual [PopSize]
+        Fast path: fused kernel (block-per-individual, 0 warp divergence, RMSE computed inside kernel).
+        Fallback: original chunked path (RMSLE or fused kernel unavailable).
         """
         B_pop, L = population.shape
-        
-        # Determine number of samples
-        # x is [Vars, Samples]
+
+        # ── Shape normalization ──
         if x.dim() == 1:
             # Single variable, N samples? Or 1 sample D vars?
             # Assume 1 var, N samples if 1D?
@@ -98,17 +95,23 @@ class GPUEvaluator:
             elif x.shape[0] == y_target.shape[0] and x.shape[0] != x.shape[1]:
                 # Matches [Samples, Vars] -> Transpose
                 x = x.T.contiguous()
-        
+
         N_vars, N_samples = x.shape
-        
-        # We need to run B_pop * N_samples executions
-        
-        # 1. Expand Population: Virtual (Chunking handles it)
-        # We process in chunks to avoid OOM
-        
-        # We process in chunks to avoid OOM
-        # Optimized for RTX 3050 (4GB) with small dataset (25 samples)
-        # 200,000 individuals * 25 samples * 8 bytes ~ 40MB per buffer
+
+        # ── Fast path: fused kernel ──
+        # Returns [B] RMSE directly from GPU — no B×D intermediate buffers.
+        if (GpuGlobals.LOSS_FUNCTION == 'RMSE' and
+                hasattr(self.vm, 'eval_fused') and
+                B_pop <= 1_500_000):
+            try:
+                y_in = y_target.flatten().to(x.dtype)
+                c_in = constants.to(x.dtype) if (constants is not None and constants.dtype != x.dtype) else constants
+                rmse = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode)
+                return rmse.to(self.dtype)
+            except Exception:
+                pass  # Fall through to original path
+
+        # ── Original chunked path (RMSLE or fused unavailable) ──
         max_chunk_inds = 1000000
         
         # Pre-allocate output buffer (avoid torch.cat at the end)
@@ -119,14 +122,11 @@ class GPUEvaluator:
         if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
             log_target_chunk = torch.log(torch.abs(y_target_chunk) + 1.0)
         
-        # Transpose X for Cupy VM: [N, Vars] -> NO, CUDA VM expects [Vars, N]
-        # cupy_vm expects x as [Samples, Features] and expands population against it
-        # But CUDA VM expects [Vars, Samples] for coalescing.
-        # x is [Vars, Samples] here.
         x_for_vm = x 
         
         for i in range(0, B_pop, max_chunk_inds):
             end_i = min(B_pop, i + max_chunk_inds)
+
             
             # Sub-batch of population
             sub_pop = population[i:end_i]

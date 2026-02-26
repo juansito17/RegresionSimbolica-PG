@@ -26,6 +26,26 @@ void launch_rpn_kernel(
     int strict_mode = 0
 );
 
+// Fused Eval Kernel (block-per-individual + RMSE)
+void launch_rpn_eval_fused(
+    const torch::Tensor& population,
+    const torch::Tensor& x,
+    const torch::Tensor& constants,
+    const torch::Tensor& y_target,
+    torch::Tensor& out_rmse,
+    int PAD_ID, int id_x_start,
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan, int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val,
+    int strict_mode = 0
+);
+
 void run_rpn_cuda(
     torch::Tensor population, 
     torch::Tensor x, // [Vars, D]
@@ -378,6 +398,19 @@ void launch_batch_update_best(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
+    m.def("eval_rpn_fused", &launch_rpn_eval_fused, "Fused RPN Eval+RMSE (block-per-individual, zero warp divergence)",
+        py::arg("population"), py::arg("x"), py::arg("constants"), py::arg("y_target"), py::arg("out_rmse"),
+        py::arg("PAD_ID"), py::arg("id_x_start"),
+        py::arg("id_C"), py::arg("id_pi"), py::arg("id_e"),
+        py::arg("id_0"), py::arg("id_1"), py::arg("id_2"), py::arg("id_3"), py::arg("id_4"), py::arg("id_5"), py::arg("id_6"), py::arg("id_10"),
+        py::arg("op_add"), py::arg("op_sub"), py::arg("op_mul"), py::arg("op_div"), py::arg("op_pow"), py::arg("op_mod"),
+        py::arg("op_sin"), py::arg("op_cos"), py::arg("op_tan"), py::arg("op_log"), py::arg("op_exp"),
+        py::arg("op_sqrt"), py::arg("op_abs"), py::arg("op_neg"),
+        py::arg("op_fact"), py::arg("op_floor"), py::arg("op_ceil"), py::arg("op_sign"),
+        py::arg("op_gamma"), py::arg("op_lgamma"),
+        py::arg("op_asin"), py::arg("op_acos"), py::arg("op_atan"),
+        py::arg("pi_val"), py::arg("e_val"),
+        py::arg("strict_mode") = 0);
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)",
         py::arg("population"), py::arg("constants"), py::arg("vocab"), py::arg("arities"), py::arg("PAD_ID"), py::arg("precision") = 4);
     
