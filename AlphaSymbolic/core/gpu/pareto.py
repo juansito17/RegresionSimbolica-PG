@@ -35,6 +35,19 @@ class ParetoOptimizer:
         not_worse = (a_fit <= b_fit) and (a_comp <= b_comp)
         
         return not_worse and at_least_one_better
+
+    def _sanitize_objectives(self, fitness: torch.Tensor, complexity: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Replace non-finite objective values with +inf so they are treated as worst.
+        This avoids NaN propagation that can incorrectly place invalid individuals
+        in the first Pareto front.
+        """
+        valid = torch.isfinite(fitness) & torch.isfinite(complexity)
+        inf_fit = torch.full_like(fitness, float('inf'))
+        inf_comp = torch.full_like(complexity, float('inf'))
+        fit_safe = torch.where(valid, fitness, inf_fit)
+        comp_safe = torch.where(valid, complexity, inf_comp)
+        return fit_safe, comp_safe
     
     
     def non_dominated_sort(self, fitness: torch.Tensor, complexity: torch.Tensor) -> Tuple[List[torch.Tensor], torch.Tensor]:
@@ -58,8 +71,7 @@ class ParetoOptimizer:
         # We need to compare every i with every j
         # Inner loop compares a Block of 'i' against ALL 'j'
         
-        fit_flat = fitness
-        comp_flat = complexity
+        fit_flat, comp_flat = self._sanitize_objectives(fitness, complexity)
         
         for i_start in range(0, n, block_size):
             i_end = min(i_start + block_size, n)
@@ -165,7 +177,8 @@ class ParetoOptimizer:
         Used for Tournament Selection.
         High Crowding Distance is good (for same rank).
         """
-        fronts, ranks = self.non_dominated_sort(fitness, complexity)
+        fit_safe, comp_safe = self._sanitize_objectives(fitness, complexity)
+        fronts, ranks = self.non_dominated_sort(fit_safe, comp_safe)
         n = fitness.shape[0]
         crowding = torch.zeros(n, dtype=self.dtype, device=self.device)
         
@@ -178,8 +191,8 @@ class ParetoOptimizer:
                  continue
                  
              # Gather values
-             f_vals = fitness[front]
-             c_vals = complexity[front]
+             f_vals = fit_safe[front]
+             c_vals = comp_safe[front]
              
              # Sub-crowding
              dists = torch.zeros(k, dtype=self.dtype, device=self.device)
@@ -212,7 +225,8 @@ class ParetoOptimizer:
         """
         Select n_select individuals using NSGA-II selection (Rank + Crowding).
         """
-        fronts, ranks = self.non_dominated_sort(fitness, complexity)
+        fit_safe, comp_safe = self._sanitize_objectives(fitness, complexity)
+        fronts, ranks = self.non_dominated_sort(fit_safe, comp_safe)
         # We need crowding for filtering the last front
         # But we can use compute_ranks_and_crowding if we want full metrics
         # For selection we just iterate fronts
@@ -230,8 +244,8 @@ class ParetoOptimizer:
                 rem = n_select - count
                 
                 # Compute crowding ONLY for this front (faster)
-                f_vals = fitness[front]
-                c_vals = complexity[front]
+                f_vals = fit_safe[front]
+                c_vals = comp_safe[front]
                 
                 dists = torch.zeros(k, dtype=self.dtype, device=self.device)
                 
@@ -257,14 +271,15 @@ class ParetoOptimizer:
         return torch.cat(selected_indices)
 
     def get_pareto_front(self, fitness: torch.Tensor, complexity: torch.Tensor) -> List[int]:
-        fronts, _ = self.non_dominated_sort(fitness, complexity)
+        fit_safe, comp_safe = self._sanitize_objectives(fitness, complexity)
+        fronts, _ = self.non_dominated_sort(fit_safe, comp_safe)
         if not fronts: return []
         front = fronts[0]
         
         if front.shape[0] > self.max_front_size:
             # Prune by crowding
-             f_vals = fitness[front]
-             c_vals = complexity[front]
+             f_vals = fit_safe[front]
+             c_vals = comp_safe[front]
              k = front.shape[0]
              dists = torch.zeros(k, dtype=self.dtype, device=self.device)
              

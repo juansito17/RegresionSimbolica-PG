@@ -930,8 +930,15 @@ class TensorGeneticEngine:
             keep = (curr_case_err <= threshold.unsqueeze(1) + 1e-9)
             active_mask = active_mask & keep
             
-        # 5. Pick Winner
-        winners_local = torch.argmax(active_mask.int(), dim=1) 
+        # 5. Pick Winner (uniform tie-break among survivors)
+        probs = active_mask.float()
+        row_sums = probs.sum(dim=1, keepdim=True)
+        no_active = row_sums.squeeze(1) <= 0
+        if no_active.any():
+            probs[no_active] = 1.0
+            row_sums = probs.sum(dim=1, keepdim=True)
+        probs = probs / row_sums.clamp_min(1e-12)
+        winners_local = torch.multinomial(probs, 1).squeeze(1)
         winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
         
         return winners_global        

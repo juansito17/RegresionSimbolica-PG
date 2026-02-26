@@ -384,7 +384,16 @@ class GPUOperators:
         deltas[is_pad] = 0
         # Final stack = sum of all deltas
         final_stack = deltas.sum(dim=1)
-        return (final_stack == 1)
+        stack_prefix = deltas.cumsum(dim=1)
+        non_pad = ~is_pad
+        prefix_ok = torch.where(non_pad, stack_prefix >= 1, torch.ones_like(non_pad))
+        no_underflow = prefix_ok.all(dim=1)
+
+        pad_seen_before = is_pad.to(torch.int32).cumsum(dim=1) > 0
+        nonpad_after_pad = non_pad & pad_seen_before
+        contiguous_ok = ~nonpad_after_pad.any(dim=1)
+
+        return (final_stack == 1) & no_underflow & contiguous_ok
 
     def _generate_small_subtrees(self, size: int, max_len: int) -> torch.Tensor:
         """
@@ -490,7 +499,16 @@ class GPUOperators:
         is_pad = (population == PAD_ID)
         deltas[is_pad] = 0
         final_stack = deltas.sum(dim=1)
-        return (final_stack == 1)
+        stack_prefix = deltas.cumsum(dim=1)
+        non_pad = ~is_pad
+        prefix_ok = torch.where(non_pad, stack_prefix >= 1, torch.ones_like(non_pad))
+        no_underflow = prefix_ok.all(dim=1)
+
+        pad_seen_before = is_pad.to(torch.int32).cumsum(dim=1) > 0
+        nonpad_after_pad = non_pad & pad_seen_before
+        contiguous_ok = ~nonpad_after_pad.any(dim=1)
+
+        return (final_stack == 1) & no_underflow & contiguous_ok
 
     def _compute_depth(self, population: torch.Tensor, starts_mat: torch.Tensor = None) -> torch.Tensor:
         """
@@ -581,11 +599,18 @@ class GPUOperators:
             return torch.empty((0, self.max_len), device=self.device, dtype=self.pop_dtype)
         return torch.tensor(batch_rpn, device=self.device, dtype=self.pop_dtype)
 
-    def mutate_population(self, population: torch.Tensor, constants: torch.Tensor, mutation_rate: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    def mutate_population(self, population: torch.Tensor, constants_or_rate, mutation_rate: float = None):
         """
         Performs arity-safe mutation on the population.
         Now preserves constants for point mutations.
         """
+        legacy_no_constants = mutation_rate is None
+        if legacy_no_constants:
+            mutation_rate = float(constants_or_rate)
+            constants = torch.zeros((population.shape[0], 1), device=self.device, dtype=self.dtype)
+        else:
+            constants = constants_or_rate
+
         population = population.clone()
         constants = constants.clone()
         
@@ -608,7 +633,7 @@ class GPUOperators:
              # Repair constants alignment if RPN changed
              # (Point mutation doesn't break RPN structure, but can change 'C' count)
              population, constants, _ = self.repair_invalid_population(population, constants)
-             return population, constants
+             return population if legacy_no_constants else (population, constants)
 
         # Fallback to PyTorch
         B, L = population.shape
@@ -651,6 +676,9 @@ class GPUOperators:
         
         mask_2 = mask & (current_arities == 2)
         population = torch.where(mask_2, replacements_2, population)
+
+        if legacy_no_constants:
+            return population
         
         # Realinear constantes
         is_c_new = (population == id_C)
@@ -688,7 +716,7 @@ class GPUOperators:
                 )
                 next_c[rows, dst_idx] = new_vals
 
-        return population, next_c
+        return population if legacy_no_constants else (population, next_c)
 
 
     def _get_subtree_ranges(self, population: torch.Tensor) -> torch.Tensor:
@@ -805,14 +833,22 @@ class GPUOperators:
 
         return end_idx
 
-    def crossover_population(self, parents: torch.Tensor, constants: torch.Tensor, crossover_rate: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    def crossover_population(self, parents: torch.Tensor, constants_or_rate, crossover_rate: float = None):
+        legacy_no_constants = crossover_rate is None
+        if legacy_no_constants:
+            crossover_rate = float(constants_or_rate)
+            constants = torch.zeros((parents.shape[0], 1), device=self.device, dtype=self.dtype)
+        else:
+            constants = constants_or_rate
+
         # FIX B1: Clonar entrada para evitar mutacion in-place del tensor original.
         parents = parents.clone()
         constants = constants.clone()
         B, L = parents.shape
         K = constants.shape[1]
         n_pairs = int(B * 0.5 * crossover_rate)
-        if n_pairs == 0: return parents.clone(), constants.clone()
+        if n_pairs == 0:
+            return parents.clone() if legacy_no_constants else (parents.clone(), constants.clone())
         
         perm = torch.randperm(B, device=self.device)
         p1_idx = perm[:n_pairs*2:2]
@@ -1001,7 +1037,7 @@ class GPUOperators:
         if n_invalid > 0:
             parents, constants, _ = self.repair_invalid_population(parents, constants)
         
-        return parents, constants
+        return parents if legacy_no_constants else (parents, constants)
 
 
     def deduplicate_population(self, population: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
@@ -1085,22 +1121,9 @@ class GPUOperators:
                 pass
         
         # ============ PyTorch FALLBACK ============
-        # Original probabilistic hashing implementation
-        if not hasattr(self, 'dedup_weights'):
-             self.dedup_weights = torch.randint(-9223372036854775807, 9223372036854775807, (self.max_len,), device=self.device, dtype=torch.long)
-             
-        if curr_L != self.dedup_weights.shape[0]:
-             if curr_L > self.dedup_weights.shape[0]:
-                 self.dedup_weights = torch.randint(
-                     -9223372036854775807, 9223372036854775807,
-                     (curr_L,), device=self.device, dtype=torch.long
-                 )
-             weights = self.dedup_weights[:curr_L]
-        else:
-             weights = self.dedup_weights
-             
-        hashes = (population.long() * weights).sum(dim=1)
-        _, inverse_indices = torch.unique(hashes, sorted=False, return_inverse=True)
+        # Collision-free structural dedup (exact RPN row equality).
+        # This avoids false positives when different individuals share the same hash.
+        _, inverse_indices = torch.unique(population, dim=0, sorted=False, return_inverse=True)
         sorted_inv, sorted_idx = torch.sort(inverse_indices)
         mask_dup = torch.zeros_like(sorted_inv, dtype=torch.bool)
         mask_dup[1:] = (sorted_inv[1:] == sorted_inv[:-1])
@@ -1150,12 +1173,19 @@ class GPUOperators:
         # Implementation if needed, or done in evaluation
         return population, fitness
 
-    def subtree_mutation(self, population: torch.Tensor, constants: torch.Tensor, mutation_rate: float) -> Tuple[torch.Tensor, torch.Tensor]:
+    def subtree_mutation(self, population: torch.Tensor, constants_or_rate, mutation_rate: float = None):
         """
         Replaces a random subtree with a newly generated random tree.
         Crucial for structural exploration (Bloat control + Innovation).
         Now preserves constants in Python fallback.
         """
+        legacy_no_constants = mutation_rate is None
+        if legacy_no_constants:
+            mutation_rate = float(constants_or_rate)
+            constants = torch.zeros((population.shape[0], 1), device=self.device, dtype=self.dtype)
+        else:
+            constants = constants_or_rate
+
         population = population.clone()
         constants = constants.clone()
         B, L = population.shape
@@ -1166,7 +1196,7 @@ class GPUOperators:
         mutate_mask = (torch.rand(B, device=self.device) < mutation_rate) & valid_mask.any(dim=1)
         
         if not mutate_mask.any():
-            return population, constants
+            return population if legacy_no_constants else (population, constants)
             
         mutant_indices = torch.nonzero(mutate_mask).squeeze(1)
         n_mut = mutant_indices.numel()
@@ -1200,7 +1230,7 @@ class GPUOperators:
         fits = new_total_lens <= L
         
         if not fits.any():
-            return population, constants
+            return population if legacy_no_constants else (population, constants)
             
         valid_idx_rel = torch.nonzero(fits).squeeze(1) 
         final_mutant_pop_idx = mutant_indices[valid_idx_rel]
@@ -1275,7 +1305,7 @@ class GPUOperators:
         population[final_mutant_pop_idx] = out_seqs
         constants[final_mutant_pop_idx] = out_consts
         
-        return population, constants
+        return population if legacy_no_constants else (population, constants)
 
 
     def repair_invalid_population(self, population: torch.Tensor, constants: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor, int]:

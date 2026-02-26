@@ -205,9 +205,13 @@ class PatternMemory:
             # Compare all new hashes against all existing hashes
             # existing_hashes: [n_patterns], new_hashes: [N]
             existing_hashes = self.patterns_hash[:self.n_patterns]  # [P]
+            existing_patterns = self.patterns_tensor[:self.n_patterns]  # [P, L]
             
-            # Match matrix: [N, P] - True where new[i] matches existing[j]
-            match_matrix = (hashes.unsqueeze(1) == existing_hashes.unsqueeze(0))  # [N, P]
+            # Match matrix requires BOTH hash and exact structural equality.
+            # Hash-only matching can merge distinct patterns under collisions.
+            hash_match = (hashes.unsqueeze(1) == existing_hashes.unsqueeze(0))  # [N, P]
+            pattern_match = (patterns.unsqueeze(1) == existing_patterns.unsqueeze(0)).all(dim=2)  # [N, P]
+            match_matrix = hash_match & pattern_match
             
             # For each new pattern, find if it has a match
             has_match = match_matrix.any(dim=1)  # [N]

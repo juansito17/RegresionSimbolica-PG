@@ -123,13 +123,22 @@ class LibraryLearner:
 
         # Extract all windows of length max_block_len from each individual
         # Shape: [k, n_windows, max_block_len] where n_windows = max_len - block_len + 1
-        blen = self.max_block_len
         L = top_pop.shape[1]
+        blen = min(self.max_block_len, L)
         n_windows = max(1, L - blen + 1)
 
         # Unroll windows: [k * n_windows, blen]
         windows = top_pop.unfold(1, blen, 1)  # [k, n_windows, blen]
         windows = windows.contiguous().view(-1, blen).int()  # [k*n_windows, blen]
+        if blen < self.max_block_len:
+            pad_cols = self.max_block_len - blen
+            pad = torch.full(
+                (windows.shape[0], pad_cols),
+                PAD_ID,
+                dtype=windows.dtype,
+                device=windows.device,
+            )
+            windows = torch.cat([windows, pad], dim=1)
 
         # Filter out all-PAD windows and windows starting with PAD
         not_all_pad = (windows != PAD_ID).any(dim=1)  # [N]

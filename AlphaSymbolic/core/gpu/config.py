@@ -91,7 +91,7 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = True        # PURE GP: No fixed starting points
+    USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
     # Fitness = 0.00422584, Size = 64
     #INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
@@ -103,7 +103,7 @@ class GpuGlobals:
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
-    MAX_FORMULA_LENGTH = 128
+    MAX_FORMULA_LENGTH = 32
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
@@ -315,6 +315,9 @@ class GpuGlobals:
     USE_SIMPLIFICATION = True
     USE_SYMPY = False             # Heavy symbolic simplification (Slow)
     USE_CONSOLE_BEST_SIMPLIFICATION = False
+    # Extra cleanup passes after CUDA simplify use Python fallback and can trigger
+    # heavy GPU->CPU sync overhead. Keep at 0 for pure CUDA simplification path.
+    SIMPLIFY_CUDA_CLEANUP_PASSES = 0
     SIMPLIFICATION_INTERVAL = 10
     K_SIMPLIFY = 50
     SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9
@@ -357,6 +360,9 @@ class GpuGlobals:
     #                  9. REPORTING & EXIT
     # ============================================================
     PROGRESS_REPORT_INTERVAL = 100
+    # Console table forces preds.detach().cpu().numpy() on every new best.
+    # Disable to avoid frequent GPU->CPU synchronization and CPU spikes.
+    CONSOLE_SHOW_PREDICTION_TABLE = True
     
     # Early Exit
     EXACT_SOLUTION_THRESHOLD = 1e-6

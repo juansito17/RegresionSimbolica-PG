@@ -28,6 +28,7 @@ class GPUEvaluator:
         # New Native VM
         from .cuda_vm import CudaRPNVM
         self.vm = CudaRPNVM(grammar, device)
+        self._disable_fused_eval = False
 
     def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -100,16 +101,26 @@ class GPUEvaluator:
 
         # ── Fast path: fused kernel ──
         # Returns [B] RMSE directly from GPU — no B×D intermediate buffers.
-        if (GpuGlobals.LOSS_FUNCTION == 'RMSE' and
-                hasattr(self.vm, 'eval_fused') and
-                B_pop <= 1_500_000):
+        can_try_fused = (
+            GpuGlobals.LOSS_FUNCTION == 'RMSE' and
+            hasattr(self.vm, 'eval_fused') and
+            not self._disable_fused_eval and
+            B_pop <= 1_500_000 and
+            population.is_cuda and
+            x.is_cuda and
+            y_target.is_cuda and
+            (constants is None or constants.is_cuda)
+        )
+
+        if can_try_fused:
             try:
                 y_in = y_target.flatten().to(x.dtype)
                 c_in = constants.to(x.dtype) if (constants is not None and constants.dtype != x.dtype) else constants
                 rmse = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode)
                 return rmse.to(self.dtype)
             except Exception:
-                pass  # Fall through to original path
+                # Avoid repeated exception overhead in hot loops.
+                self._disable_fused_eval = True
 
         # ── Original chunked path (RMSLE or fused unavailable) ──
         max_chunk_inds = 1000000

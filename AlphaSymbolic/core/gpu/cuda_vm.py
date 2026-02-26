@@ -1,5 +1,11 @@
 
+import os
+import sys
 import torch
+
+_CUDA_DIR = os.path.join(os.path.dirname(__file__), 'cuda')
+if _CUDA_DIR not in sys.path:
+    sys.path.append(_CUDA_DIR)
 
 try:
     from . import rpn_cuda_native as rpn_cuda

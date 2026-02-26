@@ -382,15 +382,18 @@ class GPUSymbolicSimplifier:
 
                 # CUDA kernel is fast but can miss some higher-order/iterative patterns.
                 # Run a short vectorized GPU cleanup pass to normalize final expressions.
-                cleanup_passes = 2 if max_passes >= 2 else 1
-                pop, constants, n_cleanup = self._simplify_fallback_passes(
-                    pop,
-                    constants,
-                    cleanup_passes,
-                    original_population=population,
-                )
+                cleanup_cfg = int(getattr(GpuGlobals, 'SIMPLIFY_CUDA_CLEANUP_PASSES', 0))
+                cleanup_passes = min(max_passes, max(0, cleanup_cfg))
+                if cleanup_passes > 0:
+                    pop, constants, n_cleanup = self._simplify_fallback_passes(
+                        pop,
+                        constants,
+                        cleanup_passes,
+                        original_population=population,
+                    )
+                    return pop, constants, n_cleanup
 
-                return pop, constants, n_cleanup
+                return pop, constants, 0
             except Exception:
                 pass  # Fall through to Python implementation
 
