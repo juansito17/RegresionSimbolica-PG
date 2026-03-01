@@ -1,7 +1,18 @@
 
 import torch
 from typing import List, Tuple, Dict, Optional
-from core.grammar import OPERATORS
+
+# Handle import for OPERATORS - works both as package and standalone
+try:
+    from ..grammar import OPERATORS
+except ImportError:
+    # Fallback: define OPERATORS locally if import fails
+    OPERATORS = {
+        '+': 2, '-': 2, '*': 2, '/': 2, 'pow': 2, '%': 2,
+        'sin': 1, 'cos': 1, 'tan': 1, 'asin': 1, 'acos': 1, 'atan': 1,
+        'log': 1, 'exp': 1, 'sqrt': 1, 'abs': 1, 'neg': 1,
+        'floor': 1, 'ceil': 1, 'sign': 1, 'fact': 1, 'gamma': 1, 'lgamma': 1,
+    }
 
 # --- GPU GRAMMAR ENCODING (RPN / Postfix) ---
 PAD_ID = 0
@@ -58,7 +69,7 @@ class GPUGrammar:
                 self.operators.append('gamma')
                 self.operators.append('lgamma')
             if GpuGlobals.USE_OP_ASIN:  self.operators.append('asin')
-            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos')
+            if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos')  # FIX Bug 1: Usar 'acos' en lugar de 'C' para evitar colisión con constante
             if GpuGlobals.USE_OP_ATAN:  self.operators.append('atan')
             if GpuGlobals.USE_OP_FLOOR: self.operators.append('floor')
             if GpuGlobals.USE_OP_CEIL:  self.operators.append('ceil')

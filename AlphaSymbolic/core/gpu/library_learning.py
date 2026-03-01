@@ -123,13 +123,22 @@ class LibraryLearner:
 
         # Extract all windows of length max_block_len from each individual
         # Shape: [k, n_windows, max_block_len] where n_windows = max_len - block_len + 1
-        blen = self.max_block_len
         L = top_pop.shape[1]
+        blen = min(self.max_block_len, L)
         n_windows = max(1, L - blen + 1)
 
         # Unroll windows: [k * n_windows, blen]
         windows = top_pop.unfold(1, blen, 1)  # [k, n_windows, blen]
         windows = windows.contiguous().view(-1, blen).int()  # [k*n_windows, blen]
+        if blen < self.max_block_len:
+            pad_cols = self.max_block_len - blen
+            pad = torch.full(
+                (windows.shape[0], pad_cols),
+                PAD_ID,
+                dtype=windows.dtype,
+                device=windows.device,
+            )
+            windows = torch.cat([windows, pad], dim=1)
 
         # Filter out all-PAD windows and windows starting with PAD
         not_all_pad = (windows != PAD_ID).any(dim=1)  # [N]
@@ -194,8 +203,7 @@ class LibraryLearner:
             [k, max_block_len] int tensor, or None if library is empty.
         """
         try:
-            n_valid = self.valid.sum().item()
-            if n_valid == 0:
+            if not self.valid.any():
                 return None
             valid_idx = self.valid.nonzero(as_tuple=False).squeeze(1)
             # Weight: high count + low fitness = more likely sampled
@@ -206,8 +214,8 @@ class LibraryLearner:
             cnt_w = (cnt + 1.0).log()
             weights = fit_w * cnt_w
             # Sample with replacement
-            n_sample = min(k, int(n_valid))
-            sampled_local = torch.multinomial(weights, n_sample, replacement=(n_sample > n_valid))
+            n_sample = min(k, int(self.valid.sum().item()))
+            sampled_local = torch.multinomial(weights, n_sample, replacement=(n_sample > int(self.valid.sum().item())))
             sampled_global = valid_idx[sampled_local]
             blocks = self.library_tokens[sampled_global]  # [n_sample, max_block_len]
             return blocks
@@ -254,7 +262,8 @@ class LibraryLearner:
 
     @property
     def size(self) -> int:
-        return int(self.valid.sum().item())
+        # Use lazy property to avoid frequent blocking .item()
+        return int(self.valid.sum())
 
     def __repr__(self) -> str:
         return f"LibraryLearner(capacity={self.capacity}, filled={self.size}, block_len={self.max_block_len})"

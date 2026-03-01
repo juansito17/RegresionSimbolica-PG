@@ -1,6 +1,6 @@
 
 # DEPRECATED: Use core.gpu instead
-from core.gpu import TensorGeneticEngine
+from AlphaSymbolic.core.gpu import TensorGeneticEngine
 
 # We map every token to an integer ID.
 # 0 is padding/null.

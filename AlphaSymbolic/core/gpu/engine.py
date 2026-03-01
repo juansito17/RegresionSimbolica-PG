@@ -3,7 +3,7 @@ import torch
 import time
 import re
 from typing import List, Tuple, Optional
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 
 from .config import GpuGlobals
 from .sniper import Sniper
@@ -21,7 +21,7 @@ from .simplification import GPUSimplifier
 from .gpu_simplifier import GPUSymbolicSimplifier
 
 class TensorGeneticEngine:
-    def __init__(self, device=None, pop_size=None, max_len=30, num_variables=1, max_constants=5, n_islands=None, model=None):
+    def __init__(self, device=None, pop_size=None, max_len=None, num_variables=1, max_constants=5, n_islands=None, model=None):
         # Device selection respects FORCE_CPU_MODE
         if device:
             self.device = device
@@ -34,10 +34,12 @@ class TensorGeneticEngine:
         # Defaults from Globals
         if pop_size is None: pop_size = GpuGlobals.POP_SIZE
         if n_islands is None: n_islands = GpuGlobals.NUM_ISLANDS
+        if max_len is None: max_len = getattr(GpuGlobals, 'MAX_FORMULA_LENGTH', 30)
         
+        n_islands = max(1, min(n_islands, pop_size))
         self.n_islands = n_islands
         if pop_size % n_islands != 0:
-            pop_size = (pop_size // n_islands) * n_islands
+            pop_size = max(n_islands, (pop_size // n_islands) * n_islands)
             
         self.pop_size = pop_size
         self.island_size = pop_size // n_islands
@@ -74,7 +76,9 @@ class TensorGeneticEngine:
 
         
         # --- Advanced Features ---
-        self.sniper = Sniper(self.device)
+        # Sniper operates on 100-point data blocks using PyTorch Adam/lstsq.
+        # GPU Kernel launch overhead makes this extremely slow. Using CPU completely bypasses overhead.
+        self.sniper = Sniper(torch.device('cpu'))
 
         self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE, dtype=self.dtype)
 
@@ -118,10 +122,21 @@ class TensorGeneticEngine:
         # --- Pre-cached tensors for hot loop ---
         self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
         self._selection_metric_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
+        
+        # --- Zero-Allocation Buffers for Evolution Loop ---
+        self._pop_mask_buf = torch.empty((self.pop_size, self.max_len), dtype=torch.bool, device=self.device)
+        self._lengths_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+        self._tarpeian_rand_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+        self._oversized_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
+        self._penalize_mask_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
+        self._float_mask_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+
         # --- SOTA P1: Pareto rank adjustment buffer (NSGA-II blending) ---
         self._pareto_rank_buf = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
         
-        # --- Variable diversity: cache variable token IDs for penalty computation ---
+        # --- PHASE 7: Lexicase Error Buffer (Reuse to avoid OOM fragmentation/alloc overhead) ---
+        # Note: Size depends on N_data (samples). We'll initialize it lazily or here if samples known.
+        self._abs_errors_buf = None # Will be initialized on first 100% Lexicase run
         self._var_token_ids = []
         if self.num_variables > 1:
             for vi in range(self.num_variables):
@@ -137,6 +152,9 @@ class TensorGeneticEngine:
                 vid = self.grammar.token_to_id.get(name, -1)
                 if vid > 0:
                     self._single_var_ids.append(vid)
+
+        # Adaptive Evolution State
+        self.current_aggression_factor = 1.0
 
     # --- Wrappers for backward compatibility and convenience ---
 
@@ -294,17 +312,17 @@ class TensorGeneticEngine:
              # Try simple offsets first (+C, +C*x, +C*x^2, +C*x^3, +C*x^4)
              # x0 is the primary variable name in the grammar
              offset_templates = ["C", "C * x0", "C * (x0^2)", "C * (x0^3)", "C * (x0^4)"]
+             cand_strs = [f"({base_str} + {t})" for t in offset_templates]
              
-             for template in offset_templates:
-                 candidate_str = f"({base_str} + {template})"
-                 pop_cand, const_cand = self.load_population_from_strings([candidate_str])
-                 if pop_cand is not None:
-                     # Quick optimization of the new term
-                     if GpuGlobals.USE_NANO_PSO:
-                        ref_c, ref_f = self.optimizer.nano_pso(pop_cand, const_cand, x_t, y_t, steps=30)
-                        cand_rmse = ref_f.item()
-                        if cand_rmse < best_rmse:
-                            return candidate_str, cand_rmse, pop_cand[0], ref_c[0]
+             pop_cand, const_cand = self.load_population_from_strings(cand_strs)
+             if pop_cand is not None:
+                 # Quick optimization of the new term (all templates batched together)
+                 if GpuGlobals.USE_NANO_PSO:
+                     ref_c, ref_f = self.optimizer.nano_pso(pop_cand, const_cand, x_t, y_t, steps=30)
+                     best_idx = ref_f.argmin().item()
+                     cand_rmse = ref_f[best_idx].item()
+                     if cand_rmse < best_rmse:
+                         return cand_strs[best_idx], cand_rmse, pop_cand[best_idx], ref_c[best_idx]
              
              # --- Additive Boost: y = f(x) + g(x) ---
              # g(x) = y - f(x)
@@ -354,8 +372,12 @@ class TensorGeneticEngine:
              pass
         return None, None, None, None
 
-    def get_tree_size(self, rpn_tensor: torch.Tensor) -> int:
-        return (rpn_tensor != PAD_ID).sum().item()
+    def get_tree_size(self, rpn_tensor: torch.Tensor) -> torch.Tensor:
+        """Returns the batched size (number of valid tokens) of the given RPN tensor.
+        Optimized to NEVER use .item() and return raw GPU tensors instead."""
+        if rpn_tensor.dim() == 1:
+            return (rpn_tensor != PAD_ID).sum(dim=0)
+        return (rpn_tensor != PAD_ID).sum(dim=1)
 
     def _generate_polynomial_basis(self, size: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -630,6 +652,9 @@ class TensorGeneticEngine:
         if B % n_islands != 0:
             raise ValueError(f"Population {B} not divisible by islands {n_islands}")
             
+        # Sanitize NaNs to infinity to prevent NaN takeover (Bug N11) in both CUDA and Python
+        fitness = torch.nan_to_num(fitness, nan=float('inf'))
+            
         # Fitness view: [Islands, IslandSize]
         fit_view = fitness.view(n_islands, island_size)
         
@@ -668,7 +693,11 @@ class TensorGeneticEngine:
              
              fit_f32 = fitness.float()
              
-             rpn_cuda_native.tournament_selection(fit_f32, all_idx_mat, winner_indices)
+             dummy_errs = torch.empty((0, 0), dtype=torch.float32, device=self.device)
+             dummy_cases = torch.empty(0, dtype=torch.int32, device=self.device)
+             dummy_lengths = torch.empty(0, dtype=torch.int32, device=self.device)
+             
+             rpn_cuda_native.tournament_selection(fit_f32, dummy_errs, all_idx_mat, dummy_cases, winner_indices, dummy_lengths)
              
              return winner_indices
         except ImportError:
@@ -695,7 +724,7 @@ class TensorGeneticEngine:
     
     def evolve_generation_cuda(self, population, constants, fitness, abs_errors, x_t, y_t, mutation_bank,
                                 mutation_rate=0.1, crossover_rate=0.5, 
-                                tournament_size=3, pso_steps=10, pso_particles=20, lengths=None):
+                                tournament_size=3, pso_steps=10, pso_particles=20, lengths=None, mad_eps=None):
         """
         Full C++ CUDA Orchestrator: Selection + Crossover + Mutation + PSO.
         Calls the native rpn_cuda_native.evolve_generation function.
@@ -712,10 +741,10 @@ class TensorGeneticEngine:
         # P0-6: Reuse cached VM and arity tensors
         if self._cached_vm is None:
             self._cached_vm = CudaRPNVM(self.grammar, self.device)
-            self._cached_token_arities = self.grammar.get_arity_tensor(self.device)
-            self._cached_arity_0_ids = self.grammar.get_arity_ids(0, self.device)
-            self._cached_arity_1_ids = self.grammar.get_arity_ids(1, self.device)
-            self._cached_arity_2_ids = self.grammar.get_arity_ids(2, self.device)
+            self._cached_token_arities = self.grammar.get_arity_tensor(self.device).to(torch.int32)
+            self._cached_arity_0_ids = self.grammar.get_arity_ids(0, self.device).to(torch.uint8)
+            self._cached_arity_1_ids = self.grammar.get_arity_ids(1, self.device).to(torch.uint8)
+            self._cached_arity_2_ids = self.grammar.get_arity_ids(2, self.device).to(torch.uint8)
         
         vm = self._cached_vm
         token_arities = self._cached_token_arities
@@ -765,45 +794,45 @@ class TensorGeneticEngine:
 
         # Ensure lengths are passed
         if lengths is None:
-            lengths = (population != vm.PAD_ID).sum(dim=1).int()
+            lengths = (population != vm.PAD_ID).sum(dim=1).float()
         else:
-            lengths = lengths.int()
+            lengths = lengths.float()
+            
+        # Sanitize inputs to prevent NaN Takeover (Bug N10/N11)
+        fitness = torch.nan_to_num(fitness, nan=float('inf'))
+        if abs_errors is not None and abs_errors.numel() > 0:
+            abs_errors = torch.nan_to_num(abs_errors, nan=float('inf'))
 
-        result = rpn_cuda.evolve_generation(
-            population,
-            _f32c(constants),
-            _f32c(fitness),
-            _f32c(abs_errors),
-            x_in,
-            y_in,
-            lengths.contiguous(), # Passed to C++
+        # Phase 3: MAD-based Dynamic Epsilons for Lexicase
+        if mad_eps is None and abs_errors is not None and abs_errors.numel() > 0:
+            if getattr(GpuGlobals, 'USE_LEXICASE_SELECTION', False):
+                # Calculate Median Absolute Deviation (MAD) for each test case
+                _errs = abs_errors.to(torch.float32)
+                _median = _errs.nanmedian(dim=0).values
+                mad_eps = torch.abs(_errs - _median).nanmedian(dim=0).values
+                # Scaling factor (0.1 is standard)
+                mad_eps *= getattr(GpuGlobals, 'LEXICASE_EPSILON_MULT', 0.1)
+        
+        if mad_eps is None:
+            mad_eps = torch.empty(0, device=self.device)
 
-            token_arities,
-            arity_0_ids,
-            arity_1_ids,
-            arity_2_ids,
-            mutation_bank,
-            mutation_rate,
-            crossover_rate,
-            tournament_size,
-            pso_steps,
-            pso_particles,
-            0.5, 1.5, 1.5,  # pso_w, pso_c1, pso_c2
-            vm.PAD_ID,
-            # OpCodes
-            vm.id_x_start,
-            vm.id_C, vm.id_pi, vm.id_e,
+        _args = [
+            population, _f32c(constants), _f32c(fitness), _f32c(abs_errors),
+            x_in, y_in, lengths.contiguous(), 
+            token_arities, arity_0_ids, arity_1_ids, arity_2_ids,
+            mutation_bank, mad_eps.contiguous(), 
+            mutation_rate, crossover_rate, tournament_size, pso_steps, pso_particles,
+            0.5, 1.5, 1.5, vm.PAD_ID,
+            vm.id_x_start, vm.id_C, vm.id_pi, vm.id_e,
             vm.id_0, vm.id_1, vm.id_2, vm.id_3, vm.id_4, vm.id_5, vm.id_6, vm.id_10,
             vm.op_add, vm.op_sub, vm.op_mul, vm.op_div, vm.op_pow, vm.op_mod,
-            vm.op_sin, vm.op_cos, vm.op_tan,
-            vm.op_log, vm.op_exp,
-            vm.op_sqrt, vm.op_abs, vm.op_neg,
-            vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
-            vm.op_gamma, vm.op_lgamma,
-            vm.op_asin, vm.op_acos, vm.op_atan,
-            3.14159265359, 2.718281828,
-            self.n_islands
-        )
+            vm.op_sin, vm.op_cos, vm.op_tan, vm.op_log, vm.op_exp,
+            vm.op_sqrt, vm.op_abs, vm.op_neg, vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
+            vm.op_gamma, vm.op_lgamma, vm.op_asin, vm.op_acos, vm.op_atan,
+            3.14159265359, 2.718281828, self.n_islands
+        ]
+        
+        result = rpn_cuda.evolve_generation(*_args)
         
         new_pop, new_consts, new_fit = result[0], result[1], result[2]
         
@@ -839,7 +868,7 @@ class TensorGeneticEngine:
         
         return new_pop, new_fitness
 
-    def epsilon_lexicase_selection(self, population, n_parents, x, y_target, constants):
+    def epsilon_lexicase_selection(self, population, n_parents, x, y_target, constants, tour_size=None):
         """
         Low-VRAM Epsilon-Lexicase Selection.
         Instead of pre-calculating [Pop x Cases] Error Matrix (OOM on 4GB),
@@ -847,7 +876,10 @@ class TensorGeneticEngine:
         """
         B, L = population.shape
         N_cases = y_target.flatten().shape[0]
-        tour_size = 32 # Reduced tour size for memory safety
+        if tour_size is None:
+            tour_size = min(32, B) # Reduced tour size for memory safety
+        else:
+            tour_size = min(tour_size, B)
         
         # 1. Select Candidates: [n_parents, tour_size]
         rand_idx = torch.randint(0, B, (n_parents, tour_size), device=self.device)
@@ -876,6 +908,8 @@ class TensorGeneticEngine:
             
             # Use evaluate_batch_full which returns [Chunk, Cases] abs errors
             sub_errs = self.evaluator.evaluate_batch_full(sub_pop, x, y_target, sub_c, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION)).float() # Use float32 to save memory
+            # Sanitize NaNs to prevent Bug N10 (Lexicase NaN Bias)
+            sub_errs = torch.nan_to_num(sub_errs, nan=float('inf'))
             all_errors.append(sub_errs)
         
         flat_errs = torch.cat(all_errors, dim=0) # [n_parents*tour, N_cases]
@@ -911,8 +945,15 @@ class TensorGeneticEngine:
             keep = (curr_case_err <= threshold.unsqueeze(1) + 1e-9)
             active_mask = active_mask & keep
             
-        # 5. Pick Winner
-        winners_local = torch.argmax(active_mask.int(), dim=1) 
+        # 5. Pick Winner (uniform tie-break among survivors)
+        probs = active_mask.float()
+        row_sums = probs.sum(dim=1, keepdim=True)
+        no_active = row_sums.squeeze(1) <= 0
+        if no_active.any():
+            probs[no_active] = 1.0
+            row_sums = probs.sum(dim=1, keepdim=True)
+        probs = probs / row_sums.clamp_min(1e-12)
+        winners_local = torch.multinomial(probs, 1).squeeze(1)
         winners_global = rand_idx.gather(1, winners_local.unsqueeze(1)).squeeze(1)
         
         return winners_global        
@@ -1013,8 +1054,8 @@ class TensorGeneticEngine:
             return formula_str
         
         import numpy as np
-        x_np = x_t.cpu().numpy().flatten().astype(np.float64)
-        y_np = y_t.cpu().numpy().flatten().astype(np.float64)
+        x_np = x_t.cpu().numpy().flatten().astype(np.float32)
+        y_np = y_t.cpu().numpy().flatten().astype(np.float32)
         
         best = formula_str
         best_len = len(formula_str)
@@ -1197,15 +1238,17 @@ class TensorGeneticEngine:
             
         if not isinstance(y_values, torch.Tensor):
             y_t = torch.tensor(y_values, dtype=self.dtype, device=self.device)
-            # Log transform if needed (Use arg if provided, else Global)
-            use_log_local = use_log if use_log is not None else GpuGlobals.USE_LOG_TRANSFORMATION
-            
-            if use_log_local:
-                 mask = y_t > 1e-9
-                 y_t = torch.log(y_t[mask])
-                 x_t = x_t[mask] 
         else:
             y_t = y_values.to(self.device).to(self.dtype)
+            
+        # Log transform if needed (Use arg if provided, else Global)
+        # FIX: Move logic outside so it applies to Tensors too!
+        use_log_local = use_log if use_log is not None else GpuGlobals.USE_LOG_TRANSFORMATION
+        if use_log_local:
+             # Masking to avoid log(0)
+             mask = y_t > 1e-9
+             y_t = torch.log(y_t[mask])
+             x_t = x_t[mask] 
 
             
         if x_t.ndim == 1: x_t = x_t.unsqueeze(1)
@@ -1309,6 +1352,16 @@ class TensorGeneticEngine:
         if seeds:
 
             seed_pop, seed_consts = self.load_population_from_strings(seeds)
+            if seed_pop is not None and getattr(GpuGlobals, 'USE_SIMPLIFICATION', True):
+                 # For seeds: ONLY apply structural folding (neg(neg(C)) → C, log(neg(C)) → C, etc.)
+                 # Do NOT apply literal-to-C promotion — it converts fixed grammar constants like
+                 # lgamma(3) into free PSO parameters, breaking the seed's mathematical structure.
+                 for _ in range(5):
+                     seed_pop, seed_consts, n_pf = self.gpu_simplifier._apply_parametric_constant_folding(seed_pop, seed_consts)
+                     if n_pf == 0:
+                         break
+                     seed_pop, _ = self.gpu_simplifier._compact_formulas(seed_pop)
+            
             if seed_pop is not None:
                 n = min(len(seeds), self.pop_size) # Safety
                 if n > 0:
@@ -1476,7 +1529,13 @@ class TensorGeneticEngine:
             # Time-based early exit: configurable good-enough solution before full timeout
             # Only exit with non-trivial formulas and high explained variance.
             if best_rpn is not None and elapsed >= GpuGlobals.GOOD_ENOUGH_MIN_SECONDS and best_rmse < GpuGlobals.GOOD_ENOUGH_RMSE:
-                tree_size = self.get_tree_size(best_rpn)
+                # Throttle early exit check to avoid .item() sync every generation
+                if getattr(self, '_sync_counter', 0) % 10 == 0:
+                    tree_size = self.get_tree_size(best_rpn).item()
+                else:
+                    tree_size = getattr(self, '_cached_best_tree_size', 5) # Dummy valid size
+                    
+                self._cached_best_tree_size = tree_size
         
 
                 has_var_token = True
@@ -1587,14 +1646,60 @@ class TensorGeneticEngine:
                         population[unique_mod], x_t, y_t, pop_constants[unique_mod], strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                     fitness_rmse[unique_mod] = partial_rmse
             elif GpuGlobals.USE_LEXICASE_SELECTION:
+                # OPTIMIZED: Lexicase Sub-sampling (Phase 3)
+                # Avoid OOM and speed up evaluation by using a random subset of points.
+                _x_eval, _y_eval = x_t, y_t
+                if getattr(GpuGlobals, 'USE_LEXICASE_SUB_SAMPLING', False):
+                    n_total = x_t.shape[0] if x_t.ndim == 2 else x_t.shape[1]
+                    n_sub = int(getattr(GpuGlobals, 'LEXICASE_SUB_SAMPLE_SIZE', 128))
+                    if n_total > n_sub:
+                        # Fast selection on GPU
+                        _sub_indices = torch.randperm(n_total, device=self.device)[:n_sub]
+                        if x_t.ndim == 2:
+                             # x_t is [D, V]
+                             _x_eval = x_t[_sub_indices]
+                        else:
+                             # x_t is already [V, D] (C++ friendly)
+                             _x_eval = x_t[:, _sub_indices]
+                        _y_eval = y_t[_sub_indices]
 
-                abs_errors = self.evaluator.evaluate_batch_full(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
-                fitness_rmse = torch.mean(abs_errors**2, dim=1).sqrt() # Approx RMSE for stats
+                abs_errors = self.evaluator.evaluate_batch_full(
+                    population, _x_eval, _y_eval, pop_constants, 
+                    strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION),
+                    force_f32=True
+                )
+                fitness_rmse = torch.mean(abs_errors.to(self.dtype)**2, dim=1).sqrt() # Approx RMSE for stats
             else:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 abs_errors = None
             cached_next_fit = None  # Consumed
-            
+
+            # ── BUG-1 FIX: Per-gen variable presence cache ────────────────────────────────────────
+            # `.any(dim=1)` over [1M, 128] + implicit CPU sync ≈ 2-3ms per call.
+            # Was computed 3-5× per gen (PSO, best-tracking, cataclysm, selection_metric).
+            # Now computed ONCE here and reused everywhere. Population is stable until L2440.
+            _cached_var_pen = None       # [B] float: n_missing_vars (for diversity penalty)
+            _cached_has_all_vars = None  # [B] bool: uses ALL _var_token_ids (for best mask)
+            _cached_has_any_var = None   # [B] bool: uses ANY _single_var_id (for no-var penalty)
+
+            if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                _vp = self._var_diversity_buf
+                _vp.fill_(float(len(self._var_token_ids)))
+                _hall = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                for vid in self._var_token_ids:
+                    _pres = (population == vid).any(dim=1)
+                    self._float_mask_buf.copy_(_pres)
+                    _vp.sub_(self._float_mask_buf)
+                    _hall &= _pres
+                _cached_var_pen = _vp
+                _cached_has_all_vars = _hall
+
+            if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
+                _hav = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
+                for vid in self._single_var_ids:
+                    _hav |= (population == vid).any(dim=1)
+                _cached_has_any_var = _hav
+
             # --- Weighted Fitness (opcional: pondera errores por dificultad) ---
             if GpuGlobals.USE_WEIGHTED_FITNESS and abs_errors is not None:
                 # Ponderar cada caso por su dificultad media (errores más altos pesan más)
@@ -1641,25 +1746,22 @@ class TensorGeneticEngine:
             _pso_adaptive = getattr(GpuGlobals, 'PSO_ADAPTIVE', False)
             _pso_skip_gens = getattr(GpuGlobals, 'PSO_SKIP_GENS', 6)
             if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
-                # Compute a cheap structural hash of the current best RPN
-                _curr_rpn_hash = None
-                if best_rpn is not None:
-                    _curr_rpn_hash = best_rpn.sum().item()  # Cheap proxy for structural identity
+                # El método de hash polinomial y la comparación `torch.equal` causaban costosas sincronizaciones CPU-GPU
+                # que ralentizaban el bucle principal. Se eliminó `_struct_changed` para confiar puramente en `_in_stagnation`.
                 
                 # Decide whether to skip PSO this round
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
-                _struct_changed = (_curr_rpn_hash != _last_pso_rpn_hash)
+                
                 _skip_pso = (
                     _pso_adaptive and
                     not _in_stagnation and
-                    not _struct_changed and
                     _pso_skip_counter < _pso_skip_gens
                 )
                 _pso_skip_counter += 1
                 
                 if not _skip_pso:
                     _pso_skip_counter = 0
-                    _last_pso_rpn_hash = _curr_rpn_hash
+                    
                     # During stagnation: optimize more individuals with more steps
                     if _in_stagnation:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_STAGNATION)
@@ -1668,14 +1770,19 @@ class TensorGeneticEngine:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
                         pso_steps = GpuGlobals.PSO_STEPS_NORMAL
                     
-                    # Use penalized metric to select top-K for PSO (favor multi-variable)
-                    if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    # BUG-PSO-3 FIX: in stagnation mode mix top-fitness + random candidates.
+                    # Previously: 100% top-K → all near-isomorphic (same lgamma family) → PSO
+                    # refines constants of clones instead of exploring new structures.
+                    # Now: 50% top-fitness (exploit) + 50% random (explore new structures).
+                    if _in_stagnation:
+                        k_top = k_opt // 2
+                        k_rand = k_opt - k_top
+                        _, _top_part = torch.topk(selection_metric if _cached_var_pen is not None else fitness_rmse, k_top, largest=False)
+                        _rand_part = torch.randperm(self.pop_size, device=self.device)[:k_rand]
+                        top_idx = torch.cat([_top_part, _rand_part])
+                    elif _cached_var_pen is not None:
                         _pso_metric = fitness_rmse.clone()
-                        _n_miss = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
-                        _n_miss.fill_(float(len(self._var_token_ids)))
-                        for vid in self._var_token_ids:
-                            _n_miss.sub_((population == vid).any(dim=1).float())
-                        _pso_metric.add_(_n_miss, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                        _pso_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                         _, top_idx = torch.topk(_pso_metric, k_opt, largest=False)
                     else:
                         _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
@@ -1687,6 +1794,11 @@ class TensorGeneticEngine:
                     # Forzar constantes enteras si está configurado
                     if GpuGlobals.FORCE_INTEGER_CONSTANTS:
                         refined_consts = refined_consts.round()
+
+                    # Apply strict validation to filter naturally invalid math out of PSO candidates
+                    if getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False):
+                        refined_mse = self.evaluator.evaluate_batch(opt_pop, x_t, y_t, refined_consts, strict_mode=1)
+
                     pop_constants[top_idx] = refined_consts
                     fitness_rmse[top_idx] = refined_mse
 
@@ -1704,6 +1816,11 @@ class TensorGeneticEngine:
                 try:
                     _bfgs_consts_new, _bfgs_errs = self.optimizer.lbfgs_optimize_top_k(
                         _bfgs_pop, _bfgs_consts, x_t, y_t, top_k=_bfgs_k, max_iter=_bfgs_iters)
+
+                    # Apply strict validation to filter naturally invalid math out of BFGS candidates
+                    if getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False):
+                        _bfgs_errs = self.evaluator.evaluate_batch(_bfgs_pop, x_t, y_t, _bfgs_consts_new, strict_mode=1)
+
                     # Solo aplicar mejoras (nunca empeorar)
                     _bfgs_improved = _bfgs_errs < fitness_rmse[_bfgs_top_idx]
                     if _bfgs_improved.any():
@@ -1713,29 +1830,101 @@ class TensorGeneticEngine:
                 except Exception:
                     pass  # Non-fatal: BFGS puede fallar en fórmulas no diferenciables
             
-            # Best Tracking — only consider formulas using ALL variables (if multi-var mode)
-            if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                # Compute mask: which individuals use all variables
-                _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
-                for vid in self._var_token_ids:
-                    _uses_all &= (population == vid).any(dim=1)
-                if _uses_all.any():
+            # Best Tracking — CUDA Kernel for zero CPU sync until improvement
+            # Uses batch_update_best kernel to track best individual entirely on GPU
+            
+            # Lazy init of GPU-side best tracking tensors (for kernel)
+            if not hasattr(self, '_gpu_best_rmse'):
+                self._gpu_best_rmse = torch.tensor([1e10], device=self.device, dtype=torch.float32)
+                self._gpu_best_rpn = torch.zeros(self.max_len, dtype=torch.uint8, device=self.device)
+                self._gpu_best_consts = torch.zeros(self.max_constants, dtype=torch.float32, device=self.device)
+                self._gpu_best_idx = torch.zeros(1, dtype=torch.int32, device=self.device)
+                self._sync_counter = 0
+                self._cached_best_rmse_cpu = float('inf')
+                self._cached_best_idx_cpu = 0
+            
+            # Try CUDA Best Tracker kernel
+            try:
+                import rpn_cuda_native
+                # Prepare fitness (must be float32 for kernel)
+                fit_f32 = fitness_rmse.float() if fitness_rmse.dtype != torch.float32 else fitness_rmse
+                
+                # Apply variable diversity penalty mask if needed
+                # BUG-1 FIX: reuse precomputed mask instead of recomputing every gen
+                if _cached_has_all_vars is not None:
+                    fit_f32 = fit_f32.clone()
+                    fit_f32[~_cached_has_all_vars] = float('inf')
+                elif self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                    for vid in self._var_token_ids:
+                        _uses_all &= (population == vid).any(dim=1)
+                    fit_f32 = fit_f32.clone()
+                    fit_f32[~_uses_all] = float('inf')
+                
+                # Call CUDA kernel to update best (all GPU, no sync)
+                # Optimized batch update: fully parallel reduction in CUDA, writes directly to buffers
+                rpn_cuda_native.batch_update_best(
+                    population, pop_constants.float(), fit_f32,
+                    self._gpu_best_rpn, self._gpu_best_consts, self._gpu_best_rmse, self._gpu_best_idx,
+                    GpuGlobals.FITNESS_EQUALITY_TOLERANCE
+                )
+                
+                # Increment sync counter
+                self._sync_counter += 1
+                
+                # Only sync to CPU when reporting or significant improvement
+                _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
+                _gpu_rmse = self._gpu_best_rmse[0].item()  # Single sync
+                
+                _improved = _gpu_rmse < (self._cached_best_rmse_cpu - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+                
+                if _improved or (self._sync_counter % _force_sync_interval == 0):
+                    min_rmse_val = _gpu_rmse
+                    min_idx_val = self._gpu_best_idx.item()
+                    
+                    if _improved:
+                        self._cached_best_rmse_cpu = min_rmse_val
+                else:
+                    min_rmse_val = self._cached_best_rmse_cpu
+                    min_idx_val = self._gpu_best_idx.item()
+                    
+                min_rmse = self._gpu_best_rmse
+                
+            except (ImportError, RuntimeError):
+                # Fallback to original method if kernel unavailable
+                if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
+                    _uses_all = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
+                    for vid in self._var_token_ids:
+                        _uses_all &= (population == vid).any(dim=1)
                     _masked_rmse = fitness_rmse.clone()
                     _masked_rmse[~_uses_all] = float('inf')
                     min_rmse, min_idx = torch.min(_masked_rmse, dim=0)
-                    min_rmse_val = min_rmse.item()
+                    if min_rmse >= 1e18:
+                        min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
                 else:
-                    # No formula uses all vars yet — fall back to raw
                     min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
+                
+                self._sync_counter += 1
+                _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
+                _improved_gpu = min_rmse < (getattr(self, '_gpu_best_rmse_fallback', min_rmse) - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+                
+                if _improved_gpu or (self._sync_counter % _force_sync_interval == 0):
                     min_rmse_val = min_rmse.item()
-            else:
-                min_rmse, min_idx = torch.min(fitness_rmse, dim=0)
-                min_rmse_val = min_rmse.item()  # Single sync
+                    if _improved_gpu:
+                        min_idx_val = min_idx.item()
+                        self._gpu_best_rmse_fallback = min_rmse_val
+                    else:
+                        min_idx_val = getattr(self, '_cached_best_idx_cpu', 0)
+                else:
+                    min_rmse_val = getattr(self, '_gpu_best_rmse_fallback', float('inf'))
+                    min_idx_val = getattr(self, '_cached_best_idx_cpu', 0)
             
-            if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):  # NaN check + tolerance
-                min_idx_val = min_idx.item()
-                candidate_rpn = population[min_idx_val]
-                candidate_consts = pop_constants[min_idx_val]
+            # NaN check using the value we have
+            if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
+                # Use the RPN that the kernel already stored in _gpu_best_rpn
+                # This is the ACTUAL best individual, not population[min_idx_val]
+                candidate_rpn = self._gpu_best_rpn.clone()
+                candidate_consts = self._gpu_best_consts.clone().to(self.dtype)
                 
                 # Semantic variable check — reject formulas with dead variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
@@ -1752,7 +1941,7 @@ class TensorGeneticEngine:
                     # On-the-fly symbolic cleanup for promising but bloated formulas.
                     # This is generic and data-driven (no benchmark-specific templates).
                     try:
-                        candidate_size_now = self.get_tree_size(best_rpn)
+                        candidate_size_now = self.get_tree_size(best_rpn).item()
                         if candidate_size_now >= 18 and best_rmse < max(0.2, GpuGlobals.GOOD_ENOUGH_RMSE * 4.0):
                             cand_formula = self.rpn_to_infix(best_rpn, best_consts_vec)
                             simp_formula = self._post_simplify_formula(cand_formula, x_t, y_t)
@@ -1771,12 +1960,38 @@ class TensorGeneticEngine:
                     self.best_global_rmse = best_rmse
                     self.best_global_rpn = best_rpn
                     self.best_global_consts = best_consts_vec
+
+                    # --- PHASE 8 Pre-calculation ---
+                    is_first = (last_reported_fitness == float('inf'))
+                    rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
+
+                    # --- PHASE 8: THE SNIPER (Residual Boosting) ---
+                    # When a new best is found, or periodically, try to fit the residual
+                    _boost_interval = getattr(GpuGlobals, 'RESIDUAL_BOOST_INTERVAL', 20)
+                    if generations % _boost_interval == 0 or rel_improvement > 0.01:
+                        try:
+                            _b_str, _b_rmse, _b_rpn, _b_c = self.attempt_residual_boost(
+                                best_rpn, best_consts_vec, x_t, y_t, best_rmse
+                            )
+                            if _b_str is not None and _b_rmse < best_rmse:
+                                print(f"\n[Sniper] BOOST SUCCESSFUL! RMSE: {best_rmse:.6e} -> {_b_rmse:.6e}")
+                                best_rmse = _b_rmse
+                                best_rpn = _b_rpn
+                                best_consts_vec = _b_c
+                                self.best_global_rmse = best_rmse
+                                self.best_global_rpn = best_rpn
+                                self.best_global_consts = best_consts_vec
+                                # Recalculate rel_improvement after booster success
+                                rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
+                        except Exception:
+                            pass # Sniper is experimental
                 
                 # Identify Island
                 island_idx = (min_idx_val // self.island_size) if self.n_islands > 1 else 0
 
                 stagnation = 0
                 global_stagnation = 0  # Mejora real resetea ambos
+                self.current_aggression_factor = 1.0
                 
                 # Check for exact solution
                 if best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD:
@@ -1798,12 +2013,6 @@ class TensorGeneticEngine:
                     return formula
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
 
-                # Only report to user if improvement is significant (> 0.1%)
-                # Case 1: First best found (last_reported_fitness is inf)
-                # Case 2: Improvement > 0.1%
-                is_first = (last_reported_fitness == float('inf'))
-                rel_improvement = (last_reported_fitness - best_rmse) / last_reported_fitness if not is_first else 1.0
-                
                 if callback and (is_first or rel_improvement > 0.001):
                     # Only report to user if fitness is within a reasonable range (not a penalty value)
                     if best_rmse < 1e100:
@@ -1811,11 +2020,13 @@ class TensorGeneticEngine:
                         callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
             elif min_rmse_val == min_rmse_val and best_rpn is not None and min_rmse_val <= (best_rmse + GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
                 # Tie-break by simplicity for equivalent fitness.
-                min_idx_val = min_idx.item()
-                candidate_rpn = population[min_idx_val]
-                candidate_consts = pop_constants[min_idx_val]
-                cand_size = self.get_tree_size(candidate_rpn)
-                best_size = self.get_tree_size(best_rpn)
+                # BUG FIX: Use _gpu_best_rpn instead of population[min_idx_val]
+                # min_idx_val is 0 when using CUDA kernel, and population[0] is NOT the best individual
+                # The kernel stores the actual best in _gpu_best_rpn
+                candidate_rpn = self._gpu_best_rpn.clone()
+                candidate_consts = self._gpu_best_consts.clone().to(self.dtype)
+                cand_size = self.get_tree_size(candidate_rpn).item()
+                best_size = self.get_tree_size(best_rpn).item()
 
                 # Accept simpler candidate if fitness is effectively equivalent.
                 if cand_size + 1 < best_size and min_rmse_val <= best_rmse * 1.02 + GpuGlobals.FITNESS_EQUALITY_TOLERANCE:
@@ -1826,6 +2037,18 @@ class TensorGeneticEngine:
             else:
                 stagnation += 1
                 global_stagnation += 1
+                
+                # Ported from AdvancedFeatures.cpp (Adaptive Evolution)
+                if getattr(GpuGlobals, 'USE_ADAPTIVE_PARAMETERS', False):
+                    _trigger = getattr(GpuGlobals, 'ADAPTIVE_STAGNATION_TRIGGER', 8)
+                    _max_agg = getattr(GpuGlobals, 'MAX_AGGRESSION_FACTOR', 2.0)
+                    if stagnation > _trigger:
+                        # Escalado de agresión basado en estancamiento local de la isla
+                        _factor = 1.0 + (min(stagnation, _trigger * 4) - _trigger) / float(_trigger * 3) * (_max_agg - 1.0)
+                        self.current_aggression_factor = min(_factor, _max_agg)
+                    else:
+                        self.current_aggression_factor = 1.0
+                
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")
                 
             if callback and generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0:
@@ -1843,11 +2066,15 @@ class TensorGeneticEngine:
                  # Compute cataclysm metric: prefer multi-variable formulas
                  cat_metric = fitness_rmse.clone()
                  if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                     _n_missing = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
-                     _n_missing.fill_(float(len(self._var_token_ids)))
-                     for vid in self._var_token_ids:
-                         _n_missing.sub_((population == vid).any(dim=1).float())
-                     cat_metric.add_(_n_missing, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                     # BUG-1 FIX: reuse precomputed penalty (population unchanged since precompute)
+                     if _cached_var_pen is not None:
+                         cat_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                     else:
+                         _n_missing = self._var_diversity_buf
+                         _n_missing.fill_(float(len(self._var_token_ids)))
+                         for vid in self._var_token_ids:
+                             _n_missing.sub_((population == vid).any(dim=1).float())
+                         cat_metric.add_(_n_missing, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                  _, sorted_idx = torch.topk(cat_metric, n_elites, largest=False)
                  elites = population[sorted_idx]
                  elite_c = pop_constants[sorted_idx]
@@ -1894,6 +2121,8 @@ class TensorGeneticEngine:
                       pop_constants = torch.cat([elite_c, new_c])
                  
                  stagnation = 0
+                 global_stagnation = 0  # BUG-5 FIX: was missing, caused immediate global restart after cataclysm
+                 _pso_skip_counter = 0
                  continue
 
             # Global Stagnation — total or soft restart
@@ -1911,8 +2140,10 @@ class TensorGeneticEngine:
                      _best_rmse_at_last_restart = best_rmse
 
                      if _consecutive_restarts >= _escalate_limit:
-                         # TRUE HARD RESTART: solo 1 elite (la mejor fórmula del algoritmo)
-                         n_keep = 1
+                         # TRUE HARD RESTART: 0 elites. Completely wipe the board to prevent the old local-minimum elite
+                         # from instantly duplicating across the entire population via tournament selection.
+                         # The overall global best is still safely stored in `self.best_global_rpn` externally.
+                         n_keep = 0
                          _consecutive_restarts = 0
                          restart_label = "TRUE HARD"
                          _post_restart_cooldown = 50  # 50 gens sin migrar ni inyectar elite
@@ -1921,18 +2152,23 @@ class TensorGeneticEngine:
                          restart_label = "Soft"
 
                      n_random = self.pop_size - n_keep
-                     print(f"[Engine] Global stagnation ({global_stagnation} gens). {restart_label} Restart "
+                     print(f"\n[Engine] Global stagnation ({global_stagnation} gens). {restart_label} Restart "
                            f"(Keeping top {n_keep} elites, streak={_consecutive_restarts}/{_escalate_limit}).")
 
-                     # Identify elites
-                     _, indices = torch.topk(fitness_rmse, n_keep, largest=False)
-                     elites = population[indices]
-                     elite_c = pop_constants[indices]
+                     if n_keep > 0:
+                         # Identify elites
+                         _, indices = torch.topk(fitness_rmse, n_keep, largest=False)
+                         elites = population[indices]
+                         elite_c = pop_constants[indices]
 
-                     # Siempre garantizar que la mejor fórmula ocupe el slot 0
-                     if best_rpn is not None and n_keep >= 1:
-                         elites[0] = best_rpn
-                         elite_c[0] = best_consts_vec
+                         # Siempre garantizar que la mejor fórmula activa ocupe el slot 0
+                         if best_rpn is not None:
+                             elites[0] = best_rpn
+                             elite_c[0] = best_consts_vec
+                     else:
+                         # Empty tensors to concatenate
+                         elites = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype)
+                         elite_c = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                      # Generate randoms
                      rand_pop = self.operators.generate_random_population(n_random)
@@ -1963,7 +2199,7 @@ class TensorGeneticEngine:
                         if n_basis > 0:
                             basis_pop, basis_consts = self._generate_polynomial_basis(n_basis)
                         else:
-                            basis_pop = torch.empty(0, self.max_len, device=self.device, dtype=torch.long)
+                            basis_pop = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype)
                             basis_consts = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                         rand_pop = self.operators.generate_random_population(n_rand)
@@ -2003,7 +2239,7 @@ class TensorGeneticEngine:
                             keep_pop = population[keep_idx]
                             keep_const = pop_constants[keep_idx]
                         else:
-                            keep_pop = torch.empty(0, self.max_len, device=self.device, dtype=torch.long)
+                            keep_pop = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype)
                             keep_const = torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
 
                         n_rand = self.pop_size - n_keep
@@ -2019,7 +2255,7 @@ class TensorGeneticEngine:
 
                     # Optional best carry-over only if non-trivial or genuinely excellent
                     if best_rpn is not None:
-                        best_size = self.get_tree_size(best_rpn)
+                        best_size = self.get_tree_size(best_rpn).item()
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             population[0] = best_rpn
                             pop_constants[0] = best_consts_vec
@@ -2082,6 +2318,11 @@ class TensorGeneticEngine:
                          
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
+            
+            # Phase 3: Adaptive aggression scaling
+            if getattr(GpuGlobals, 'USE_ADAPTIVE_PARAMETERS', False):
+                current_mutation_rate *= self.current_aggression_factor
+                current_mutation_rate = min(current_mutation_rate, GpuGlobals.MUTATION_RATE_CAP)
                 
             # Evolution Step (Vectorized Island Model + Double Buffering)
             island_offsets = self._island_offsets
@@ -2120,7 +2361,7 @@ class TensorGeneticEngine:
                 stag_factor = min(3.0, (global_stagnation - GpuGlobals.MUTATION_STAGNATION_TRIGGER) / float(stag_span))
                 dynamic_complexity_penalty *= (1.0 + 0.25 * stag_factor)
             if best_rpn is not None and best_rmse < GpuGlobals.GOOD_ENOUGH_RMSE:
-                best_size_now = self.get_tree_size(best_rpn)
+                best_size_now = self.get_tree_size(best_rpn).item()
                 if best_size_now > 18:
                     dynamic_complexity_penalty *= 1.35
             dynamic_complexity_penalty = min(COMPLEXITY_PENALTY * 3.0, dynamic_complexity_penalty)
@@ -2134,40 +2375,66 @@ class TensorGeneticEngine:
             
             # --- EVOLUTION STEP (Reproduction) ---
             if GpuGlobals.USE_CUDA_ORCHESTRATOR:
-                # 1. Selection Metric with Complexity Penalty (in-place to reduce allocations)
-                lengths = (population != PAD_ID).sum(dim=1).float()
-                # selection_metric = fitness_rmse * (1.0 + penalty * lengths) + lengths * 1e-6
+                torch.ne(population, PAD_ID, out=self._pop_mask_buf)
+                torch.sum(self._pop_mask_buf, dim=1, dtype=torch.float32, out=self._lengths_buf)
+                lengths = self._lengths_buf
                 selection_metric = self._selection_metric_buf
+                
+                # 1. Selection Metric with Complexity Penalty (in-place to reduce allocations)
                 torch.mul(lengths, dynamic_complexity_penalty, out=selection_metric)
                 selection_metric.add_(1.0)
-                selection_metric.mul_(fitness_rmse)
-                selection_metric.add_(lengths, alpha=1e-6)
+                
+                # --- SOTA P3: Tarpeian Bloat Control ---
+                if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
+                    avg_len = lengths.mean()
+                    torch.gt(lengths, avg_len * 1.5, out=self._oversized_buf)
+                    torch.rand(self.pop_size, out=self._tarpeian_rand_buf)
+                    torch.lt(self._tarpeian_rand_buf, getattr(GpuGlobals, 'TARPEIAN_PROBABILITY', 0.3), out=self._penalize_mask_buf)
+                    self._penalize_mask_buf.logical_and_(self._oversized_buf)
+                    
+                    selection_metric.mul_(fitness_rmse)
+                    selection_metric[self._penalize_mask_buf] = float('inf')
+                else:
+                    selection_metric.mul_(fitness_rmse)
+
+                # Additive Complexity Penalty: Prevents zero-cost bloat when RMSE ~ 0
+                additive_weight = getattr(GpuGlobals, 'ADDITIVE_COMPLEXITY_PENALTY_WEIGHT', 0.0)
+                selection_metric.add_(lengths, alpha=(1e-6 + additive_weight))
 
                 # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate.
                 # OPTIMIZED: removed .any() CPU syncs — always apply penalty (mul by mask = same result,
                 # no sync needed since penalty is 0 when mask is False via float conversion).
-                trivial_mask = lengths <= float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS)
-                low_quality_trivial = trivial_mask & (fitness_rmse > GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE)
-                selection_metric.add_(low_quality_trivial.float(), alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
+                torch.le(lengths, float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS), out=self._oversized_buf) # Reuse buffer
+                torch.gt(fitness_rmse, GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE, out=self._penalize_mask_buf) # Reuse buffer
+                self._penalize_mask_buf.logical_and_(self._oversized_buf)
+                self._float_mask_buf.copy_(self._penalize_mask_buf)
+                selection_metric.add_(self._float_mask_buf, alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
 
                 # Penalize constant-only formulas in single-variable problems.
                 # OPTIMIZED: removed .any() CPU sync — penalty is 0 for formulas WITH variables.
                 if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
-                    has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
-                    for vid in self._single_var_ids:
-                        has_var |= (population == vid).any(dim=1)
-                    no_var = ~has_var
-                    selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
+                    # BUG-1 FIX: reuse precomputed mask
+                    if _cached_has_any_var is not None:
+                        no_var = ~_cached_has_any_var
+                    else:
+                        has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
+                        for vid in self._single_var_ids:
+                            has_var |= (population == vid).any(dim=1)
+                        no_var = ~has_var
+                    self._float_mask_buf.copy_(no_var)
+                    selection_metric.add_(self._float_mask_buf, alpha=GpuGlobals.NO_VARIABLE_PENALTY)
                 
                 # 1b. Variable Diversity Penalty (ADDITIVE): penalize formulas missing variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:
-                    var_pen = self._var_diversity_buf
-                    var_pen.fill_(float(len(self._var_token_ids)))  # start at num_variables
-                    for vid in self._var_token_ids:
-                        var_pen.sub_((population == vid).any(dim=1).float())  # subtract 1 per var found
-                    # var_pen is now n_missing_vars (0..num_vars)
-                    # Additive: selection_metric += PENALTY * n_missing
-                    selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                    # BUG-1 FIX: reuse _cached_var_pen (3 × `.any(dim=1)` over 1M elements saved)
+                    if _cached_var_pen is not None:
+                        selection_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                    else:
+                        var_pen = self._var_diversity_buf
+                        var_pen.fill_(float(len(self._var_token_ids)))
+                        for vid in self._var_token_ids:
+                            var_pen.sub_((population == vid).any(dim=1).float())
+                        selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
                 # --- SOTA P1: Pareto NSGA-II blending ---
                 # Every PARETO_INTERVAL gens, compute Pareto ranks on a sample of PARETO_SAMPLE_K
@@ -2211,11 +2478,27 @@ class TensorGeneticEngine:
                         _norm_ages = individual_ages.to(self.dtype) / _age_max
                         selection_metric.add_(_norm_ages, alpha=_alps_pw)
                 
+                # --- [END of Penalty Calculation Block] ---
+                
+                # --- SOTA P4: Lexicase Penalty Injection ---
+                # Fix: Lexicase C++ tournament ignores `selection_metric` and solely uses `abs_errors`.
+                # We extract the pure penalty portion and add it across all test cases.
+                if getattr(GpuGlobals, 'USE_LEXICASE_SELECTION', False) and abs_errors is not None:
+                    penalty_offset = selection_metric - fitness_rmse
+                    torch.clamp_(penalty_offset, min=0.0) # Ensure no negative offset
+                    abs_errors.add_(penalty_offset.unsqueeze(1))
+
                 # Adaptive tournament size: reduce during stagnation to allow more diversity.
                 # Durante global stagnation extendida (>20 gens), bajar floor a 2 para
                 # reducir presión de selección y dar tiempo a estructuras nuevas de crecer.
                 _tour_floor = 2 if global_stagnation > 20 else GpuGlobals.TOURNAMENT_SIZE_FLOOR
                 effective_tournament = max(_tour_floor, GpuGlobals.DEFAULT_TOURNAMENT_SIZE - (stagnation + global_stagnation // 5) // GpuGlobals.TOURNAMENT_ADAPTIVE_DIVISOR)
+                
+                # Phase 3: Adaptive Tournament scaling
+                if getattr(GpuGlobals, 'USE_ADAPTIVE_PARAMETERS', False):
+                    # Bajar el tamaño del torneo durante la agresión permite que individuos mutados
+                    # sobrevivan más fácilmente a pesar de tener fitness mediocre al inicio.
+                    effective_tournament = max(2, int(effective_tournament / self.current_aggression_factor))
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
                 
@@ -2243,7 +2526,8 @@ class TensorGeneticEngine:
                     tournament_size=effective_tournament,
                     pso_steps=0, # Disable global PSO to avoid OOM
                     pso_particles=GpuGlobals.PSO_PARTICLES,
-                    lengths=lengths # Pass lengths for Parsimony Pressure
+                    lengths=lengths, # Pass lengths for Parsimony Pressure
+                    mad_eps=None    # Let it calculate MAD inside or pass if available
                 )
                 
                 if next_pop is not None:
@@ -2258,7 +2542,7 @@ class TensorGeneticEngine:
                     # Fuera del cooldown: siempre activo para proteger el global best.
                     _elite_ok = (_post_restart_cooldown <= 0)
                     if best_rpn is not None and _elite_ok:
-                        best_size = self.get_tree_size(best_rpn)
+                        best_size = self.get_tree_size(best_rpn).item()
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             next_pop[0] = best_rpn
                             next_c[0] = best_consts_vec
@@ -2304,8 +2588,22 @@ class TensorGeneticEngine:
                 selection_metric = self._selection_metric_buf
                 torch.mul(lengths, dynamic_complexity_penalty, out=selection_metric)
                 selection_metric.add_(1.0)
-                selection_metric.mul_(fitness_rmse)
-                selection_metric.add_(lengths, alpha=1e-6)
+                
+                # --- SOTA P3: Tarpeian Bloat Control ---
+                if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
+                    avg_len = lengths.mean()
+                    oversized = lengths > avg_len * 1.5
+                    random_mask = torch.rand(self.pop_size, device=self.device) < getattr(GpuGlobals, 'TARPEIAN_PROBABILITY', 0.3)
+                    penalize_mask = oversized & random_mask
+                    temp_fitness = fitness_rmse.clone()
+                    temp_fitness[penalize_mask] = 1e8
+                    selection_metric.mul_(temp_fitness)
+                else:
+                    selection_metric.mul_(fitness_rmse)
+
+                # Additive Complexity Penalty
+                additive_weight = getattr(GpuGlobals, 'ADDITIVE_COMPLEXITY_PENALTY_WEIGHT', 0.0)
+                selection_metric.add_(lengths, alpha=(1e-6 + additive_weight))
 
                 # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate
                 trivial_mask = lengths <= float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS)
@@ -2381,18 +2679,20 @@ class TensorGeneticEngine:
                         curr = min(chunk_size, total_cross - c_ptr)
                         sub_idx = parents_idx[c_ptr : c_ptr + curr]
                         parents = population[sub_idx]
+                        parents_consts = pop_constants[sub_idx]
+                        
                         # --- SOTA P0: Headless Chicken Crossover ---
-                        # HEADLESS_CHICKEN_RATE% of pairs get a fresh random parent 2,
-                        # forcing structural exploration even in converged populations.
                         _chicken_rate = float(getattr(GpuGlobals, 'HEADLESS_CHICKEN_RATE', 0.15))
                         if _chicken_rate > 0:
-                            offspring = self.operators.headless_chicken_crossover(
-                                parents, pop_constants[sub_idx], 1.0, _chicken_rate
+                            offspring, off_consts = self.operators.headless_chicken_crossover(
+                                parents, parents_consts, 1.0, _chicken_rate
                             )
                         else:
-                            offspring = self.operators.crossover_population(parents, 1.0)
+                            offspring, off_consts = self.operators.crossover_population(
+                                parents, parents_consts, 1.0
+                            )
                         next_pop[p_ptr : p_ptr + curr] = offspring
-                        next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                        next_c[p_ptr : p_ptr + curr] = off_consts
                         p_ptr += curr
                         c_ptr += curr
 
@@ -2404,15 +2704,31 @@ class TensorGeneticEngine:
                         curr = min(chunk_size, total_mut - m_ptr)
                         sub_idx = parents_idx[m_ptr : m_ptr + curr]
                         parents = population[sub_idx]
-                        offspring = parents.clone()
+                        parents_consts = pop_constants[sub_idx]
+                        
+                        # Split mutants: 50% point, 50% subtree
                         n_p = curr // 2
                         n_s = curr - n_p
+                        
+                        off_pop = torch.empty_like(parents)
+                        off_c = torch.empty_like(parents_consts)
+                        
                         if n_p > 0:
-                            offspring[:n_p] = self.operators.mutate_population(offspring[:n_p], current_mutation_rate)
+                            p_pop, p_c = self.operators.mutate_population(
+                                parents[:n_p], parents_consts[:n_p], current_mutation_rate
+                            )
+                            off_pop[:n_p] = p_pop
+                            off_c[:n_p] = p_c
+                            
                         if n_s > 0:
-                            offspring[n_p:] = self.operators.subtree_mutation(offspring[n_p:], 1.0)
-                        next_pop[p_ptr : p_ptr + curr] = offspring
-                        next_c[p_ptr : p_ptr + curr] = pop_constants[sub_idx]
+                            s_pop, s_c = self.operators.subtree_mutation(
+                                parents[n_p:], parents_consts[n_p:], 1.0
+                            )
+                            off_pop[n_p:] = s_pop
+                            off_c[n_p:] = s_c
+                            
+                        next_pop[p_ptr : p_ptr + curr] = off_pop
+                        next_c[p_ptr : p_ptr + curr] = off_c
                         p_ptr += curr
                         m_ptr += curr
 

@@ -119,20 +119,30 @@ __global__ void pso_update_gbest_kernel(
     int b = blockIdx.x;
     if (b >= B) return;
     
-    // Single thread per block logic for simplicity (P is small ~20)
-    if (threadIdx.x == 0) {
-        scalar_t local_best_err = gbest_err[b];
-        int best_p = -1;
-        
-        for (int p = 0; p < P; ++p) {
-            scalar_t err = pbest_err[b * P + p];
-            if (err < local_best_err) {
-                local_best_err = err;
-                best_p = p;
-            }
+    int tid = threadIdx.x;
+    scalar_t local_best_err = (scalar_t)1e30;
+    int best_p = -1;
+
+    // Load error for this thread's particle, if it exists
+    if (tid < P) {
+        local_best_err = pbest_err[b * P + tid];
+        best_p = tid;
+    }
+
+    // Warp-level reduction for minimum error (assuming 32 threads per block)
+    for (int offset = 16; offset > 0; offset /= 2) {
+        scalar_t other_err = __shfl_down_sync(0xffffffff, local_best_err, offset);
+        int other_p = __shfl_down_sync(0xffffffff, best_p, offset);
+        if (other_err < local_best_err) {
+            local_best_err = other_err;
+            best_p = other_p;
         }
-        
-        if (best_p != -1) {
+    }
+
+    // Thread 0 collects the global minimum of the warp
+    if (tid == 0) {
+        // Only update if it beats the current global best
+        if (best_p >= 0 && local_best_err < gbest_err[b]) {
             gbest_err[b] = local_best_err;
             // Copy pos
             for (int k = 0; k < K; ++k) {
@@ -210,9 +220,9 @@ void launch_pso_update_bests(
     }));
     
     // 2. Update GBests (Reduce)
-    // One block per B
+    // One block per B, 32 threads per block (one warp)
     AT_DISPATCH_FLOATING_TYPES(pbest_err.scalar_type(), "pso_update_gbest_kernel", ([&] {
-        pso_update_gbest_kernel<scalar_t><<<B, 1>>>(
+        pso_update_gbest_kernel<scalar_t><<<B, 32>>>(
             pbest_err.data_ptr<scalar_t>(),
             pbest_pos.data_ptr<scalar_t>(),
             gbest_err.data_ptr<scalar_t>(),

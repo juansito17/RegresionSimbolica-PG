@@ -3,9 +3,23 @@ Pattern Memory System for GPU GP Engine - GPU-Native Version.
 
 Stores successful subtrees/patterns using GPU tensor storage with hash-based
 indexing. No CPU loops or .tolist() calls.
+
+OPTIMIZED: Uses CUDA structural hash kernel for consistent, fast hashing.
 """
 import torch
 from typing import Tuple
+
+# Try to import CUDA hash kernel
+try:
+    from sys import path as sys_path
+    from os import path as os_path
+    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
+    if cuda_path not in sys_path: sys_path.append(cuda_path)
+    
+    import rpn_cuda_native
+    CUDA_HASH_AVAILABLE = hasattr(rpn_cuda_native, 'compute_population_hashes')
+except ImportError:
+    CUDA_HASH_AVAILABLE = False
 
 
 class PatternMemory:
@@ -59,19 +73,44 @@ class PatternMemory:
         self.total_recorded = 0
         self.total_injected = 0
     
-    def _compute_pattern_hash(self, patterns: torch.Tensor) -> torch.Tensor:
+    def _compute_pattern_hash(self, patterns: torch.Tensor, use_cuda: bool = True) -> torch.Tensor:
         """
         Compute hash for each pattern in batch. Pure GPU operation.
         
         Args:
             patterns: [N, L] tensor of pattern tokens
+            use_cuda: Whether to use CUDA kernel if available
             
         Returns:
             [N] tensor of hashes
         """
-        L = patterns.shape[1]
-        weights = self.hash_weights[:L]
-        return (patterns * weights).sum(dim=1)
+        if use_cuda and CUDA_HASH_AVAILABLE:
+            # Use CUDA kernel for structural hashing
+            N, L = patterns.shape
+            
+            # Ensure uint8 type for kernel
+            if patterns.dtype != torch.uint8:
+                patterns = patterns.to(torch.uint8)
+            
+            # Prepare outputs
+            hashes = torch.empty(N, dtype=torch.long, device=self.device)
+            var_presence = torch.empty(N, dtype=torch.int32, device=self.device)
+            
+            # Call CUDA kernel (PAD_ID=0, id_x_start=1, num_vars=1 for patterns)
+            # Note: For patterns we don't care about variable presence, but the kernel requires it
+            rpn_cuda_native.compute_population_hashes(
+                patterns, hashes, var_presence,
+                0,  # PAD_ID
+                1,  # id_x_start (assuming x0 starts at ID 1)
+                1   # num_vars (simplified for patterns)
+            )
+            
+            return hashes
+        else:
+            # Fallback: simple weighted hash (pure PyTorch)
+            L = patterns.shape[1]
+            weights = self.hash_weights[:L]
+            return (patterns * weights).sum(dim=1)
     
     def record_subtrees(self, population: torch.Tensor, fitness: torch.Tensor, 
                         grammar, min_size: int = 3, max_size: int = 10):
@@ -166,9 +205,13 @@ class PatternMemory:
             # Compare all new hashes against all existing hashes
             # existing_hashes: [n_patterns], new_hashes: [N]
             existing_hashes = self.patterns_hash[:self.n_patterns]  # [P]
+            existing_patterns = self.patterns_tensor[:self.n_patterns]  # [P, L]
             
-            # Match matrix: [N, P] - True where new[i] matches existing[j]
-            match_matrix = (hashes.unsqueeze(1) == existing_hashes.unsqueeze(0))  # [N, P]
+            # Match matrix requires BOTH hash and exact structural equality.
+            # Hash-only matching can merge distinct patterns under collisions.
+            hash_match = (hashes.unsqueeze(1) == existing_hashes.unsqueeze(0))  # [N, P]
+            pattern_match = (patterns.unsqueeze(1) == existing_patterns.unsqueeze(0)).all(dim=2)  # [N, P]
+            match_matrix = hash_match & pattern_match
             
             # For each new pattern, find if it has a match
             has_match = match_matrix.any(dim=1)  # [N]
@@ -196,7 +239,7 @@ class PatternMemory:
             new_mask = torch.ones(N, dtype=torch.bool, device=self.device)
         
         # 2. Add new patterns to storage
-        new_count = new_mask.sum().item()
+        new_count = int(new_mask.sum())
         if new_count == 0:
             return
         
@@ -246,8 +289,22 @@ class PatternMemory:
             n_to_evict = new_patterns.shape[0]
             if n_to_evict > 0:
                 # Score: higher is worse (more likely to evict)
-                # Low count + high fitness = bad pattern
-                evict_scores = -self.patterns_count.float() + self.patterns_fitness / 100.0
+                # BUG-5 FIX: Usar normalización dinámica para que el fitness tenga peso real
+                # Antes: fitness/100.0 era insignificante cuando fitness está en [0.001, 0.5]
+                # Ahora: combinamos count normalizado + fitness normalizado
+                count_scores = self.patterns_count[:self.n_patterns].float()
+                count_scores = count_scores / (count_scores.max() + 1e-10)  # Normalizar a [0, 1]
+                
+                fit_scores = self.patterns_fitness[:self.n_patterns]
+                fit_min = fit_scores.min()
+                fit_max = fit_scores.max()
+                if fit_max - fit_min > 1e-10:
+                    fit_scores = (fit_scores - fit_min) / (fit_max - fit_min)  # Normalizar a [0, 1]
+                else:
+                    fit_scores = torch.zeros_like(fit_scores)
+                
+                # Score final: bajo count + alto fitness = mal patrón = score alto = candidato a evicción
+                evict_scores = -count_scores + fit_scores
                 
                 # Get indices of worst patterns
                 _, worst_indices = torch.topk(evict_scores[:self.n_patterns], 
@@ -345,7 +402,7 @@ class PatternMemory:
     
     def get_stats(self) -> dict:
         """Get pattern memory statistics."""
-        useful_count = (self.patterns_count[:self.n_patterns] >= self.min_uses).sum().item()
+        useful_count = int((self.patterns_count[:self.n_patterns] >= self.min_uses).sum())
         return {
             'n_patterns': self.n_patterns,
             'total_recorded': self.total_recorded,

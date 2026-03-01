@@ -45,7 +45,10 @@ __pycache__/
 .ipynb_checkpoints/
 venv/
 env/
+.venv/
 .env
+.pytest_cache/
+*.egg-info/
 
 # Data, Caches & Logs
 logs/
@@ -61,6 +64,13 @@ cache/
 *.pkl
 *.bak
 *.temp
+git_status.txt
+gitignore_content.txt
+root_files.txt
+untracked_not_ignored.txt
+files_list.txt
+untracked_not_ignored.txt
+*.tmp
 
 # Project specific
 AlphaSymbolic/data/*.json
@@ -68,6 +78,8 @@ pattern_memory.json
 hh.py
 comparison_results.txt
 build_log_v2.txt
+AlphaSymbolic/notebooks/AlphaSymbolic_Colab.ipynb
+Code/notebooks/GoogleColab_Project.ipynb
 
 # GPU / CUDA specific
 AlphaSymbolic/core/gpu/cache/

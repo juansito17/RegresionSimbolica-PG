@@ -3,7 +3,7 @@ Algebraic Simplification Module for AlphaSymbolic.
 Uses SymPy for symbolic math simplification.
 """
 import sympy as sp
-from core.grammar import Node, ExpressionTree, OPERATORS
+from AlphaSymbolic.core.grammar import Node, ExpressionTree, OPERATORS
 
 # SymPy symbols
 x_sym = sp.Symbol('x')
@@ -103,7 +103,7 @@ def simplify_infix(infix_str):
 
 # Quick test
 if __name__ == "__main__":
-    from core.grammar import ExpressionTree
+    from AlphaSymbolic.core.grammar import ExpressionTree
     
     # Test: x + 0 should simplify to x
     tokens = ['+', 'x', '0']

@@ -4,9 +4,9 @@ Explores multiple formula candidates in parallel, keeping top-K at each step.
 """
 import torch
 import numpy as np
-from core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree, OPERATOR_STAGES
-from utils.optimize_constants import optimize_constants
-from utils.data_utils import normalize_batch
+from AlphaSymbolic.core.grammar import VOCABULARY, OPERATORS, TOKEN_TO_ID, ExpressionTree, OPERATOR_STAGES
+from AlphaSymbolic.utils.optimize_constants import optimize_constants
+from AlphaSymbolic.utils.data_utils import normalize_batch
 
 class BeamSearch:
     def __init__(self, model, device, beam_width=10, max_length=30, curriculum_stage=None, num_variables=1):
@@ -24,7 +24,7 @@ class BeamSearch:
         mask = torch.zeros(self.vocab_size, device=device)
         
         # Determine allowed variables
-        from core.grammar import VARIABLES
+        from AlphaSymbolic.core.grammar import VARIABLES
         if num_variables == 1:
             allowed_vars = set(['x', 'x0'])
         else:
@@ -245,7 +245,7 @@ def beam_solve(target_x, target_y, model, device, beam_width=20, max_length=25, 
 
 
 if __name__ == "__main__":
-    from core.model import AlphaSymbolicModel
+    from AlphaSymbolic.core.model import AlphaSymbolicModel
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     VOCAB_SIZE = len(VOCABULARY)

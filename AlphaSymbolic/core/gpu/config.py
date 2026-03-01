@@ -55,26 +55,26 @@ class GpuGlobals:
     GENERATIONS = 1_000_000
     
     # Islands
-    NUM_ISLANDS = 50              # OPTIMIZED: 50 islas de 80k c/u → más diversidad (era 25)
+    NUM_ISLANDS = 20              # RELIEVED: 20 larger islands (50k each) instead of 50 small ones (20k).
     MIN_POP_PER_ISLAND = 80
     
     # Migration
-    MIGRATION_INTERVAL = 30                    # OPTIMIZED: más aislamiento (era 15)
+    MIGRATION_INTERVAL = 30                    # SLOWER: Let islands deviate more before mixing (was 100 or 10)
     MIGRATION_INTERVAL_STAGNATION = 25         # Slower migration during island stagnation
     MIGRATION_INTERVAL_GLOBAL_STAGNATION = 300 # NEW: durante global stagnation > 20 → casi no migrar para mantener islas aisladas
     MIGRATION_STAGNATION_THRESHOLD = 10
     MIGRATION_SIZE = 80                # OPTIMIZED: más individuos por migración (era 50)
 
     # Stagnation & Restarts
-    STAGNATION_LIMIT = 15              # OPTIMIZED: balance entre exploración y escape (was 20→15)
-    GLOBAL_STAGNATION_LIMIT = 40       # ANTI-STAG: 80→40. Escalar restarts más rápido para escapar antes
-    STAGNATION_RANDOM_INJECT_PERCENT = 0.05  # FIX: 5% para no destruir elites durante cooldown (era 0.50)
+    STAGNATION_LIMIT = 40              # INCREASED: More time for local refinement (was 25)
+    GLOBAL_STAGNATION_LIMIT = 60       # REVERTED: Trigger global restart faster to escape local minima (was 120)
+    STAGNATION_RANDOM_INJECT_PERCENT = 0.10  # Reduced slightly to keep more elites during plateau.
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
-    CATACLYSM_ELITE_PERCENT = 0.06     # FIX: cataclismos más agresivos — menos elites = más diversidad (era 0.12)
+    CATACLYSM_ELITE_PERCENT = 0.04     # Mantenemos pocos elites para forzar diversidad
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
-    SOFT_RESTART_ELITE_RATIO = 0.04    # FIX: muy pocos elites en restart → fuerza diversidad estructural (era 0.15)
+    SOFT_RESTART_ELITE_RATIO = 0.0001  # ULTRA-LOW: Solo 100 elites de 1M (era 0.001) — fuerza nuevas estructuras.
     ESCALATE_RESTART_LIMIT = 1         # ANTI-STAG: 2→1. TRUE HARD restart después del 1er soft restart sin mejora
     
     USE_STRUCTURAL_RESTART_INJECTION = False  # Sin bias de estructura — búsqueda completamente aleatoria
@@ -91,25 +91,31 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = True
+    USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
-    INITIAL_FORMULA_STRING = "log(((((lgamma(x0) * pi) + ((1 + 1.10762465)**(e + lgamma((x0 - 3.24382305))))) - lgamma(fact(x1))) + (sqrt(x0)**((exp(2) - x1)**x2))))"
+    # Fitness = 0.00422584, Size = 64
+    #INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
 
-    USE_STRUCTURAL_SEEDS = False       # Generate polynomial/trig basis seeds
+    # Fitness = 0.00064572, Size = 128
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + ((pi * 4) / lgamma((x0 - (fact(x1)**(sqrt(lgamma((((x0 - ((6**(4 - x1))**(-(x2)))) - sqrt(sqrt(x1))) - x1))) - x1)))))) + (x0 + fact(((6**(((e * x1) / 3)**(-(x2)))) / (((20.1429615 + 3) + ((sqrt((x0 - 4))**(x1 - (x0 - (lgamma((x0 - (x0**(-(sqrt(sqrt(x1))))))) - (x0 + fact(((lgamma(x0) - x0) / (fact(((exp(3) * (2**(-(x2)))) / ((x1 / 3) - 4))) - 2)))))))) - x0)) - x0)))))))))" 
+
+
+    USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
+    MAX_FORMULA_LENGTH = 16
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
-    MAX_TREE_DEPTH_MUTATION = 10   # ANTI-STAG: 6→10. Subtrees más grandes compiten con el elite inyectado
+    MAX_TREE_DEPTH_MUTATION = 25   # OPTIMIZED: Large subtrees allowed (up to 51 tokens) to shatter local minima.
 
     # Constants — reduced from 15 to 8: typical formulas use 3-5 constants.
     # Smaller K = faster PSO (47% fewer dimensions to optimize).
-    MAX_CONSTANTS = 8
-    CONSTANT_MIN_VALUE = -10.0
-    CONSTANT_MAX_VALUE = 10.0
-    CONSTANT_INT_MIN_VALUE = -10
-    CONSTANT_INT_MAX_VALUE = 10
+    MAX_CONSTANTS = 10                 # INCREASED: Más flexibilidad estructural (era 8)
+    CONSTANT_MIN_VALUE = -25.0
+    CONSTANT_MAX_VALUE = 25.0
+    CONSTANT_INT_MIN_VALUE = -25
+    CONSTANT_INT_MAX_VALUE = 25
     FORCE_INTEGER_CONSTANTS = False # Force int constants in PSO
     CONSTANT_PRECISION = 8          # Number of decimal places to show in formulas (Console)
 
@@ -146,9 +152,9 @@ class GpuGlobals:
         0.02 * (1.0 if USE_OP_MOD else 0.0),
         0.10 * (1.0 if USE_OP_SIN else 0.0),
         0.10 * (1.0 if USE_OP_COS else 0.0),
-        0.10 * (1.0 if USE_OP_TAN else 0.0),
-        0.05 * (1.0 if USE_OP_LOG else 0.0),
-        0.05 * (1.0 if USE_OP_EXP else 0.0),
+        0.05 * (1.0 if USE_OP_TAN else 0.0), # REDUCED: Tan suele ser inestable
+        0.08 * (1.0 if USE_OP_LOG else 0.0), # INCREASED log/exp weight
+        0.08 * (1.0 if USE_OP_EXP else 0.0),
         # OPTIMIZED: fact/lgamma/pow aumentados para N-Queens (fórmula objetivo usa lgamma)
         0.08 * (1.0 if USE_OP_FACT else 0.0),
         0.01 * (1.0 if USE_OP_FLOOR else 0.0),
@@ -166,29 +172,34 @@ class GpuGlobals:
     #                  5. GENETIC OPERATORS
     # ============================================================
     # Rates
-    BASE_MUTATION_RATE = 0.18      # OPTIMIZED: más exploración estructural (era 0.15)
-    DEFAULT_CROSSOVER_RATE = 0.60
+    BASE_MUTATION_RATE = 0.22      # REVERTED: 22% (was 0.30) to reduce structural noise.
+    DEFAULT_CROSSOVER_RATE = 0.50  # INCREASED: 50% (was 0.40) to drive convergence via SBX and structural exchange.
     
     # Adaptive Mutation
-    MUTATION_RATE_CAP = 0.70
-    MUTATION_RAMP_PER_GEN = 0.015
-    MUTATION_STAGNATION_TRIGGER = 5
+    MUTATION_RATE_CAP = 0.60       # INCREASED: Cap más alto (era 0.50)
+    MUTATION_RAMP_PER_GEN = 0.02
+    MUTATION_STAGNATION_TRIGGER = 8
     
     # Selection
-    DEFAULT_TOURNAMENT_SIZE = 5
+    DEFAULT_TOURNAMENT_SIZE = 7    # OPTIMIZED: Balance between exploration and exploitation.
     TOURNAMENT_SIZE_FLOOR = 3
-    TOURNAMENT_ADAPTIVE_DIVISOR = 6
-    BASE_ELITE_PERCENTAGE = 0.12
+    TOURNAMENT_ADAPTIVE_DIVISOR = 5
+    BASE_ELITE_PERCENTAGE = 0.12   # Keep good structures
+    
+    # Adaptive Evolution (Ported from AdvancedFeatures.cpp)
+    USE_ADAPTIVE_PARAMETERS = True      # Enable dynamic mutation/tournament size
+    ADAPTIVE_STAGNATION_TRIGGER = 8     # Gens to wait before increasing aggression
+    MAX_AGGRESSION_FACTOR = 2.0         # Max scaling for mutation/crossover rates
     
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
-    DEDUPLICATION_INTERVAL = 50
+    DEDUPLICATION_INTERVAL = 100   # SPEED: menos overhead de escaneo (era 50)
     
     # --- SOTA P0: Headless Chicken Crossover ---
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
     # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
     # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
-    HEADLESS_CHICKEN_RATE = 0.15       # 15% de crossovers usan un padre aleatorio
+    HEADLESS_CHICKEN_RATE = 0.10       # REDUCED: Focus on exploiting good parents (was 0.30)
     
     # --- SOTA P1: Depth-Fair Crossover ---
     # Standard crossover picks a random NODE as swap point → large subtrees dominate selection.
@@ -202,10 +213,10 @@ class GpuGlobals:
     # giving younger, freshly produced individuals a better chance.
     # Layer 0 is periodically reseeded with fresh random individuals.
     # Based on: Hornby (2006) — no single algorithm dominates ALPS.
-    USE_ALPS = True                    # Enable age-layered selection pressure
+    USE_ALPS = False                   # DISABLED: Destroys fast convergence (from benchmark)
     ALPS_AGE_GAP = 10                  # Gens between layer boundaries (layer_idx = age // gap)
     ALPS_MAX_LAYER = 5                 # Max layer index (beyond = capped, treated as =max)
-    ALPS_AGE_PENALTY_WEIGHT = 0.05    # Weight of age penalty in selection_metric
+    ALPS_AGE_PENALTY_WEIGHT = 0.02    # REDUCED: Allow older elites more survival time (was 0.05)
     ALPS_LAYER0_RESEED_INTERVAL = 50  # Every N gens, reseed layer-0 individuals from scratch
     ALPS_LAYER0_RESEED_FRACTION = 0.01 # Fraction of pop_size to reseed as fresh individuals
 
@@ -239,10 +250,11 @@ class GpuGlobals:
     # PySR uses this natively; AlphaSymbolic now has it too.
     # Non-dominated sort is O(N²) — we run it on a sampled subset (PARETO_SAMPLE_K)
     # and blend the resulting rank into the selection metric.
-    USE_PARETO_SELECTION = True        # Enable NSGA-II Pareto blending
+    USE_PARETO_SELECTION = False       # DISABLED: Slows down numerical convergence (from benchmark)
     PARETO_SAMPLE_K = 2000             # Subset size for Pareto sort (per island sample)
-    PARETO_RANK_WEIGHT = 0.15          # How much Pareto rank adds to selection_metric
-    PARETO_INTERVAL = 5                # Run Pareto sort every N generations (amortize cost)
+    PARETO_RANK_WEIGHT = 0.05          # REDUCED: 0.15 was suppressing valid structural candidates (was 0.15)
+    PARETO_INTERVAL = 10               # Frequency of Pareto updates
+    PARETO_MAX_FRONT_SIZE = 30
 
 
     # ============================================================
@@ -250,13 +262,18 @@ class GpuGlobals:
     # ============================================================
     LOSS_FUNCTION = 'RMSE'
     
-    # Validation
+    # Validations & Penalties
     FORCE_STRICT_VALIDATION = True     # Strict math Mode (No protected operators)
     
     # Penalties
-    COMPLEXITY_PENALTY = 0.02
-    TRIVIAL_FORMULA_PENALTY = 1.5
-    NO_VARIABLE_PENALTY = 2.5
+    COMPLEXITY_PENALTY = 0.01          # REVERTED: 0.01 allows more complex formulas to compete (was 0.04)
+    ADDITIVE_COMPLEXITY_PENALTY_WEIGHT = 0.0 # DISABLED: Too aggressive (was 0.001)
+    TRIVIAL_FORMULA_PENALTY = 1.0
+    NO_VARIABLE_PENALTY = 1.5
+    
+    # Bloat Control
+    USE_TARPEIAN_CONTROL = True        # Randomly assign worst fitness to bloated formulas
+    TARPEIAN_PROBABILITY = 0.1         # REDUCED: 0.3 was killing too many promising individuals
     TRIVIAL_FORMULA_MAX_TOKENS = 2
     TRIVIAL_FORMULA_ALLOW_RMSE = 1e-3
     
@@ -276,11 +293,11 @@ class GpuGlobals:
     # ============================================================
     # Particle Swarm Optimization (PSO)
     USE_NANO_PSO = True
-    PSO_INTERVAL = 2
+    PSO_INTERVAL = 3               # SPEED: cada 3 gens libera más GPU al GA (era 2)
     PSO_PARTICLES = 30
     PSO_STEPS_NORMAL = 40          # OPTIMIZED: más pasos por individuo (was 25→40)
     PSO_STEPS_STAGNATION = 80      # FIX: más pasos para escapar mínimo local (was 40→60→80)
-    PSO_K_NORMAL = 400             # OPTIMIZED: menos individuos, más profundidad (was 800→400)
+    PSO_K_NORMAL = 200             # SPEED: menos individuos en modo normal (era 400)
     PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
     PSO_STAGNATION_THRESHOLD = 10
     # ANTI-STAG: PSO adaptativo. Si el best_rpn no cambió desde el último PSO run,
@@ -288,20 +305,19 @@ class GpuGlobals:
     PSO_ADAPTIVE = True
     PSO_SKIP_GENS = 6              # ANTI-STAG: saltar PSO cada N gens si no hubo cambio estructural
 
-    # L-BFGS-B Constant Optimizer (2nd order, ~10x faster than PSO for smooth landscapes)
-    # PySR usa BFGS internamente — esta es la clave para superarlo en poly/trig.
-    # REVERTIDO: Adam FD vectorizado añade overhead Python (40 evaluate_batch calls/run)
-    # que duplica el tiempo total sin mejorar calidad — PSO fused CUDA ya optimiza constants
-    # de las top-400 fórmulas en un único kernel launch cada 2 gens (mejor eficiencia).
-    USE_BFGS_OPTIMIZER = False
-    BFGS_INTERVAL = 50
-    BFGS_TOP_K = 20
-    BFGS_MAX_ITER = 3
+    # L-BFGS-B Constant Optimizer
+    USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
+    BFGS_INTERVAL = 15             # SPEED: Run L-BFGS-B every 15 gens (era 10)
+    BFGS_TOP_K = 50                # Refine top 50 elites island-wide
+    BFGS_MAX_ITER = 20             # OPTIMIZED: 20 iterations (Cheaper with native gradients)
     
     # Simplification
     USE_SIMPLIFICATION = True
     USE_SYMPY = False             # Heavy symbolic simplification (Slow)
     USE_CONSOLE_BEST_SIMPLIFICATION = False
+    # Extra cleanup passes after CUDA simplify use Python fallback and can trigger
+    # heavy GPU->CPU sync overhead. Keep at 0 for pure CUDA simplification path.
+    SIMPLIFY_CUDA_CLEANUP_PASSES = 0
     SIMPLIFICATION_INTERVAL = 10
     K_SIMPLIFY = 50
     SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9
@@ -309,18 +325,17 @@ class GpuGlobals:
     
     # Residual Boosting
     USE_RESIDUAL_BOOSTING = True
+    USE_SNIPER = True              # ENABLED: PHASE 8 Escape stagnation
     RESIDUAL_BOOST_INTERVAL = 20
 
     # ============================================================
     #                  8. ADVANCED FEATURES
     # ============================================================
-    # Selection Strategies
-    # LEXICASE: Disabled — computes [B×D] error matrix every gen = 68MB/gen overhead.
-    # Tournament selection with complexity penalty is sufficient.
+    # LEXICASE: Habilidad experimental activada. Evalúa fitness punto por punto.
+    # Essential for escaping deep N-Queens local minima (e.g. 0.017).
     USE_LEXICASE_SELECTION = False
-    USE_PARETO_SELECTION = True
-    PARETO_INTERVAL = 15           # OPTIMIZED: less overhead (was 5)
-    PARETO_MAX_FRONT_SIZE = 30
+    USE_LEXICASE_SUB_SAMPLING = True    # SPEED: Sample a subset of points for Lexicase
+    LEXICASE_SUB_SAMPLE_SIZE = 128      # Memory-efficient subset size (RTX 3050 friendly)
     
     # Pattern Memory
     USE_PATTERN_MEMORY = True
@@ -333,8 +348,7 @@ class GpuGlobals:
     PATTERN_MAX_SIZE = 12
     PATTERN_MAX_PATTERNS = 200     # OPTIMIZED: más memoria genética (era 100)
     
-    # Neural / MCTS / Sniper (Disabled/Experimental)
-    USE_SNIPER = False
+    # Neural / MCTS (Experimental)
     USE_NEURAL_FLASH = False
     NEURAL_FLASH_INTERVAL = 50
     NEURAL_FLASH_INJECT_PERCENT = 0.10
@@ -346,6 +360,9 @@ class GpuGlobals:
     #                  9. REPORTING & EXIT
     # ============================================================
     PROGRESS_REPORT_INTERVAL = 100
+    # Console table forces preds.detach().cpu().numpy() on every new best.
+    # Disable to avoid frequent GPU->CPU synchronization and CPU spikes.
+    CONSOLE_SHOW_PREDICTION_TABLE = True
     
     # Early Exit
     EXACT_SOLUTION_THRESHOLD = 1e-6

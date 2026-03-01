@@ -21,11 +21,11 @@
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-#define PSO_STACK_SIZE 32
-#define PSO_MAX_L 30
-#define PSO_MAX_K 15
-#define PSO_MAX_D 64      // max data samples
-#define PSO_MAX_PARTICLES 32
+#define PSO_STACK_SIZE 64
+#define PSO_MAX_L 256
+#define PSO_MAX_K 32
+#define PSO_MAX_D 1024      // max data samples
+#define PSO_MAX_PARTICLES 64
 
 // ===================== Device: Inline RPN Evaluator =====================
 // Evaluates a single formula on a single data point, with given constants.
@@ -276,13 +276,20 @@ __global__ void fused_pso_kernel(
     scalar_t pbest_err = (scalar_t)1e30;
 
     // Init position: particle 0 gets exact initial guess, others get jittered
+    // BUG-PSO-2 FIX: scale jitter to 15% of const range (was fixed σ=1, exploring <2% of space)
+    const scalar_t range = (scalar_t)(const_max - const_min);
+    const scalar_t jitter_sigma = range * (scalar_t)0.15f;   // 15% of range
+    const scalar_t vel_sigma    = range * (scalar_t)0.02f;   // 2% of range for velocity
     const scalar_t* init = &init_consts[b * K];
     for (int k = 0; k < K; k++) {
         pos[k] = init[k];
         if (p > 0 && k < n_active) {
-            pos[k] += curand_normal(&rng) * 1.0f;
+            pos[k] += curand_normal(&rng) * jitter_sigma;
+            // Clamp to bounds immediately after jitter
+            if (pos[k] < const_min) pos[k] = const_min;
+            if (pos[k] > const_max) pos[k] = const_max;
         }
-        vel[k] = curand_normal(&rng) * 0.1f;
+        vel[k] = curand_normal(&rng) * vel_sigma;
         pbest_pos[k] = pos[k];
     }
 

@@ -94,7 +94,7 @@ class GPUSimplifier:
             # Engine had `infix_to_rpn_tensor`.
             # Let's import from a shared place or reimplement minimal.
             # Importing ExpressionTree is best.
-            from core.grammar import ExpressionTree
+            from AlphaSymbolic.core.grammar import ExpressionTree
             tree = ExpressionTree.from_infix(simplified_str)
             if not tree.is_valid: return rpn_tensor, constants, False
             

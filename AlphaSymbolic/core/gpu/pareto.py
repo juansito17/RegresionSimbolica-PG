@@ -35,6 +35,19 @@ class ParetoOptimizer:
         not_worse = (a_fit <= b_fit) and (a_comp <= b_comp)
         
         return not_worse and at_least_one_better
+
+    def _sanitize_objectives(self, fitness: torch.Tensor, complexity: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Replace non-finite objective values with +inf so they are treated as worst.
+        This avoids NaN propagation that can incorrectly place invalid individuals
+        in the first Pareto front.
+        """
+        valid = torch.isfinite(fitness) & torch.isfinite(complexity)
+        inf_fit = torch.full_like(fitness, float('inf'))
+        inf_comp = torch.full_like(complexity, float('inf'))
+        fit_safe = torch.where(valid, fitness, inf_fit)
+        comp_safe = torch.where(valid, complexity, inf_comp)
+        return fit_safe, comp_safe
     
     
     def non_dominated_sort(self, fitness: torch.Tensor, complexity: torch.Tensor) -> Tuple[List[torch.Tensor], torch.Tensor]:
@@ -58,8 +71,7 @@ class ParetoOptimizer:
         # We need to compare every i with every j
         # Inner loop compares a Block of 'i' against ALL 'j'
         
-        fit_flat = fitness
-        comp_flat = complexity
+        fit_flat, comp_flat = self._sanitize_objectives(fitness, complexity)
         
         for i_start in range(0, n, block_size):
             i_end = min(i_start + block_size, n)
@@ -165,7 +177,8 @@ class ParetoOptimizer:
         Used for Tournament Selection.
         High Crowding Distance is good (for same rank).
         """
-        fronts, ranks = self.non_dominated_sort(fitness, complexity)
+        fit_safe, comp_safe = self._sanitize_objectives(fitness, complexity)
+        fronts, ranks = self.non_dominated_sort(fit_safe, comp_safe)
         n = fitness.shape[0]
         crowding = torch.zeros(n, dtype=self.dtype, device=self.device)
         
@@ -178,25 +191,29 @@ class ParetoOptimizer:
                  continue
                  
              # Gather values
-             f_vals = fitness[front]
-             c_vals = complexity[front]
+             f_vals = fit_safe[front]
+             c_vals = comp_safe[front]
              
              # Sub-crowding
              dists = torch.zeros(k, dtype=self.dtype, device=self.device)
              
              # Objective 1: Fitness
              sorted_idx = torch.argsort(f_vals)
-             dists[sorted_idx[0]] = float('inf')
-             dists[sorted_idx[-1]] = float('inf')
-             r = f_vals[sorted_idx[-1]] - f_vals[sorted_idx[0]]
+             min_f = f_vals[sorted_idx[0]]
+             max_f = f_vals[sorted_idx[-1]]
+             r = max_f - min_f
+             dists[f_vals == min_f] = float('inf')
+             dists[f_vals == max_f] = float('inf')
              if r > 1e-9:
                  dists[sorted_idx[1:-1]] += (f_vals[sorted_idx[2:]] - f_vals[sorted_idx[:-2]]) / r
                  
              # Objective 2: Complexity
              sorted_idx = torch.argsort(c_vals)
-             dists[sorted_idx[0]] = float('inf')
-             dists[sorted_idx[-1]] = float('inf')
-             r = c_vals[sorted_idx[-1]] - c_vals[sorted_idx[0]]
+             min_c = c_vals[sorted_idx[0]]
+             max_c = c_vals[sorted_idx[-1]]
+             r = max_c - min_c
+             dists[c_vals == min_c] = float('inf')
+             dists[c_vals == max_c] = float('inf')
              if r > 1e-9:
                  dists[sorted_idx[1:-1]] += (c_vals[sorted_idx[2:]] - c_vals[sorted_idx[:-2]]) / r
                  
@@ -208,7 +225,8 @@ class ParetoOptimizer:
         """
         Select n_select individuals using NSGA-II selection (Rank + Crowding).
         """
-        fronts, ranks = self.non_dominated_sort(fitness, complexity)
+        fit_safe, comp_safe = self._sanitize_objectives(fitness, complexity)
+        fronts, ranks = self.non_dominated_sort(fit_safe, comp_safe)
         # We need crowding for filtering the last front
         # But we can use compute_ranks_and_crowding if we want full metrics
         # For selection we just iterate fronts
@@ -226,21 +244,23 @@ class ParetoOptimizer:
                 rem = n_select - count
                 
                 # Compute crowding ONLY for this front (faster)
-                f_vals = fitness[front]
-                c_vals = complexity[front]
+                f_vals = fit_safe[front]
+                c_vals = comp_safe[front]
                 
                 dists = torch.zeros(k, dtype=self.dtype, device=self.device)
                 
                 # Fit
                 idx = torch.argsort(f_vals)
-                dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')
-                r = f_vals[idx[-1]] - f_vals[idx[0]]
+                min_f = f_vals[idx[0]]; max_f = f_vals[idx[-1]]
+                dists[f_vals == min_f] = float('inf'); dists[f_vals == max_f] = float('inf')
+                r = max_f - min_f
                 if r > 1e-9: dists[idx[1:-1]] += (f_vals[idx[2:]] - f_vals[idx[:-2]]) / r
                 
                 # Comp
                 idx = torch.argsort(c_vals)
-                dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')
-                r = c_vals[idx[-1]] - c_vals[idx[0]]
+                min_c = c_vals[idx[0]]; max_c = c_vals[idx[-1]]
+                dists[c_vals == min_c] = float('inf'); dists[c_vals == max_c] = float('inf')
+                r = max_c - min_c
                 if r > 1e-9: dists[idx[1:-1]] += (c_vals[idx[2:]] - c_vals[idx[:-2]]) / r
                 
                 _, best_local = torch.topk(dists, rem, largest=True) # Max crowding
@@ -251,24 +271,27 @@ class ParetoOptimizer:
         return torch.cat(selected_indices)
 
     def get_pareto_front(self, fitness: torch.Tensor, complexity: torch.Tensor) -> List[int]:
-        fronts, _ = self.non_dominated_sort(fitness, complexity)
+        fit_safe, comp_safe = self._sanitize_objectives(fitness, complexity)
+        fronts, _ = self.non_dominated_sort(fit_safe, comp_safe)
         if not fronts: return []
         front = fronts[0]
         
         if front.shape[0] > self.max_front_size:
             # Prune by crowding
-             f_vals = fitness[front]
-             c_vals = complexity[front]
+             f_vals = fit_safe[front]
+             c_vals = comp_safe[front]
              k = front.shape[0]
              dists = torch.zeros(k, dtype=self.dtype, device=self.device)
              
              idx = torch.argsort(f_vals)
-             dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf')
-             if (f_vals[idx[-1]]-f_vals[idx[0]]) > 1e-9: dists[idx[1:-1]] += (f_vals[idx[2:]]-f_vals[idx[:-2]])/(f_vals[idx[-1]]-f_vals[idx[0]])
+             min_f = f_vals[idx[0]]; max_f = f_vals[idx[-1]]
+             dists[f_vals == min_f] = float('inf'); dists[f_vals == max_f] = float('inf')
+             if (max_f - min_f) > 1e-9: dists[idx[1:-1]] += (f_vals[idx[2:]]-f_vals[idx[:-2]])/(max_f - min_f)
 
              idx = torch.argsort(c_vals)
-             dists[idx[0]] = float('inf'); dists[idx[-1]] = float('inf') 
-             if (c_vals[idx[-1]]-c_vals[idx[0]]) > 1e-9: dists[idx[1:-1]] += (c_vals[idx[2:]]-c_vals[idx[:-2]])/(c_vals[idx[-1]]-c_vals[idx[0]])
+             min_c = c_vals[idx[0]]; max_c = c_vals[idx[-1]]
+             dists[c_vals == min_c] = float('inf'); dists[c_vals == max_c] = float('inf') 
+             if (max_c - min_c) > 1e-9: dists[idx[1:-1]] += (c_vals[idx[2:]]-c_vals[idx[:-2]])/(max_c - min_c)
              
              _, top_idx = torch.topk(dists, self.max_front_size)
              front = front[top_idx]

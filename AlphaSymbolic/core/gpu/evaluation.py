@@ -1,7 +1,7 @@
 
 import torch
 from typing import Tuple
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
 
@@ -13,7 +13,14 @@ class GPUEvaluator:
         self.dtype = dtype
         
         # Max Float safe value
-        self.INF_VAL = 1e30 if dtype == torch.float32 else 1e300
+        # FIX BUG-3: 1e20 squared = 1e40 which OVERFLOWS float32 (max ~3.4e38).
+        # Use 1e15 which is safe for:
+        # - sqrt(1e15) = 3.16e7 (OK)
+        # - mean([1e15]) = 1e15 (OK)
+        # - 1e15^2 = 1e30 (OK, well under 3.4e38)
+        # - 10 * 1e15 = 1e16 (OK)
+        # For float64, 1e100 is safe.
+        self.INF_VAL = 1e15 if dtype == torch.float32 else 1e100
         
         # P1-4: Pre-create cached scalar tensor to avoid repeated allocations
         self._inf_tensor = torch.tensor(self.INF_VAL, device=self.device, dtype=self.dtype)
@@ -21,6 +28,7 @@ class GPUEvaluator:
         # New Native VM
         from .cuda_vm import CudaRPNVM
         self.vm = CudaRPNVM(grammar, device)
+        self._disable_fused_eval = False
 
     def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -37,15 +45,12 @@ class GPUEvaluator:
     def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
         """
         Evaluates the RPN population on the GPU over multiple samples.
-        x: [Vars, Samples]
-        y_target: [Samples]
-        constants: [PopSize, K]
-        Returns: RMSE per individual [PopSize]
+        Fast path: fused kernel (block-per-individual, 0 warp divergence, RMSE computed inside kernel).
+        Fallback: original chunked path (RMSLE or fused kernel unavailable).
         """
         B_pop, L = population.shape
-        
-        # Determine number of samples
-        # x is [Vars, Samples]
+
+        # ── Shape normalization ──
         if x.dim() == 1:
             # Single variable, N samples? Or 1 sample D vars?
             # Assume 1 var, N samples if 1D?
@@ -91,17 +96,33 @@ class GPUEvaluator:
             elif x.shape[0] == y_target.shape[0] and x.shape[0] != x.shape[1]:
                 # Matches [Samples, Vars] -> Transpose
                 x = x.T.contiguous()
-        
+
         N_vars, N_samples = x.shape
-        
-        # We need to run B_pop * N_samples executions
-        
-        # 1. Expand Population: Virtual (Chunking handles it)
-        # We process in chunks to avoid OOM
-        
-        # We process in chunks to avoid OOM
-        # Optimized for RTX 3050 (4GB) with small dataset (25 samples)
-        # 200,000 individuals * 25 samples * 8 bytes ~ 40MB per buffer
+
+        # ── Fast path: fused kernel ──
+        # Returns [B] RMSE directly from GPU — no B×D intermediate buffers.
+        can_try_fused = (
+            GpuGlobals.LOSS_FUNCTION == 'RMSE' and
+            hasattr(self.vm, 'eval_fused') and
+            not self._disable_fused_eval and
+            B_pop <= 1_500_000 and
+            population.is_cuda and
+            x.is_cuda and
+            y_target.is_cuda and
+            (constants is None or constants.is_cuda)
+        )
+
+        if can_try_fused:
+            try:
+                y_in = y_target.flatten().to(x.dtype)
+                c_in = constants.to(x.dtype) if (constants is not None and constants.dtype != x.dtype) else constants
+                rmse = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode)
+                return rmse.to(self.dtype)
+            except Exception:
+                # Avoid repeated exception overhead in hot loops.
+                self._disable_fused_eval = True
+
+        # ── Original chunked path (RMSLE or fused unavailable) ──
         max_chunk_inds = 1000000
         
         # Pre-allocate output buffer (avoid torch.cat at the end)
@@ -109,15 +130,14 @@ class GPUEvaluator:
         
         # Pre-process Target
         y_target_chunk = y_target.flatten().unsqueeze(0) # [1, N]
+        if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
+            log_target_chunk = torch.log(torch.abs(y_target_chunk) + 1.0)
         
-        # Transpose X for Cupy VM: [N, Vars] -> NO, CUDA VM expects [Vars, N]
-        # cupy_vm expects x as [Samples, Features] and expands population against it
-        # But CUDA VM expects [Vars, Samples] for coalescing.
-        # x is [Vars, Samples] here.
         x_for_vm = x 
         
         for i in range(0, B_pop, max_chunk_inds):
             end_i = min(B_pop, i + max_chunk_inds)
+
             
             # Sub-batch of population
             sub_pop = population[i:end_i]
@@ -130,25 +150,22 @@ class GPUEvaluator:
             
             # Process Validity within chunk: (Stack OK) AND (No Kernel Error)
             is_valid = (sp == 1) & (err == 0)
+            is_valid_pt = is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds)
             
-            # Penalize: Replace invalid, NaNs or Infs with INF_VAL
-            # This must be done BEFORE calculating diff to avoid INF/NaN leakage
-            f_preds = torch.where(is_valid & ~torch.isnan(f_preds) & ~torch.isinf(f_preds), 
-                                  f_preds, 
-                                  self._inf_tensor)
+            # Penalize: Replace invalid, NaNs or Infs temporarily with 0.0 for math stability
+            f_preds_safe = torch.where(is_valid_pt, f_preds, torch.zeros_like(f_preds))
             
             # Reshape to [current_B, N]
-            preds_mat = f_preds.view(current_B, N_samples)
+            preds_mat = f_preds_safe.view(current_B, N_samples)
+            valid_mat = is_valid_pt.view(current_B, N_samples)
+            ind_is_valid = valid_mat.all(dim=1)
             
             # Compare (Broadcasting y_target [1, N])
             if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
                 # RMSLE: log(pred + 1) - log(target + 1)
-                # We use abs() to handle negative predictions gracefully, though ideally models shouldn't produce them for count data.
-                # Clamp to avoid log(0)
                 log_pred = torch.log(torch.abs(preds_mat) + 1.0)
-                log_target = torch.log(torch.abs(y_target_chunk) + 1.0)
                 
-                diff = log_pred - log_target
+                diff = log_pred - log_target_chunk
                 sq_diff = diff**2
                 mse = torch.mean(sq_diff, dim=1) # [current_B]
                 
@@ -166,6 +183,9 @@ class GPUEvaluator:
                                               self._inf_tensor, 
                                               mse))
                                           
+            # Apply absolute penalty to completely invalid individuals AFTER log scale
+            metric_score = torch.where(ind_is_valid, metric_score, self._inf_tensor)
+            
             # Write directly to pre-allocated buffer
             final_rmse[i:end_i] = metric_score
              
@@ -211,7 +231,10 @@ class GPUEvaluator:
         
         # Reshape to [B, N_samples]
         valid_matrix = sample_valid.view(population.shape[0], N_samples)
+        ind_is_valid = valid_matrix.all(dim=1)
+        
         preds = final_preds.view(population.shape[0], N_samples)
+        preds = torch.where(valid_matrix, preds, torch.zeros_like(preds))
         target = y_target.flatten().unsqueeze(0).expand_as(preds)
         
         if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
@@ -222,10 +245,8 @@ class GPUEvaluator:
             diff = log_pred - log_target
             sq_err = diff**2
             
-            # Masking: Use high penalty for invalid cases
-            # PENALTY must be significantly larger than any possible real target error
-            masked_sq_err = torch.where(valid_matrix, sq_err, self._inf_tensor)
-            loss = masked_sq_err.mean(dim=1)
+            loss = sq_err.mean(dim=1)
+            loss = torch.where(ind_is_valid, loss, self._inf_tensor)
             return loss, preds
             
         else:
@@ -233,12 +254,11 @@ class GPUEvaluator:
             sq_err = (preds - target)**2
             sq_err = torch.clamp(sq_err, max=1e10)
             
-            # Masking: Use INF_VAL penalty
-            masked_sq_err = torch.where(valid_matrix, sq_err, self._inf_tensor)
-            loss = masked_sq_err.mean(dim=1)
+            loss = sq_err.mean(dim=1)
+            loss = torch.where(ind_is_valid, loss, self._inf_tensor)
             return loss, preds
     
-    def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
+    def evaluate_batch_full(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0, force_f32: bool = False) -> torch.Tensor:
         B, L = population.shape
         y_flat = y_target.flatten()
         n_samples = y_flat.shape[0]
@@ -264,8 +284,12 @@ class GPUEvaluator:
         # Logic mirrors evaluate_batch but returns full [B, D] errors
         max_chunk_inds = 100000 # Smaller chunk size for full matrix (D=25 -> 2.5M elems per chunk)
         
+        # Determine output dtype (Optimization for Lexicase memory bandwidth)
+        out_dtype = torch.float32 if force_f32 else self.dtype
+        inf_val_out = 1e20 if force_f32 else self.INF_VAL
+
         # Pre-allocate output buffer (avoid torch.cat at the end)
-        all_abs_errors = torch.full((B, D), self.INF_VAL, device=self.device, dtype=self.dtype)
+        all_abs_errors = torch.full((B, D), inf_val_out, device=self.device, dtype=out_dtype)
         
         # Pre-process Target [1, D]
         target_matrix_chunk = y_target.flatten().unsqueeze(0) 
@@ -281,23 +305,23 @@ class GPUEvaluator:
             final_preds, sp, has_error = self._run_vm(sub_pop, x_for_vm, sub_c, strict_mode=strict_mode)
 
             # Validity: (Stack OK) AND (No Kernel Error)
-            is_valid = (sp == 1) & (has_error == 0)
+            is_valid = (sp == 1) & (has_error == 0) & ~torch.isnan(final_preds) & ~torch.isinf(final_preds)
             
             # Penalize
-            final_preds = torch.where(is_valid & ~torch.isnan(final_preds) & ~torch.isinf(final_preds), 
-                                      final_preds, 
-                                      self._inf_tensor)
+            final_preds = torch.where(is_valid, final_preds, torch.zeros_like(final_preds))
             
             # Reshape to [current_B, D]
             preds_matrix = final_preds.view(current_B, D)
+            valid_matrix = is_valid.view(current_B, D)
+            ind_is_valid = valid_matrix.all(dim=1).unsqueeze(1).expand(current_B, D)
             
             # Broadcast Target
             # target is [1, D], preds is [cur_B, D] => Broadcast works automatically
             abs_err = torch.abs(preds_matrix - target_matrix_chunk)
             
-            abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err), 
-                                  self._inf_tensor, 
-                                  abs_err)
+            abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err) | ~ind_is_valid, 
+                                  torch.tensor(inf_val_out, device=self.device, dtype=out_dtype), 
+                                  abs_err.to(out_dtype))
             
             # Write directly to pre-allocated buffer
             all_abs_errors[i:end_i] = abs_err

@@ -6,7 +6,7 @@ and suggests initial search biases.
 import numpy as np
 from scipy import stats
 from scipy.fft import fft
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 
 def detect_pattern(x_values, y_values):
     """

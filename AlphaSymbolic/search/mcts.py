@@ -2,9 +2,9 @@ import math
 import numpy as np
 import torch
 import copy
-from core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES, OPERATOR_STAGES
-from utils.optimize_constants import optimize_constants
-from utils.data_utils import normalize_batch
+from AlphaSymbolic.core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, ExpressionTree, VARIABLES, OPERATOR_STAGES
+from AlphaSymbolic.utils.optimize_constants import optimize_constants
+from AlphaSymbolic.utils.data_utils import normalize_batch
 
 class MCTSNode:
     def __init__(self, tokens, parent=None, prior=0.0):

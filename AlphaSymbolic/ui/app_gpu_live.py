@@ -6,14 +6,18 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 import time
 import html
 from typing import List, Optional
-from core.gpu import TensorGeneticEngine
-from core.gpu.config import GpuGlobals
-from ui.app_search import parse_data, create_fit_plot, generate_example
-from ui.app_core import get_device
+from AlphaSymbolic.core.gpu import TensorGeneticEngine
+from AlphaSymbolic.core.gpu.config import GpuGlobals
+from AlphaSymbolic.ui.app_search import parse_data, create_fit_plot, generate_example
+from AlphaSymbolic.ui.app_core import get_device
 import pandas as pd
+
+import threading
 
 # Global state to manage the live engine
 LIVE_ENGINE = None
+# Cross-thread stop signal
+_STOP_EVENT = threading.Event()
 
 def get_gpu_live_tab():
     """Defines the UI for the GPU Evolution tab."""
@@ -117,8 +121,12 @@ def get_gpu_live_tab():
 
     def stop_evolution():
         global LIVE_ENGINE
-        if LIVE_ENGINE:
-            LIVE_ENGINE.stop_flag = True
+        _STOP_EVENT.set()  # Signal the generator loop to stop
+        if LIVE_ENGINE is not None:
+            try:
+                LIVE_ENGINE.stop_flag = True
+            except Exception:
+                pass
         return '<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #ef4444; color: #ef4444;">Deteniendo motor...</div>'
 
     start_btn.click(
@@ -207,6 +215,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     )
     
     LIVE_ENGINE.stop_flag = False
+    _STOP_EVENT.clear()  # Reset stop signal at the start of a new run
     
     # State for the callback
     state = {
@@ -401,7 +410,13 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
             yield status, best_html, stats_html, last_fig
             
         except queue.Empty:
-            if not thread.is_alive():
+            if not thread.is_alive() or _STOP_EVENT.is_set():
+                # Signal the engine to stop if user pressed the button
+                if _STOP_EVENT.is_set() and LIVE_ENGINE is not None:
+                    try:
+                        LIVE_ENGINE.stop_flag = True
+                    except Exception:
+                        pass
                 break
             continue
 

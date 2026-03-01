@@ -4,7 +4,7 @@ Uses scipy.optimize to find optimal values for 'C' placeholders.
 """
 import numpy as np
 from scipy.optimize import minimize
-from core.grammar import ExpressionTree
+from AlphaSymbolic.core.grammar import ExpressionTree
 
 def optimize_constants(tree, x_data, y_data, method='L-BFGS-B', initial_guess=None):
     """

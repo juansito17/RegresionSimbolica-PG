@@ -1,4 +1,3 @@
-
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 import os
@@ -19,10 +18,14 @@ setup(
                 'fused_pso_kernels.cu',
                 'decoder.cpp',
                 'simplify_kernels.cu',
-                'genrand_kernels.cu'
+                'genrand_kernels.cu',
+                'backward_kernels.cu',
+                'diversity_kernels.cu',
+                'lbfgs_kernels.cu',       # L-BFGS-B optimizer kernel
+                'best_tracker_kernels.cu'  # Best tracking kernel
             ],
             extra_compile_args={
-                'cxx': ['/O2', '/std:c++17'],
+                'cxx': ['/O2', '/std:c++17'] if os.name == 'nt' else ['-O3', '-std=c++17'],
                 # -O3: máxima optimización
                 # --use_fast_math: instrucciones FP rápidas (rsqrt, fma, etc.)
                 # -diag-suppress 221: silencia truncation warning (1e300 -> float32)

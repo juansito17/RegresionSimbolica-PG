@@ -9,6 +9,7 @@ import math
 import torch
 from typing import Tuple, List
 from .grammar import PAD_ID, GPUGrammar
+from .config import GpuGlobals
 
 try:
     from sys import path as sys_path
@@ -89,10 +90,22 @@ class GPUSymbolicSimplifier:
         self.ID_5 = self.grammar.token_to_id.get('5', -1)
         self.ID_6 = self.grammar.token_to_id.get('6', -1)
         self.ID_PI = self.grammar.token_to_id.get('pi', -1)
+        self.OP_0 = self.zero_ids[0].item() if self.zero_ids.numel() > 0 else -1
+        self.OP_1 = self.one_ids[0].item() if self.one_ids.numel() > 0 else -1
+        self.OP_2 = self.two_ids[0].item() if self.two_ids.numel() > 0 else -1
+        self.OP_POW_ID = self.OP_POW_IDS[0].item() if self.OP_POW_IDS.numel() > 0 else -1
+        self.OP_LOG_ID = self.OP_LOG_IDS[0].item() if self.OP_LOG_IDS.numel() > 0 else -1
+        self.OP_EXP_ID = self.OP_EXP_IDS[0].item() if self.OP_EXP_IDS.numel() > 0 else -1
+        self.OP_NEG_ID = self.OP_NEG_IDS[0].item() if self.OP_NEG_IDS.numel() > 0 else -1
+        self.OP_SQRT_ID = self.OP_SQRT_IDS[0].item() if self.OP_SQRT_IDS.numel() > 0 else -1
+        self.OP_ABS_ID = self.OP_ABS_IDS[0].item() if self.OP_ABS_IDS.numel() > 0 else -1
+        self.OP_FACT_ID = self.OP_FACT_IDS[0].item() if self.OP_FACT_IDS.numel() > 0 else -1
+        self.OP_GAMMA_ID = self.OP_GAMMA_IDS[0].item() if self.OP_GAMMA_IDS.numel() > 0 else -1
+        self.OP_LGAMMA_ID = self.OP_LGAMMA_IDS[0].item() if self.OP_LGAMMA_IDS.numel() > 0 else -1
         self.ID_E = self.grammar.token_to_id.get('e', -1)
         
     def _build_arity_table(self):
-        from core.grammar import OPERATORS
+        from AlphaSymbolic.core.grammar import OPERATORS
         # Ensure table is large enough for both vocab and PAD_ID
         max_id = max(self.grammar.id_to_token.keys()) + 1
         max_id = max(max_id, PAD_ID + 1)
@@ -324,7 +337,7 @@ class GPUSymbolicSimplifier:
         pop = population.clone()
         
         # ============ CUDA FAST PATH ============
-        if SIMPLIFY_CUDA_AVAILABLE and L <= 64:
+        if SIMPLIFY_CUDA_AVAILABLE and L <= 256:
             try:
                 # Build int32 arity table for kernel
                 max_id = self.arity_table.size(0)
@@ -348,23 +361,30 @@ class GPUSymbolicSimplifier:
                         device=self.device, dtype=torch.float32
                     ).contiguous() if self.literal_ids.numel() > 0 else torch.empty(0, device=self.device, dtype=torch.float32)
                 
-                # Get scalar opcode IDs (use first element or -1 if absent)
-                def _first_or(ids_tensor, default=-1):
-                    return ids_tensor[0].item() if ids_tensor.numel() > 0 else default
+                # DEBUG DTYPES
+                original_dtype = pop.dtype
+                if original_dtype != torch.int64:
+                    pop = pop.to(torch.int64)
+                if self._cuda_literal_ids.dtype != torch.int64:
+                    self._cuda_literal_ids = self._cuda_literal_ids.to(torch.int64)
                 
                 rpn_cuda_native.simplify_batch(
                     pop, arities_int,
                     self._cuda_val_table, self._cuda_literal_ids, self._cuda_literal_vals,
                     max_passes,
                     self.OP_PLUS, self.OP_MINUS, self.OP_MULT, self.OP_DIV,
-                    _first_or(self.OP_NEG_IDS), self.grammar.token_to_id.get('%', self.grammar.token_to_id.get('mod', -1)), _first_or(self.OP_POW_IDS),
+                    self.OP_NEG_ID, self.grammar.token_to_id.get('%', self.grammar.token_to_id.get('mod', -1)), self.OP_POW_ID,
                     self.OP_SIN, self.OP_COS, self.OP_TAN,
                     self.OP_ASIN, self.OP_ACOS, self.OP_ATAN,
-                    _first_or(self.OP_LOG_IDS), _first_or(self.OP_EXP_IDS), _first_or(self.OP_SQRT_IDS), _first_or(self.OP_ABS_IDS),
-                    _first_or(self.OP_GAMMA_IDS), _first_or(self.OP_LGAMMA_IDS),
+                    self.OP_LOG_ID, self.OP_EXP_ID, self.OP_SQRT_ID, self.OP_ABS_ID,
+                    self.OP_GAMMA_ID, self.OP_LGAMMA_ID,
                     self.OP_FLOOR, self.OP_CEIL, self.OP_SIGN,
                     self.ID_0, self.ID_1, self.ID_2, self.ID_3, self.ID_4, self.ID_5, self.ID_6
                 )
+                
+                # Cast back to original dtype before operating
+                if pop.dtype != original_dtype:
+                    pop = pop.to(original_dtype)
                 
                 # Validate after CUDA simplification
                 is_valid = self._validate_batch_stack(pop)
@@ -374,16 +394,20 @@ class GPUSymbolicSimplifier:
 
                 # CUDA kernel is fast but can miss some higher-order/iterative patterns.
                 # Run a short vectorized GPU cleanup pass to normalize final expressions.
-                cleanup_passes = 2 if max_passes >= 2 else 1
-                pop, constants, n_cleanup = self._simplify_fallback_passes(
-                    pop,
-                    constants,
-                    cleanup_passes,
-                    original_population=population,
-                )
+                cleanup_cfg = int(getattr(GpuGlobals, 'SIMPLIFY_CUDA_CLEANUP_PASSES', 0))
+                cleanup_passes = min(max_passes, max(0, cleanup_cfg))
+                if cleanup_passes > 0:
+                    pop, constants, n_cleanup = self._simplify_fallback_passes(
+                        pop,
+                        constants,
+                        cleanup_passes,
+                        original_population=population,
+                    )
+                    return pop, constants, n_cleanup
 
-                return pop, constants, n_cleanup
-            except Exception:
+                return pop, constants, 0
+            except Exception as e:
+                print(f"[GPUSimplifier] CUDA kernel failed: {e}")
                 pass  # Fall through to Python implementation
 
         return self._simplify_fallback_passes(pop, constants, max_passes, original_population=population)
@@ -399,9 +423,9 @@ class GPUSymbolicSimplifier:
         if original_population is None:
             original_population = pop
 
-        total_simplified = 0
+        total_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         for _ in range(max_passes):
-            n_pass = 0
+            n_pass = torch.tensor(0, dtype=torch.long, device=self.device)
             
             # Pre-compute subtree starts ONCE per pass (replaces hundreds of individual calls)
             starts_cache = self._precompute_all_subtree_starts(pop)
@@ -431,17 +455,35 @@ class GPUSymbolicSimplifier:
                 starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_modulo_rules(pop, starts_cache); n_pass += n
             pop, n = self._apply_constant_folding(pop, starts_cache); n_pass += n
+            # Literal-to-C promotion: fold f(literal) → C[value] inside main loop
+            if constants is not None:
+                pop, constants, n_lp = self._apply_literal_promotion(pop, constants)
+                n_pass += n_lp
+                if n_lp > 0:
+                    starts_cache = None  # Invalidate cache (new C tokens added)
             pop, n = self._compact_formulas(pop); n_pass += n
-            if n_pass == 0: break
+            if n_pass.item() == 0: break
             total_simplified += n_pass
 
-        # Validation Step: Revert rows that became invalid (unbalanced)
+        # Validation: Revert rows that became invalid (unbalanced)
         is_valid = self._validate_batch_stack(pop)
         if not is_valid.all():
             invalid_indices = torch.where(~is_valid)[0]
             pop[invalid_indices] = original_population[invalid_indices]
 
-        return pop, constants, total_simplified
+        # Post-validation: Literal-to-C promotion + Parametric constant folding.
+        # Applied after validation so reverts cannot undo constant value updates.
+        # Combined converging loop: each round can chain   lit→C then C-op→C.
+        # Example: exp(lgamma(3))  →  exp(C[0.693])  →  C[2.0]  (2 iterations)
+        if constants is not None:
+            for _ in range(8):
+                pop, constants, n_lp = self._apply_literal_promotion(pop, constants)
+                pop, constants, n_pf = self._apply_parametric_constant_folding(pop, constants)
+                if n_lp + n_pf == 0:
+                    break
+                pop, _ = self._compact_formulas(pop)
+
+        return pop, constants, total_simplified.item()
     
     def _validate_batch_stack(self, population: torch.Tensor) -> torch.Tensor:
         """
@@ -511,10 +553,10 @@ class GPUSymbolicSimplifier:
         
         return cond_final & has_tokens & cond_no_underflow
     
-    def _apply_identity_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_identity_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         o_id = self.ID_1
         for j in range(2, L):
             op = pop[:, j]
@@ -535,7 +577,7 @@ class GPUSymbolicSimplifier:
             # Apply unconditionally — torch.where is a no-op on empty masks
             pop[:, j-1] = torch.where(to_skip_arg2, PAD_ID, pop[:, j-1])
             pop[:, j] = torch.where(to_skip_arg2, PAD_ID, pop[:, j])
-            n_simplified += to_skip_arg2.sum().item()
+            n_simplified += to_skip_arg2.sum()
             
             # 0+x, 1*x -> skip arg1/op (keep arg2)
             s1 = self._get_subtree_starts_cached(starts_cache, s2-1) if starts_cache is not None else self._get_subtree_starts(pop, s2-1)
@@ -548,7 +590,7 @@ class GPUSymbolicSimplifier:
             rows = torch.where(to_skip_arg1)[0]
             pop[rows, (s2-1)[rows]] = PAD_ID
             pop[rows, j] = PAD_ID
-            n_simplified += to_skip_arg1.sum().item()
+            n_simplified += to_skip_arg1.sum()
             
             # Special Constant Result Rules: x^0 -> 1, 1^x -> 1
             match_const_1 = is_pow & (is_z2 | is_o1)
@@ -562,7 +604,7 @@ class GPUSymbolicSimplifier:
                 pos = torch.arange(L, device=self.device).reshape(1, L)
                 sub_pop[(pos > start.unsqueeze(1)) & (pos <= j)] = PAD_ID
                 pop[rows] = sub_pop
-                n_simplified += match_const_1.sum().item()
+                n_simplified += match_const_1.sum()
         return pop, n_simplified
 
     def _apply_commutative_normalization(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
@@ -638,7 +680,7 @@ class GPUSymbolicSimplifier:
                         rows_v = rows_simple[valid_swap]
                         pop[rows_v, cols_s1[valid_swap]] = vals_2[valid_swap]
                         pop[rows_v, cols_s2[valid_swap]] = vals_1[valid_swap]
-                        n_swapped += valid_swap.sum().item()
+                        n_swapped += valid_swap.sum()
                     
                     # Remove simple swaps from remaining potential swaps to avoid double handling
                     should_swap &= ~is_simple_swap
@@ -658,10 +700,10 @@ class GPUSymbolicSimplifier:
                     
         return pop, n_swapped
 
-    def _apply_zero_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_zero_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         z_id = self.zero_ids[0].item() if self.zero_ids.numel() > 0 else self.CONST_0
         neg_id = self.OP_NEG_IDS[0].item() if self.OP_NEG_IDS.numel() > 0 else -1
         for j in range(2, L):
@@ -698,7 +740,7 @@ class GPUSymbolicSimplifier:
                 # Write back to main population
                 pop[rows] = sub_pop
                 
-                n_simplified += match.sum().item()
+                n_simplified += match.sum()
 
             # 0 - x -> neg(x)
             if neg_id != -1:
@@ -748,10 +790,10 @@ class GPUSymbolicSimplifier:
 
         return pop, n_simplified
 
-    def _apply_self_cancellation_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+    def _apply_self_cancellation_rules(self, population: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         z_id, o_id = (self.zero_ids[0].item() if self.zero_ids.numel()>0 else self.CONST_0), (self.one_ids[0].item() if self.one_ids.numel()>0 else self.CONST_1)
         for j in range(2, L):
             op = pop[:, j]
@@ -765,10 +807,10 @@ class GPUSymbolicSimplifier:
             pop[:, j-2] = torch.where(is_m, z_id, torch.where(is_d, o_id, pop[:, j-2]))
             pop[:, j-1] = torch.where(match_single, PAD_ID, pop[:, j-1])
             pop[:, j] = torch.where(match_single, PAD_ID, pop[:, j])
-            n_simplified += match_single.sum().item()
+            n_simplified += match_single.sum()
         return pop, n_simplified
 
-    def _apply_advanced_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_advanced_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply advanced rules: 
         - neg(neg(x)) = x
@@ -898,9 +940,9 @@ class GPUSymbolicSimplifier:
                     pop[b, s1[b]+1:j+1] = PAD_ID
                     counts[b] += 1
 
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _apply_associative_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_associative_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply associative/grouping rules:
         - x + (x + y) -> 2*x + y
@@ -908,7 +950,7 @@ class GPUSymbolicSimplifier:
         """
         B, L = population.shape
         pop = population.clone()
-        n_simplified = 0
+        n_simplified = torch.tensor(0, dtype=torch.long, device=self.device)
         
         for j in range(4, L):
             op = pop[:, j]
@@ -1058,7 +1100,7 @@ class GPUSymbolicSimplifier:
 
         return pop, n_simplified
 
-    def _apply_term_consolidation(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_term_consolidation(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
@@ -1172,9 +1214,9 @@ class GPUSymbolicSimplifier:
                                 pop[b, s1+len(new):j+1] = PAD_ID
                                 counts[b] += 1
 
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _apply_modulo_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_modulo_rules(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
@@ -1194,9 +1236,9 @@ class GPUSymbolicSimplifier:
                 pop[:, j-1] = torch.where(match_self, PAD_ID, pop[:, j-1])
                 pop[:, j] = torch.where(match_self, PAD_ID, pop[:, j])
                 counts += match_self.long()
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _apply_constant_folding(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, int]:
+    def _apply_constant_folding(self, population: torch.Tensor, starts_cache: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         B, L = population.shape
         pop = population.clone()
         counts = torch.zeros(B, device=self.device, dtype=torch.long)
@@ -1277,9 +1319,270 @@ class GPUSymbolicSimplifier:
                     pop[:, j] = torch.where(match_close, PAD_ID, pop[:, j])
                     counts += match_close.long()
         
-        return pop, counts.sum().item()
+        return pop, counts.sum()
 
-    def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, int]:
+    def _apply_parametric_constant_folding(
+        self,
+        population: torch.Tensor,
+        constants: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Fold unary/binary operators whose arguments are exclusively parametric
+        'C' tokens (free constants from the constants array).
+
+        Examples:
+          neg(C[-8.28])     -> C[8.28]       (negate in-place, remove neg)
+          log(C[11.09])     -> C[2.406]      (apply log in-place, remove log)
+          add(C[1], C[2])   -> C[3]          (merge into first slot, remove second C+op)
+
+        Unary fold: op removed, C slot value updated.
+        Binary fold: op + second C removed; first C slot gets result.
+        Only finite results are committed.
+        """
+        if constants is None or constants.numel() == 0:
+            return population, constants, 0
+
+        B, L = population.shape
+        K = constants.shape[1]
+        pop = population.clone()
+        consts = constants.clone()
+        n_folded = 0
+
+        id_C = self.grammar.token_to_id.get('C', -1)
+        if id_C == -1:
+            return pop, consts, 0
+
+        max_id = self.arity_table.size(0)
+
+        def _c_map(p):
+            """c_map[b, j] = cumulative index (0-based) of the j-th C in formula b."""
+            return torch.cumsum((p.long() == id_C), dim=1) - 1
+
+        # ── Unary Folding: unary_op(C) → C (updated) ──────────────────────────
+        c_map = _c_map(pop)
+        rows_all = torch.arange(B, device=self.device)
+
+        for j in range(1, L):
+            op = pop[:, j].long()
+            op_c = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_c].clone()
+            arity[op >= max_id] = 0
+
+            arg_is_C = (pop[:, j - 1].long() == id_C)
+            mask = (arity == 1) & arg_is_C & (op != PAD_ID)
+            if not mask.any():
+                continue
+
+            slot = c_map[:, j - 1].clamp(0, K - 1)
+            val = consts[rows_all, slot]
+
+            res = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            applied = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+            def _try(op_ids_or_id, fn):
+                if isinstance(op_ids_or_id, int):
+                    if op_ids_or_id == -1:
+                        return
+                    tid = torch.tensor([op_ids_or_id], device=self.device, dtype=torch.long)
+                else:
+                    tid = op_ids_or_id
+                    if tid.numel() == 0:
+                        return
+                m = mask & is_op_in(op, tid)
+                if m.any():
+                    r = fn(val[m])
+                    res[m] = r
+                    applied[m] = True
+
+            _try(self.OP_NEG_IDS,    lambda v: -v)
+            _try(self.OP_LOG_IDS,    lambda v: torch.log(v))
+            _try(self.OP_EXP_IDS,    lambda v: torch.exp(v))
+            _try(self.OP_SQRT_IDS,   lambda v: torch.sqrt(v))
+            _try(self.OP_ABS_IDS,    lambda v: torch.abs(v))
+            _try(self.OP_FACT_IDS,   lambda v: torch.exp(torch.lgamma(v + 1.0)))
+            _try(self.OP_GAMMA_IDS,  lambda v: torch.exp(torch.lgamma(v)))
+            _try(self.OP_LGAMMA_IDS, lambda v: torch.lgamma(v))
+            _try(self.OP_SIN,        lambda v: torch.sin(v))
+            _try(self.OP_COS,        lambda v: torch.cos(v))
+            _try(self.OP_TAN,        lambda v: torch.tan(v))
+            _try(self.OP_ASIN,       lambda v: torch.asin(v))
+            _try(self.OP_ACOS,       lambda v: torch.acos(v))
+            _try(self.OP_ATAN,       lambda v: torch.atan(v))
+            _try(self.OP_FLOOR,      lambda v: torch.floor(v))
+            _try(self.OP_CEIL,       lambda v: torch.ceil(v))
+            _try(self.OP_SIGN,       lambda v: torch.sign(v))
+
+            commit = applied & torch.isfinite(res)
+            if commit.any():
+                cr = torch.nonzero(commit, as_tuple=True)[0]
+                consts[cr, slot[commit]] = res[commit].to(consts.dtype)
+                pop[commit, j] = PAD_ID            # remove operator token
+                c_map = _c_map(pop)                # recompute (PAD doesn't shift C idx)
+                n_folded += int(commit.sum().item())
+
+        return pop, consts, n_folded
+
+    def _apply_literal_promotion(
+        self,
+        population: torch.Tensor,
+        constants: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Promote operations on grammar literals into parametric C slots.
+
+        Unary pattern  (2 tokens → 1):
+            [lit, op]  →  [C]   e.g. lgamma(3) → C[0.6931]
+        Binary pattern (3 tokens → 1):
+            [lit1, lit2, op]  →  [C]  e.g. pi + e → C[5.860]
+
+        A token is a 'literal' if val_table[token_id] is finite (i.e. it is a
+        numeric grammar constant: 0,1,2,3,pi,e,...).
+        C tokens and variables are NOT literals.
+
+        The promoted value is stored in the first free slot of the constants
+        array (slot index = current number of C tokens in the formula).
+        Promotion is skipped if the slot array is already full.
+        """
+        if not hasattr(self, '_cached_val_table'):
+            return population, constants, 0
+
+        pop = population  # modify in-place (caller owns clone)
+        consts = constants
+        B, L = pop.shape
+        K = consts.shape[1]
+        id_C = self.grammar.token_to_id.get('C', -1)
+        if id_C < 0:
+            return pop, consts, 0
+
+        max_id = self.arity_table.size(0)
+        val_table = self._cached_val_table          # [max_id] — NaN for non-literals
+        rows_all = torch.arange(B, device=self.device)
+        n_promoted = 0
+
+        def _is_lit(token_ids: torch.Tensor) -> torch.Tensor:
+            """True where the token is a finite grammar literal (not C, not var)."""
+            tc = token_ids.clamp(0, max_id - 1)
+            v = val_table[tc]
+            return torch.isfinite(v) & (token_ids != PAD_ID)
+
+        def _val(token_ids: torch.Tensor) -> torch.Tensor:
+            tc = token_ids.clamp(0, max_id - 1)
+            return val_table[tc]
+
+        def _free_slot(p: torch.Tensor) -> torch.Tensor:
+            """First free slot per formula = number of C tokens already in formula."""
+            return (p.long() == id_C).sum(dim=1)  # [B]
+
+        def _apply_unary_op(op_ids: torch.Tensor, vals: torch.Tensor, fn) -> tuple:
+            """Return (res, applied_mask) for a given unary op tensor and function."""
+            res = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            applied = torch.zeros(B, dtype=torch.bool, device=self.device)
+            return res, applied  # updated below
+
+        # ── Unary: [lit, op] → [C] ─────────────────────────────────────────────
+        for j in range(1, L):
+            op  = pop[:, j].long()
+            op_c = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_c].clone()
+            arity[op >= max_id] = 0
+
+            arg_is_lit = _is_lit(pop[:, j - 1].long())
+            free = _free_slot(pop)
+            has_room = free < K
+            mask = (arity == 1) & arg_is_lit & has_room & (op != PAD_ID)
+            if not mask.any():
+                continue
+
+            val_arg = _val(pop[:, j - 1].long())
+
+            res   = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            appld = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+            def _try(op_ids_or_id, fn):
+                nonlocal res, appld
+                if isinstance(op_ids_or_id, int):
+                    if op_ids_or_id < 0:
+                        return
+                    m = mask & (op == op_ids_or_id)
+                else:
+                    if op_ids_or_id.numel() == 0:
+                        return
+                    m = mask & (op.unsqueeze(1) == op_ids_or_id.unsqueeze(0)).any(dim=1)
+                if not m.any():
+                    return
+                try:
+                    r = fn(val_arg[m])
+                    res[m] = r
+                    appld[m] = True
+                except Exception:
+                    pass
+
+            _try(self.OP_NEG_IDS,    lambda v: -v)
+            _try(self.OP_LOG_IDS,    lambda v: torch.log(v))
+            _try(self.OP_EXP_IDS,    lambda v: torch.exp(v))
+            _try(self.OP_SQRT_IDS,   lambda v: torch.sqrt(v))
+            _try(self.OP_ABS_IDS,    lambda v: torch.abs(v))
+            _try(self.OP_FACT_IDS,   lambda v: torch.exp(torch.lgamma(v + 1.0)))
+            _try(self.OP_GAMMA_IDS,  lambda v: torch.exp(torch.lgamma(v)))
+            _try(self.OP_LGAMMA_IDS, lambda v: torch.lgamma(v))
+            _try(self.OP_SIN,        lambda v: torch.sin(v))
+            _try(self.OP_COS,        lambda v: torch.cos(v))
+            _try(self.OP_TAN,        lambda v: torch.tan(v))
+            _try(self.OP_FLOOR,      lambda v: torch.floor(v))
+            _try(self.OP_CEIL,       lambda v: torch.ceil(v))
+            _try(self.OP_ABS_ID if hasattr(self,'OP_ABS_ID') else -1, lambda v: torch.abs(v))
+
+            commit = appld & torch.isfinite(res)
+            if commit.any():
+                cr    = torch.nonzero(commit, as_tuple=True)[0]
+                slots = free[commit]
+                consts[cr, slots] = res[commit].to(consts.dtype)
+                pop[commit, j - 1] = id_C   # literal → C
+                pop[commit, j]     = PAD_ID  # op → PAD
+                n_promoted += int(commit.sum().item())
+
+        # ── Binary: [lit1, lit2, op] → [C] ─────────────────────────────────────
+        for j in range(2, L):
+            op   = pop[:, j].long()
+            op_c = op.clamp(0, max_id - 1)
+            arity = self.arity_table[op_c].clone()
+            arity[op >= max_id] = 0
+
+            both_lit = _is_lit(pop[:, j - 2].long()) & _is_lit(pop[:, j - 1].long())
+            free = _free_slot(pop)
+            has_room = free < K
+            mask = (arity == 2) & both_lit & has_room & (op != PAD_ID)
+            if not mask.any():
+                continue
+
+            v1 = _val(pop[:, j - 2].long())
+            v2 = _val(pop[:, j - 1].long())
+
+            res   = torch.full((B,), float('nan'), device=self.device, dtype=self.dtype)
+            appld = torch.zeros(B, dtype=torch.bool, device=self.device)
+
+            m = mask & (op == self.OP_PLUS);  res[m] = v1[m] + v2[m]; appld |= m
+            m = mask & (op == self.OP_MINUS); res[m] = v1[m] - v2[m]; appld |= m
+            m = mask & (op == self.OP_MULT);  res[m] = v1[m] * v2[m]; appld |= m
+            m = mask & (op == self.OP_DIV) & (v2 != 0)
+            res[m] = v1[m] / v2[m]; appld |= m
+            if self.OP_POW_IDS.numel() > 0:
+                m = mask & (op.unsqueeze(1) == self.OP_POW_IDS.unsqueeze(0)).any(dim=1)
+                res[m] = v1[m].pow(v2[m]); appld |= m
+
+            commit = appld & torch.isfinite(res)
+            if commit.any():
+                cr    = torch.nonzero(commit, as_tuple=True)[0]
+                slots = free[commit]
+                consts[cr, slots] = res[commit].to(consts.dtype)
+                pop[commit, j - 2] = id_C   # first arg → C (new slot)
+                pop[commit, j - 1] = PAD_ID
+                pop[commit, j]     = PAD_ID
+                n_promoted += int(commit.sum().item())
+
+        return pop, consts, n_promoted
+
+    def _compact_formulas(self, population: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # FIX B6: El count anterior era is_pad.any(dim=1).sum(), que equivale al numero de
         # filas con ALGUN PAD (practicamente todas las formulas cortas). Eso hacia que
         # n_pass nunca fuera 0, evitando el early-exit del bucle de simplificacion y
@@ -1290,7 +1593,7 @@ class GPUSymbolicSimplifier:
         sort_key = is_pad.long() * L + torch.arange(L, device=self.device).unsqueeze(0)
         _, idx = torch.sort(sort_key, dim=1, stable=True)
         compacted = torch.gather(population, 1, idx)
-        n_changed = int((compacted != population).any(dim=1).sum().item())
+        n_changed = (compacted != population).any(dim=1).sum()
         return compacted, n_changed
 
     def _get_subtree_starts(self, population: torch.Tensor, end_indices) -> torch.Tensor:

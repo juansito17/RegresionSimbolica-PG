@@ -1,15 +1,15 @@
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 import torch
 import numpy as np
 import time
-from core.gpu import TensorGeneticEngine
+from AlphaSymbolic.core.gpu import TensorGeneticEngine
 
 # Configuration matching C++ Globals
 # --- CONFIGURATION ---
 # Configuration matching C++ Globals
-from core.gpu.config import GpuGlobals
+from AlphaSymbolic.core.gpu.config import GpuGlobals
 
 # --- CONFIGURATION ---
 TARGETS = GpuGlobals.PROBLEM_Y_FULL
@@ -95,35 +95,27 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
         except Exception as e:
             print(f"[STRICT MODE] Check Failed: {e}")
 
-        print("Predictions vs Targets:")
-        
-        # Show Predictions (Top 5 rows only to avoid spam? C++ showed all X_values)
-        # C++ showed all. Let's show all if small, or top 10.
-        # Recalculate predictions
-        # Use GPU for vectorized predictions
-        # X_VALUES: [N, Vars] -> engine.predict_individual expects x as [D] or [N, D] handled by engine or evaluator?
-        # engine.predict_individual(rpn, consts, x) wraps as batch of 1 and returns preds for all x.
-        # We convert X_VALUES to tensor first.
-        try:
-            x_tensor = torch.tensor(X_VALUES, dtype=engine.dtype, device=engine.device)
-            preds_tensor = engine.predict_individual(display_rpn, display_consts, x_tensor)
-            preds = preds_tensor.detach().cpu().numpy().flatten()
-            
-            # Determine display targets
-            display_targets = TARGETS
-            if GpuGlobals.USE_LOG_TRANSFORMATION:
-                 mask = TARGETS > 1e-9
-                 display_targets = np.log(np.where(mask, TARGETS, 1.0))
-            
-            for i in range(len(X_VALUES)):
-                val = preds[i]
-                target = display_targets[i] if i < len(display_targets) else float('nan')
-                diff = abs(val - target)
+        if getattr(GpuGlobals, 'CONSOLE_SHOW_PREDICTION_TABLE', False):
+            print("Predictions vs Targets:")
+            try:
+                x_tensor = torch.tensor(X_VALUES, dtype=engine.dtype, device=engine.device)
+                preds_tensor = engine.predict_individual(display_rpn, display_consts, x_tensor)
+                preds = preds_tensor.detach().cpu().numpy().flatten()
                 
-                x_str = ",".join([f"{x:.1f}" for x in X_VALUES[i]])
-                print(f"  x=({x_str}): Pred={val:12.4f}, Target={target:12.4f}, Diff={diff:12.4f}")
-        except Exception as e:
-            print(f"  (Error calculating vectorized predictions on GPU: {e})")
+                display_targets = TARGETS
+                if GpuGlobals.USE_LOG_TRANSFORMATION:
+                     mask = TARGETS > 1e-9
+                     display_targets = np.log(np.where(mask, TARGETS, 1.0))
+                
+                for i in range(len(X_VALUES)):
+                    val = preds[i]
+                    target = display_targets[i] if i < len(display_targets) else float('nan')
+                    diff = abs(val - target)
+                    
+                    x_str = ",".join([f"{x:.1f}" for x in X_VALUES[i]])
+                    print(f"  x=({x_str}): Pred={val:12.4f}, Target={target:12.4f}, Diff={diff:12.4f}")
+            except Exception as e:
+                print(f"  (Error calculating vectorized predictions on GPU: {e})")
         
         print("========================================")
         sys.stdout.flush()
@@ -151,14 +143,19 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
 
 if __name__ == "__main__":
     print("Starting Genetic Algorithm (GPU Mode)...")
+    sys.stdout.flush()
     
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
     else:
         print("WARNING: GPU NOT DETECTED. Running in CPU emulation mode (Slow).")
-        
+    sys.stdout.flush()
 
-    from core.gpu.config import GpuGlobals
+    print("Loading configuration...")
+    sys.stdout.flush()
+    from AlphaSymbolic.core.gpu.config import GpuGlobals
+    print(f"Config loaded: POP_SIZE={GpuGlobals.POP_SIZE}, NUM_ISLANDS={GpuGlobals.NUM_ISLANDS}")
+    sys.stdout.flush()
     
     # User can override Globals here
     # GpuGlobals.POP_SIZE and GpuGlobals.NUM_ISLANDS are now strictly taken from config.py 
@@ -170,7 +167,7 @@ if __name__ == "__main__":
     
     # Engine will use Globals defaults for pop_size and n_islands
     # INCREASED max_constants to 10 to support complex seeds with many literals
-    engine = TensorGeneticEngine(num_variables=3, max_constants=GpuGlobals.MAX_CONSTANTS)
+    engine = TensorGeneticEngine(num_variables=3, max_constants=GpuGlobals.MAX_CONSTANTS, max_len=GpuGlobals.MAX_FORMULA_LENGTH)
     
     start_time_global = time.time()
     
