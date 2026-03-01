@@ -122,6 +122,15 @@ class TensorGeneticEngine:
         # --- Pre-cached tensors for hot loop ---
         self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
         self._selection_metric_buf = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
+        
+        # --- Zero-Allocation Buffers for Evolution Loop ---
+        self._pop_mask_buf = torch.empty((self.pop_size, self.max_len), dtype=torch.bool, device=self.device)
+        self._lengths_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+        self._tarpeian_rand_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+        self._oversized_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
+        self._penalize_mask_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
+        self._float_mask_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+
         # --- SOTA P1: Pareto rank adjustment buffer (NSGA-II blending) ---
         self._pareto_rank_buf = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
         
@@ -1520,7 +1529,13 @@ class TensorGeneticEngine:
             # Time-based early exit: configurable good-enough solution before full timeout
             # Only exit with non-trivial formulas and high explained variance.
             if best_rpn is not None and elapsed >= GpuGlobals.GOOD_ENOUGH_MIN_SECONDS and best_rmse < GpuGlobals.GOOD_ENOUGH_RMSE:
-                tree_size = self.get_tree_size(best_rpn).item()
+                # Throttle early exit check to avoid .item() sync every generation
+                if getattr(self, '_sync_counter', 0) % 10 == 0:
+                    tree_size = self.get_tree_size(best_rpn).item()
+                else:
+                    tree_size = getattr(self, '_cached_best_tree_size', 5) # Dummy valid size
+                    
+                self._cached_best_tree_size = tree_size
         
 
                 has_var_token = True
@@ -1673,7 +1688,8 @@ class TensorGeneticEngine:
                 _hall = torch.ones(self.pop_size, dtype=torch.bool, device=self.device)
                 for vid in self._var_token_ids:
                     _pres = (population == vid).any(dim=1)
-                    _vp.sub_(_pres.float())
+                    self._float_mask_buf.copy_(_pres)
+                    _vp.sub_(self._float_mask_buf)
                     _hall &= _pres
                 _cached_var_pen = _vp
                 _cached_has_all_vars = _hall
@@ -1730,43 +1746,22 @@ class TensorGeneticEngine:
             _pso_adaptive = getattr(GpuGlobals, 'PSO_ADAPTIVE', False)
             _pso_skip_gens = getattr(GpuGlobals, 'PSO_SKIP_GENS', 6)
             if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
-                # Compute a cheap structural hash of the current best RPN
-                # FIX BUG-2: Usar hash polinomial en lugar de suma simple para evitar colisiones
-                # El método anterior (sum()) producía el mismo hash para [1,2,3] y [3,2,1]
-                _curr_rpn_hash = None
-                if best_rpn is not None:
-                    # Pure tensor polynomial hash: sum(token_i * base^i)
-                    # Eliminates multiple .item() / .any() CPU syncs which are very expensive
-                    if not hasattr(self, '_hash_powers'):
-                        # Cache powers to avoid re-calculating inside the tight loop
-                        # Using int64 to avoid overflow issues with structural hashes
-                        self._hash_powers = (31 ** torch.arange(self.max_len, device=self.device)).to(torch.int64)
-                    
-                    # Pad tokens don't contribute to structural hash
-                    # OPTIMIZED: Inline construction of zero-tensor to avoid repeated allocation
-                    # best_rpn is tiny (e.g. 64), sum is instant.
-                    masked_rpn = torch.where(best_rpn != PAD_ID, best_rpn.to(torch.int64), torch.zeros(1, device=self.device, dtype=torch.int64))
-                    hash_tensor = torch.sum(masked_rpn * self._hash_powers[:len(best_rpn)])
-                    _curr_rpn_hash = hash_tensor # KEEP ON GPU
+                # El método de hash polinomial y la comparación `torch.equal` causaban costosas sincronizaciones CPU-GPU
+                # que ralentizaban el bucle principal. Se eliminó `_struct_changed` para confiar puramente en `_in_stagnation`.
                 
                 # Decide whether to skip PSO this round
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
-                # BUG-2 FIX: `tensor != None` is always True in PyTorch → PSO skip never worked.
-                if _last_pso_rpn_hash is None or _curr_rpn_hash is None:
-                    _struct_changed = True
-                else:
-                    _struct_changed = not torch.equal(_curr_rpn_hash, _last_pso_rpn_hash)
+                
                 _skip_pso = (
                     _pso_adaptive and
                     not _in_stagnation and
-                    not _struct_changed and
                     _pso_skip_counter < _pso_skip_gens
                 )
                 _pso_skip_counter += 1
                 
                 if not _skip_pso:
                     _pso_skip_counter = 0
-                    _last_pso_rpn_hash = _curr_rpn_hash # Store as tensor/None
+                    
                     # During stagnation: optimize more individuals with more steps
                     if _in_stagnation:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_STAGNATION)
@@ -1799,6 +1794,11 @@ class TensorGeneticEngine:
                     # Forzar constantes enteras si está configurado
                     if GpuGlobals.FORCE_INTEGER_CONSTANTS:
                         refined_consts = refined_consts.round()
+
+                    # Apply strict validation to filter naturally invalid math out of PSO candidates
+                    if getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False):
+                        refined_mse = self.evaluator.evaluate_batch(opt_pop, x_t, y_t, refined_consts, strict_mode=1)
+
                     pop_constants[top_idx] = refined_consts
                     fitness_rmse[top_idx] = refined_mse
 
@@ -1816,6 +1816,11 @@ class TensorGeneticEngine:
                 try:
                     _bfgs_consts_new, _bfgs_errs = self.optimizer.lbfgs_optimize_top_k(
                         _bfgs_pop, _bfgs_consts, x_t, y_t, top_k=_bfgs_k, max_iter=_bfgs_iters)
+
+                    # Apply strict validation to filter naturally invalid math out of BFGS candidates
+                    if getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False):
+                        _bfgs_errs = self.evaluator.evaluate_batch(_bfgs_pop, x_t, y_t, _bfgs_consts_new, strict_mode=1)
+
                     # Solo aplicar mejoras (nunca empeorar)
                     _bfgs_improved = _bfgs_errs < fitness_rmse[_bfgs_top_idx]
                     if _bfgs_improved.any():
@@ -1833,6 +1838,7 @@ class TensorGeneticEngine:
                 self._gpu_best_rmse = torch.tensor([1e10], device=self.device, dtype=torch.float32)
                 self._gpu_best_rpn = torch.zeros(self.max_len, dtype=torch.uint8, device=self.device)
                 self._gpu_best_consts = torch.zeros(self.max_constants, dtype=torch.float32, device=self.device)
+                self._gpu_best_idx = torch.zeros(1, dtype=torch.int32, device=self.device)
                 self._sync_counter = 0
                 self._cached_best_rmse_cpu = float('inf')
                 self._cached_best_idx_cpu = 0
@@ -1856,14 +1862,11 @@ class TensorGeneticEngine:
                     fit_f32[~_uses_all] = float('inf')
                 
                 # Call CUDA kernel to update best (all GPU, no sync)
+                # Optimized batch update: fully parallel reduction in CUDA, writes directly to buffers
                 rpn_cuda_native.batch_update_best(
-                    population,
-                    pop_constants.float() if pop_constants.dtype != torch.float32 else pop_constants,
-                    fit_f32,
-                    self._gpu_best_rpn,
-                    self._gpu_best_consts,
-                    self._gpu_best_rmse,
-                    1e-9  # tolerance
+                    population, pop_constants.float(), fit_f32,
+                    self._gpu_best_rpn, self._gpu_best_consts, self._gpu_best_rmse, self._gpu_best_idx,
+                    GpuGlobals.FITNESS_EQUALITY_TOLERANCE
                 )
                 
                 # Increment sync counter
@@ -1877,13 +1880,13 @@ class TensorGeneticEngine:
                 
                 if _improved or (self._sync_counter % _force_sync_interval == 0):
                     min_rmse_val = _gpu_rmse
-                    min_idx_val = 0  # Kernel stores best in position 0
+                    min_idx_val = self._gpu_best_idx.item()
                     
                     if _improved:
                         self._cached_best_rmse_cpu = min_rmse_val
                 else:
                     min_rmse_val = self._cached_best_rmse_cpu
-                    min_idx_val = 0
+                    min_idx_val = self._gpu_best_idx.item()
                     
                 min_rmse = self._gpu_best_rmse
                 
@@ -2372,7 +2375,9 @@ class TensorGeneticEngine:
             
             # --- EVOLUTION STEP (Reproduction) ---
             if GpuGlobals.USE_CUDA_ORCHESTRATOR:
-                lengths = (population != PAD_ID).sum(dim=1).float()
+                torch.ne(population, PAD_ID, out=self._pop_mask_buf)
+                torch.sum(self._pop_mask_buf, dim=1, dtype=torch.float32, out=self._lengths_buf)
+                lengths = self._lengths_buf
                 selection_metric = self._selection_metric_buf
                 
                 # 1. Selection Metric with Complexity Penalty (in-place to reduce allocations)
@@ -2382,12 +2387,13 @@ class TensorGeneticEngine:
                 # --- SOTA P3: Tarpeian Bloat Control ---
                 if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
                     avg_len = lengths.mean()
-                    oversized = lengths > avg_len * 1.5
-                    random_mask = torch.rand(self.pop_size, device=self.device) < getattr(GpuGlobals, 'TARPEIAN_PROBABILITY', 0.3)
-                    penalize_mask = oversized & random_mask
-                    temp_fitness = fitness_rmse.clone()
-                    temp_fitness[penalize_mask] = 1e8
-                    selection_metric.mul_(temp_fitness)
+                    torch.gt(lengths, avg_len * 1.5, out=self._oversized_buf)
+                    torch.rand(self.pop_size, out=self._tarpeian_rand_buf)
+                    torch.lt(self._tarpeian_rand_buf, getattr(GpuGlobals, 'TARPEIAN_PROBABILITY', 0.3), out=self._penalize_mask_buf)
+                    self._penalize_mask_buf.logical_and_(self._oversized_buf)
+                    
+                    selection_metric.mul_(fitness_rmse)
+                    selection_metric[self._penalize_mask_buf] = float('inf')
                 else:
                     selection_metric.mul_(fitness_rmse)
 
@@ -2398,9 +2404,11 @@ class TensorGeneticEngine:
                 # Anti-trivial collapse: penalize tiny formulas unless they are truly accurate.
                 # OPTIMIZED: removed .any() CPU syncs — always apply penalty (mul by mask = same result,
                 # no sync needed since penalty is 0 when mask is False via float conversion).
-                trivial_mask = lengths <= float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS)
-                low_quality_trivial = trivial_mask & (fitness_rmse > GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE)
-                selection_metric.add_(low_quality_trivial.float(), alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
+                torch.le(lengths, float(GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS), out=self._oversized_buf) # Reuse buffer
+                torch.gt(fitness_rmse, GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE, out=self._penalize_mask_buf) # Reuse buffer
+                self._penalize_mask_buf.logical_and_(self._oversized_buf)
+                self._float_mask_buf.copy_(self._penalize_mask_buf)
+                selection_metric.add_(self._float_mask_buf, alpha=GpuGlobals.TRIVIAL_FORMULA_PENALTY)
 
                 # Penalize constant-only formulas in single-variable problems.
                 # OPTIMIZED: removed .any() CPU sync — penalty is 0 for formulas WITH variables.
@@ -2413,7 +2421,8 @@ class TensorGeneticEngine:
                         for vid in self._single_var_ids:
                             has_var |= (population == vid).any(dim=1)
                         no_var = ~has_var
-                    selection_metric.add_(no_var.float(), alpha=GpuGlobals.NO_VARIABLE_PENALTY)
+                    self._float_mask_buf.copy_(no_var)
+                    selection_metric.add_(self._float_mask_buf, alpha=GpuGlobals.NO_VARIABLE_PENALTY)
                 
                 # 1b. Variable Diversity Penalty (ADDITIVE): penalize formulas missing variables
                 if self._var_token_ids and GpuGlobals.VAR_DIVERSITY_PENALTY > 0:

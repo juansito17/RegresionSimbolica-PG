@@ -33,8 +33,24 @@ class GPUOperators:
         self.terminal_ids = torch.tensor([self.grammar.token_to_id[t] for t in self.grammar.terminals], device=self.device, dtype=self.pop_dtype)
         self.operator_ids = torch.tensor([self.grammar.token_to_id[op] for op in self.grammar.operators], device=self.device, dtype=self.pop_dtype)
         
+        # Pre-allocated buffers for random generation (Zero-Allocation Optimization)
+        self._rand_float_buf = None
+        self._rand_int_buf = None
+        
         # Arity masks
         self._init_arity_masks()
+
+    def _get_rand_floats(self, shape) -> torch.Tensor:
+        numel = shape[0] * shape[1] if len(shape) == 2 else (shape[0] if len(shape) == 1 else np.prod(shape))
+        if self._rand_float_buf is None or self._rand_float_buf.numel() < numel:
+            self._rand_float_buf = torch.empty(numel, device=self.device, dtype=torch.float32)
+        return self._rand_float_buf[:numel].view(shape)
+
+    def _get_rand_ints(self, shape) -> torch.Tensor:
+        numel = shape[0] * shape[1] if len(shape) == 2 else (shape[0] if len(shape) == 1 else np.prod(shape))
+        if self._rand_int_buf is None or self._rand_int_buf.numel() < numel:
+            self._rand_int_buf = torch.empty(numel, device=self.device, dtype=torch.long)
+        return self._rand_int_buf[:numel].view(shape)
 
     def _init_arity_masks(self):
         self.token_arity = torch.zeros(self.grammar.vocab_size + 1, dtype=torch.long, device=self.device)
@@ -630,8 +646,10 @@ class GPUOperators:
              # Note: Original native kernel might not handle constants yet.
              # If so, we'll need to repair after returning.
              B, L = population.shape
-             rand_floats = torch.rand(population.shape, device=self.device, dtype=torch.float32)
-             rand_ints = torch.randint(0, 2**30, population.shape, device=self.device, dtype=torch.long)
+             rand_floats = self._get_rand_floats(population.shape)
+             rand_floats.uniform_(0.0, 1.0)
+             rand_ints = self._get_rand_ints(population.shape)
+             rand_ints.random_(0, 2**30)
              
              rpn_cuda_native.mutate_population(
                  population, rand_floats, rand_ints,
@@ -648,7 +666,9 @@ class GPUOperators:
         # Fallback to PyTorch
         B, L = population.shape
         K = constants.shape[1]
-        mask = torch.rand_like(population, dtype=self.dtype) < mutation_rate
+        rand_floats = self._get_rand_floats(population.shape)
+        rand_floats.uniform_(0.0, 1.0)
+        mask = rand_floats < mutation_rate
         mask = mask & (population != PAD_ID)
         
         token_arity_local = self.token_arity.to(population.device)
@@ -1380,7 +1400,9 @@ class GPUOperators:
         """
         B, K = constants.shape
         # Decide which individuals get perturbed
-        perturb_mask = torch.rand(B, device=self.device) < rate  # [B]
+        rand_floats = self._get_rand_floats((B,))
+        rand_floats.uniform_(0.0, 1.0)
+        perturb_mask = rand_floats < rate  # [B]
         if not perturb_mask.any():
             return constants
 
@@ -1388,8 +1410,12 @@ class GPUOperators:
         eps = 1e-4
         scale = constants[perturb_mask].abs() * sigma + eps  # [n_pert, K]
 
-        noise = torch.randn(scale.shape, device=self.device, dtype=constants.dtype) * scale
-        constants[perturb_mask] = constants[perturb_mask] + noise
+        # Use pre-allocated buffer for noise to avoid allocation
+        noise = self._get_rand_floats(scale.shape)
+        # Use random_() for normal distribution (normal_ is the correct method for PyTorch)
+        noise.normal_(0.0, 1.0)
+        # Cast to float64 if constants is float64 since noise is float32
+        constants[perturb_mask] = constants[perturb_mask] + (noise.to(constants.dtype) * scale)
 
         # Clamp to valid constant range
         c_min = float(getattr(GpuGlobals, 'CONSTANT_MIN_VALUE', -10.0))

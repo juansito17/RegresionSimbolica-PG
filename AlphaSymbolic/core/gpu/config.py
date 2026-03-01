@@ -51,7 +51,7 @@ class GpuGlobals:
     # ============================================================
     # Population Size
     # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
-    POP_SIZE = 500_000
+    POP_SIZE = 1_000_000
     GENERATIONS = 1_000_000
     
     # Islands
@@ -103,7 +103,7 @@ class GpuGlobals:
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
-    MAX_FORMULA_LENGTH = 256
+    MAX_FORMULA_LENGTH = 16
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60

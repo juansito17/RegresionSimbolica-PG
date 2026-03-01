@@ -179,6 +179,7 @@ __global__ void batch_update_best_kernel(
     uint8_t* __restrict__ best_rpn,           // [L] - uint8_t para matching con Python
     float* __restrict__ best_consts,          // [K]
     float* __restrict__ best_rmse,            // [1]
+    int32_t* __restrict__ best_idx,           // [1] - new parameter to return index
     int B, int L, int K,
     float tolerance
 ) {
@@ -220,6 +221,7 @@ __global__ void batch_update_best_kernel(
             best_rmse[0] = candidate;
             
             int idx = s_min_idx[0];
+            best_idx[0] = idx;
             for (int j = 0; j < L; j++) {
                 best_rpn[j] = population[idx * L + j];
             }
@@ -311,6 +313,7 @@ void launch_batch_update_best(
     torch::Tensor& best_rpn,
     torch::Tensor& best_consts,
     torch::Tensor& best_rmse,
+    torch::Tensor& best_idx,
     float tolerance
 ) {
     CHECK_INPUT(population);
@@ -330,6 +333,7 @@ void launch_batch_update_best(
         best_rpn.data_ptr<uint8_t>(),
         best_consts.data_ptr<float>(),
         best_rmse.data_ptr<float>(),
+        best_idx.data_ptr<int32_t>(),
         B, L, K,
         tolerance
     );

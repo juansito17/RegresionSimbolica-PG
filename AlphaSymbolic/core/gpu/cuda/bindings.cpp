@@ -400,6 +400,7 @@ void launch_batch_update_best(
     torch::Tensor& best_rpn,
     torch::Tensor& best_consts,
     torch::Tensor& best_rmse,
+    torch::Tensor& best_idx,
     float tolerance
 );
 
@@ -528,6 +529,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("batch_update_best", &launch_batch_update_best,
         "Batch update best individual (CUDA)",
         py::arg("population"), py::arg("constants"), py::arg("fitness"),
-        py::arg("best_rpn"), py::arg("best_consts"), py::arg("best_rmse"),
+        py::arg("best_rpn"), py::arg("best_consts"), py::arg("best_rmse"), py::arg("best_idx"),
         py::arg("tolerance") = 1e-9f);
 }
