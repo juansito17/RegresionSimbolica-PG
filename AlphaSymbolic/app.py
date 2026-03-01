@@ -4,6 +4,9 @@ With GPU/CPU toggle and search method selection.
 """
 import gradio as gr
 import torch
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AlphaSymbolic.ui.app_core import load_model, get_device, get_device_info, set_device, get_training_errors, request_stop_training
 from AlphaSymbolic.ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised, train_hybrid_feedback_loop, train_from_memory
