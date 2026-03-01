@@ -103,7 +103,7 @@ class GpuGlobals:
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
-    MAX_FORMULA_LENGTH = 128
+    MAX_FORMULA_LENGTH = 256
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60

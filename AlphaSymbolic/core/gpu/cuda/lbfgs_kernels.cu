@@ -33,7 +33,7 @@
 // Stack size for RPN evaluation
 #define LBFGS_STACK_SIZE 64
 // Max formula length
-#define LBFGS_MAX_L 128
+#define LBFGS_MAX_L 256
 // Max line search iterations
 #define LBFGS_MAX_LINE_SEARCH 20
 

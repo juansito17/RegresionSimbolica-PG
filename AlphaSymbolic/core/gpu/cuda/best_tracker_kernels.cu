@@ -22,7 +22,7 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 // Maximum formula length
-#define BT_MAX_L 128
+#define BT_MAX_L 256
 // Maximum constants
 #define BT_MAX_K 32
 

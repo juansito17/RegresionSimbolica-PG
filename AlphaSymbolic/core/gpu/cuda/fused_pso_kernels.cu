@@ -22,7 +22,7 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 #define PSO_STACK_SIZE 64
-#define PSO_MAX_L 128
+#define PSO_MAX_L 256
 #define PSO_MAX_K 32
 #define PSO_MAX_D 1024      // max data samples
 #define PSO_MAX_PARTICLES 64

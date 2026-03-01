@@ -140,7 +140,7 @@ def generate_notebook():
         "NUM_ISLANDS = 20 # @param {type:'integer'}\n",
         "USE_LOG_TRANSFORMATION = True # @param {type:'boolean'}\n",
         "COMPLEXITY_PENALTY = 0.01 # @param {type:'number'}\n",
-        "MAX_FORMULA_LENGTH = 128 # @param {type:'integer'}\n",
+        "MAX_FORMULA_LENGTH = 256 # @param {type:'integer'}\n",
         "NUM_VARIABLES = 3 # @param {type:'integer'}\n",
         "VAR_MOD_X1 = 6 # @param {type:'integer'}\n",
         "VAR_MOD_X2 = 2 # @param {type:'integer'}\n",

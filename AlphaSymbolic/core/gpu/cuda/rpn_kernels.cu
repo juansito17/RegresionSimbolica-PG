@@ -1592,7 +1592,7 @@ std::vector<torch::Tensor> evolve_generation(
 //
 // ============================================================
 
-#define FUSED_MAX_L   128    // Max formula length (matches MAX_FORMULA_LENGTH)
+#define FUSED_MAX_L   256    // Max formula length (matches MAX_FORMULA_LENGTH)
 #define FUSED_MAX_VARS  4    // Max variables (x0, x1, x2, x3)
 
 template <typename scalar_t>
