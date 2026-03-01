@@ -94,6 +94,9 @@ AlphaSymbolic/core/gpu/cuda/*.pyd
 **/*.pt.tmp
 **/*.pyd
 
+# Notebooks
+*.ipynb
+
 # OS generated
 .DS_Store
 Thumbs.db
