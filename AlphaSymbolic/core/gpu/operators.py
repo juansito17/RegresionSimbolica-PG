@@ -372,8 +372,18 @@ class GPUOperators:
         """
         Validate that each RPN formula has a final stack balance of exactly 1.
         Returns a boolean mask of valid formulas.
-        Vectorized with cumsum - no Python loop.
+        Optimized via C++ CUDA Kernel.
         """
+        if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'validate_rpn_batch') and population.is_cuda:
+            try:
+                B, L = population.shape
+                valid_mask = torch.zeros(B, dtype=torch.bool, device=self.device)
+                if not hasattr(self, 'token_arity_int'): self.token_arity_int = self.token_arity.to(dtype=torch.int32)
+                rpn_cuda_native.validate_rpn_batch(population, self.token_arity_int, valid_mask, PAD_ID)
+                return valid_mask
+            except Exception as e:
+                pass # Fallback
+
         B, L = population.shape
         # Get arities for all tokens at once: [B, L]
         arities = self.token_arity[population.clamp(0, self.token_arity.shape[0] - 1).long()]

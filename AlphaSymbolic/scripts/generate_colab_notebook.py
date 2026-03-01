@@ -134,7 +134,7 @@ def generate_notebook():
     # --- CELL 5: Configuration Form ---
     config_update_code = [
         "# @title 3. Configure & Run\n",
-        "POP_SIZE = 500000 # @param {type:'integer'}\n",
+        "POP_SIZE = 1000000 # @param {type:'integer'}\n",
         "GENERATIONS = 1000000 # @param {type:'integer'}\n",
         "NUM_ISLANDS = 20 # @param {type:'integer'}\n",
         "USE_LOG_TRANSFORMATION = True # @param {type:'boolean'}\n",
@@ -155,7 +155,7 @@ def generate_notebook():
         "USE_OP_COS = False # @param {type:'boolean'}\n",
         "\n",
         "INITIAL_FORMULA_STRING = \"((lgamma(x0)-(x0+fact(-8.19257164)))+sqrt(((x0+fact(((lgamma(3)*lgamma(((x0-1)-sqrt(2))))/((fact(x1)**(-(x2)))-2))))+sqrt(((fact(pi)+(((25**(-(x2)))+((log((-(-11.09804344)))-sqrt(x1))+10))/lgamma((x0-fact((((5**(fact((x1/5))**3))**(x1**(2-x1)))/(exp(e)-x0)))))))+(x0+fact(((6**(pi**(-(x2))))/((exp(pi)+(((e+sqrt(e))**(x1-(x0-(lgamma(x0)-(x0+fact(((lgamma(x0)-x0)/(fact(((exp(3)*(2**(-(x2))))/(((x1/3)-2)-2)))-2))))))))-x0))-x0)))))))))\" # @param {type:'string'}\n",
-        "USE_INITIAL_FORMULA = True # @param {type:'boolean'}\n",
+        "USE_INITIAL_FORMULA = False # @param {type:'boolean'}\n",
         "\n",
         "config_path = 'AlphaSymbolic/core/gpu/config.py'\n",
         "with open(config_path, 'r') as f:\n",

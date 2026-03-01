@@ -51,7 +51,7 @@ class GpuGlobals:
     # ============================================================
     # Population Size
     # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
-    POP_SIZE = 500_000
+    POP_SIZE = 1_000_000
     GENERATIONS = 1_000_000
     
     # Islands
@@ -91,7 +91,7 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = True        # PURE GP: No fixed starting points
+    USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
     # Fitness = 0.00422584, Size = 64
     #INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 

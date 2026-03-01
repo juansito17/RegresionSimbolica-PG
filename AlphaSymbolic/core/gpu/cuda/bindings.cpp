@@ -168,6 +168,13 @@ void launch_mutation_kernel(
     int PAD_ID
 );
 
+void launch_validate_rpn_batch(
+    const torch::Tensor& population,
+    const torch::Tensor& token_arities,
+    torch::Tensor& out_valid,
+    int PAD_ID
+);
+
 void launch_crossover_splicing(
     const torch::Tensor& parent1,
     const torch::Tensor& parent2,
@@ -418,6 +425,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("find_subtree_ranges", &launch_find_subtree_ranges, "Find Subtree Ranges (CUDA)");
     m.def("mutate_population", &launch_mutation_kernel, "Mutation Kernel (CUDA)");
     m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)");
+    m.def("validate_rpn_batch", &launch_validate_rpn_batch, "Validate RPN Batch Kernel (CUDA)");
     
     // Phase 3
     m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)",

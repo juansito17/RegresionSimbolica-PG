@@ -604,6 +604,83 @@ void launch_mutation_kernel(
     );
 }
 
+__global__ void validate_rpn_batch_kernel(
+    const unsigned char* __restrict__ population, // [B, L]
+    const int* __restrict__ token_arities,        // [VocabSize]
+    bool* __restrict__ out_valid,                 // [B]
+    int B, int L, int vocab_size, int PAD_ID
+) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    
+    const unsigned char* row = &population[b * L];
+    int stack = 0;
+    bool valid = true;
+    bool pad_seen = false;
+    
+    for (int i = 0; i < L; ++i) {
+        int64_t t = (int64_t)row[i];
+        
+        if (t == PAD_ID) {
+            pad_seen = true;
+            continue;
+        }
+        
+        if (pad_seen) {
+            // Found a non-PAD token after a PAD token -> Invalid (not contiguous)
+            valid = false;
+            break;
+        }
+        
+        int arity = 0;
+        if (t >= 0 && t < vocab_size) {
+            arity = token_arities[t];
+        }
+        
+        // Stack delta
+        int delta = 1 - arity;
+        stack += delta;
+        
+        if (stack < 1) {
+            // Underflow
+            valid = false;
+            break;
+        }
+    }
+    
+    // Valid only if final stack is exactly 1
+    if (valid && stack != 1) {
+        valid = false;
+    }
+    
+    out_valid[b] = valid;
+}
+
+void launch_validate_rpn_batch(
+    const torch::Tensor& population,
+    const torch::Tensor& token_arities,
+    torch::Tensor& out_valid,
+    int PAD_ID
+) {
+    CHECK_INPUT(population);
+    CHECK_INPUT(token_arities);
+    CHECK_INPUT(out_valid);
+    
+    int B = population.size(0);
+    int L = population.size(1);
+    int vocab_size = token_arities.size(0);
+    
+    int threads = 256;
+    int blocks = (B + threads - 1) / threads;
+    
+    validate_rpn_batch_kernel<<<blocks, threads>>>(
+        population.data_ptr<unsigned char>(),
+        token_arities.data_ptr<int32_t>(),
+        out_valid.data_ptr<bool>(),
+        B, L, vocab_size, PAD_ID
+    );
+}
+
 __global__ void crossover_splicing_kernel(
     const unsigned char* __restrict__ parent1, // [N, L] (uint8)
     const unsigned char* __restrict__ parent2, // [N, L] (uint8)
