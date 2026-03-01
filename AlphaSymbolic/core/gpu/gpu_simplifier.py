@@ -9,6 +9,7 @@ import math
 import torch
 from typing import Tuple, List
 from .grammar import PAD_ID, GPUGrammar
+from .config import GpuGlobals
 
 try:
     from sys import path as sys_path
@@ -360,6 +361,13 @@ class GPUSymbolicSimplifier:
                         device=self.device, dtype=torch.float32
                     ).contiguous() if self.literal_ids.numel() > 0 else torch.empty(0, device=self.device, dtype=torch.float32)
                 
+                # DEBUG DTYPES
+                original_dtype = pop.dtype
+                if original_dtype != torch.int64:
+                    pop = pop.to(torch.int64)
+                if self._cuda_literal_ids.dtype != torch.int64:
+                    self._cuda_literal_ids = self._cuda_literal_ids.to(torch.int64)
+                
                 rpn_cuda_native.simplify_batch(
                     pop, arities_int,
                     self._cuda_val_table, self._cuda_literal_ids, self._cuda_literal_vals,
@@ -373,6 +381,10 @@ class GPUSymbolicSimplifier:
                     self.OP_FLOOR, self.OP_CEIL, self.OP_SIGN,
                     self.ID_0, self.ID_1, self.ID_2, self.ID_3, self.ID_4, self.ID_5, self.ID_6
                 )
+                
+                # Cast back to original dtype before operating
+                if pop.dtype != original_dtype:
+                    pop = pop.to(original_dtype)
                 
                 # Validate after CUDA simplification
                 is_valid = self._validate_batch_stack(pop)
@@ -394,7 +406,8 @@ class GPUSymbolicSimplifier:
                     return pop, constants, n_cleanup
 
                 return pop, constants, 0
-            except Exception:
+            except Exception as e:
+                print(f"[GPUSimplifier] CUDA kernel failed: {e}")
                 pass  # Fall through to Python implementation
 
         return self._simplify_fallback_passes(pop, constants, max_passes, original_population=population)

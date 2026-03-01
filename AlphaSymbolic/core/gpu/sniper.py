@@ -512,18 +512,25 @@ class Sniper:
         try:
             # Convert to torch tensors if needed
             if isinstance(x_data, torch.Tensor):
-                x_t = x_data.flatten().to(self.device)
+                x_t = x_data.clone().to(self.device).to(torch.float64)
             else:
-                x_t = torch.tensor(x_data, device=self.device, dtype=torch.float64).flatten()
+                x_t = torch.tensor(x_data, device=self.device, dtype=torch.float64)
             
             if isinstance(y_data, torch.Tensor):
-                y_t = y_data.flatten().to(self.device)
+                y_t = y_data.flatten().to(self.device).to(torch.float64)
             else:
                 y_t = torch.tensor(y_data, device=self.device, dtype=torch.float64).flatten()
             
-            # Ensure float64 for numerical stability
-            x_t = x_t.to(torch.float64)
-            y_t = y_t.to(torch.float64)
+            # FIX: Extract primary variable correctly for multi-variable inputs
+            if x_t.dim() > 1:
+                if x_t.shape[0] == y_t.shape[0]:     # [Samples, Vars]
+                    x_t = x_t[:, 0] if x_t.shape[1] > 1 else x_t.flatten()
+                elif x_t.shape[1] == y_t.shape[0]:   # [Vars, Samples]
+                    x_t = x_t[0, :] if x_t.shape[0] > 1 else x_t.flatten()
+                else:
+                    return None
+            else:
+                x_t = x_t.flatten()
             
             # Check 1: Linear (y = mx+c)
             res = self._check_linear(x_t, y_t)

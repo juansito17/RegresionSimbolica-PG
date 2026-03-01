@@ -91,19 +91,19 @@ class GpuGlobals:
     # ============================================================
     # Initial Population
     USE_INITIAL_POP_CACHE = False
-    USE_INITIAL_FORMULA = False        # PURE GP: No fixed starting points
+    USE_INITIAL_FORMULA = True        # PURE GP: No fixed starting points
     # Evolved Gen 16 seed (Verified < 1% error)
     # Fitness = 0.00422584, Size = 64
     #INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (11.56113815 / lgamma(x0))) + (x0 + fact(((6**(3.11541605**(-(x2)))) / ((exp(pi) + ((4.36953878**(x1 - (x0 - (lgamma(x0) - x0)))) - x0)) - x0)))))))))" 
 
-    # Fitness = 0.00142575, Size = 128
-    INITIAL_FORMULA_STRING = "((lgamma(x0) - (x0 + fact(-8.19257164))) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + (((25**(-(x2))) + ((log((-(-11.09804344))) - sqrt(x1)) + 10)) / lgamma((x0 - fact((((5**(fact((x1 / 5))**3))**(x1**(2 - x1))) / (exp(e) - x0))))))) + (x0 + fact(((6**(pi**(-(x2)))) / ((exp(pi) + (((e + sqrt(e))**(x1 - (x0 - (lgamma(x0) - (x0 + fact(((lgamma(x0) - x0) / (fact(((exp(3) * (2**(-(x2)))) / (((x1 / 3) - 2) - 2))) - 2)))))))) - x0)) - x0)))))))))" 
+    # Fitness = 0.00064572, Size = 128
+    INITIAL_FORMULA_STRING = "((lgamma(x0) - x0) + sqrt(((x0 + fact(((lgamma(3) * lgamma(((x0 - 1) - sqrt(2)))) / ((fact(x1)**(-(x2))) - 2)))) + sqrt(((fact(pi) + ((pi * 4) / lgamma((x0 - (fact(x1)**(sqrt(lgamma((((x0 - ((6**(4 - x1))**(-(x2)))) - sqrt(sqrt(x1))) - x1))) - x1)))))) + (x0 + fact(((6**(((e * x1) / 3)**(-(x2)))) / (((20.1429615 + 3) + ((sqrt((x0 - 4))**(x1 - (x0 - (lgamma((x0 - (x0**(-(sqrt(sqrt(x1))))))) - (x0 + fact(((lgamma(x0) - x0) / (fact(((exp(3) * (2**(-(x2)))) / ((x1 / 3) - 4))) - 2)))))))) - x0)) - x0)))))))))" 
 
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
-    MAX_FORMULA_LENGTH = 32
+    MAX_FORMULA_LENGTH = 128
     MAX_TREE_DEPTH_INITIAL = 5
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
