@@ -203,8 +203,7 @@ class LibraryLearner:
             [k, max_block_len] int tensor, or None if library is empty.
         """
         try:
-            n_valid = self.valid.sum().item()
-            if n_valid == 0:
+            if not self.valid.any():
                 return None
             valid_idx = self.valid.nonzero(as_tuple=False).squeeze(1)
             # Weight: high count + low fitness = more likely sampled
@@ -215,8 +214,8 @@ class LibraryLearner:
             cnt_w = (cnt + 1.0).log()
             weights = fit_w * cnt_w
             # Sample with replacement
-            n_sample = min(k, int(n_valid))
-            sampled_local = torch.multinomial(weights, n_sample, replacement=(n_sample > n_valid))
+            n_sample = min(k, int(self.valid.sum().item()))
+            sampled_local = torch.multinomial(weights, n_sample, replacement=(n_sample > int(self.valid.sum().item())))
             sampled_global = valid_idx[sampled_local]
             blocks = self.library_tokens[sampled_global]  # [n_sample, max_block_len]
             return blocks
@@ -263,7 +262,8 @@ class LibraryLearner:
 
     @property
     def size(self) -> int:
-        return int(self.valid.sum().item())
+        # Use lazy property to avoid frequent blocking .item()
+        return int(self.valid.sum())
 
     def __repr__(self) -> str:
         return f"LibraryLearner(capacity={self.capacity}, filled={self.size}, block_len={self.max_block_len})"

@@ -134,7 +134,8 @@ def generate_notebook():
     # --- CELL 5: Configuration Form ---
     config_update_code = [
         "# @title 3. Configure & Run\n",
-        "POP_SIZE = 1000000 # @param {type:'integer'}\n",
+        "# @markdown Define los hiperparámetros. T4 Colab GPU usa 16GB VRAM (Ideal 2M a 4M de Tamaño).\n",
+        "POP_SIZE = 2000000 # @param {type:'integer'}\n",
         "GENERATIONS = 1000000 # @param {type:'integer'}\n",
         "NUM_ISLANDS = 20 # @param {type:'integer'}\n",
         "USE_LOG_TRANSFORMATION = True # @param {type:'boolean'}\n",

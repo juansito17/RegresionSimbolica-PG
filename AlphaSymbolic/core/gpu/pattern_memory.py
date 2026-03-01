@@ -239,7 +239,7 @@ class PatternMemory:
             new_mask = torch.ones(N, dtype=torch.bool, device=self.device)
         
         # 2. Add new patterns to storage
-        new_count = new_mask.sum().item()
+        new_count = int(new_mask.sum())
         if new_count == 0:
             return
         
@@ -402,7 +402,7 @@ class PatternMemory:
     
     def get_stats(self) -> dict:
         """Get pattern memory statistics."""
-        useful_count = (self.patterns_count[:self.n_patterns] >= self.min_uses).sum().item()
+        useful_count = int((self.patterns_count[:self.n_patterns] >= self.min_uses).sum())
         return {
             'n_patterns': self.n_patterns,
             'total_recorded': self.total_recorded,

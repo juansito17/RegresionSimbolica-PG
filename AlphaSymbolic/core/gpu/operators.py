@@ -1324,9 +1324,12 @@ class GPUOperators:
         """
         valid_mask = self._validate_rpn_batch(population)
         invalid_mask = ~valid_mask
-        n_invalid = int(invalid_mask.sum().item())
-        if n_invalid == 0:
+        
+        # Asynchronous evaluation: no CPU sync via .item() unless absolutely needed
+        if not invalid_mask.any():
             return population, constants, 0
+            
+        n_invalid = int(invalid_mask.sum().item())
 
         invalid_idx = invalid_mask.nonzero(as_tuple=True)[0]
         population[invalid_idx] = self.generate_random_population(n_invalid)

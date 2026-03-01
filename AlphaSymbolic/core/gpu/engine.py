@@ -363,8 +363,12 @@ class TensorGeneticEngine:
              pass
         return None, None, None, None
 
-    def get_tree_size(self, rpn_tensor: torch.Tensor) -> int:
-        return (rpn_tensor != PAD_ID).sum().item()
+    def get_tree_size(self, rpn_tensor: torch.Tensor) -> torch.Tensor:
+        """Returns the batched size (number of valid tokens) of the given RPN tensor.
+        Optimized to NEVER use .item() and return raw GPU tensors instead."""
+        if rpn_tensor.dim() == 1:
+            return (rpn_tensor != PAD_ID).sum(dim=0)
+        return (rpn_tensor != PAD_ID).sum(dim=1)
 
     def _generate_polynomial_basis(self, size: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -1516,7 +1520,7 @@ class TensorGeneticEngine:
             # Time-based early exit: configurable good-enough solution before full timeout
             # Only exit with non-trivial formulas and high explained variance.
             if best_rpn is not None and elapsed >= GpuGlobals.GOOD_ENOUGH_MIN_SECONDS and best_rmse < GpuGlobals.GOOD_ENOUGH_RMSE:
-                tree_size = self.get_tree_size(best_rpn)
+                tree_size = self.get_tree_size(best_rpn).item()
         
 
                 has_var_token = True
@@ -1934,7 +1938,7 @@ class TensorGeneticEngine:
                     # On-the-fly symbolic cleanup for promising but bloated formulas.
                     # This is generic and data-driven (no benchmark-specific templates).
                     try:
-                        candidate_size_now = self.get_tree_size(best_rpn)
+                        candidate_size_now = self.get_tree_size(best_rpn).item()
                         if candidate_size_now >= 18 and best_rmse < max(0.2, GpuGlobals.GOOD_ENOUGH_RMSE * 4.0):
                             cand_formula = self.rpn_to_infix(best_rpn, best_consts_vec)
                             simp_formula = self._post_simplify_formula(cand_formula, x_t, y_t)
@@ -2018,8 +2022,8 @@ class TensorGeneticEngine:
                 # The kernel stores the actual best in _gpu_best_rpn
                 candidate_rpn = self._gpu_best_rpn.clone()
                 candidate_consts = self._gpu_best_consts.clone().to(self.dtype)
-                cand_size = self.get_tree_size(candidate_rpn)
-                best_size = self.get_tree_size(best_rpn)
+                cand_size = self.get_tree_size(candidate_rpn).item()
+                best_size = self.get_tree_size(best_rpn).item()
 
                 # Accept simpler candidate if fitness is effectively equivalent.
                 if cand_size + 1 < best_size and min_rmse_val <= best_rmse * 1.02 + GpuGlobals.FITNESS_EQUALITY_TOLERANCE:
@@ -2248,7 +2252,7 @@ class TensorGeneticEngine:
 
                     # Optional best carry-over only if non-trivial or genuinely excellent
                     if best_rpn is not None:
-                        best_size = self.get_tree_size(best_rpn)
+                        best_size = self.get_tree_size(best_rpn).item()
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             population[0] = best_rpn
                             pop_constants[0] = best_consts_vec
@@ -2354,7 +2358,7 @@ class TensorGeneticEngine:
                 stag_factor = min(3.0, (global_stagnation - GpuGlobals.MUTATION_STAGNATION_TRIGGER) / float(stag_span))
                 dynamic_complexity_penalty *= (1.0 + 0.25 * stag_factor)
             if best_rpn is not None and best_rmse < GpuGlobals.GOOD_ENOUGH_RMSE:
-                best_size_now = self.get_tree_size(best_rpn)
+                best_size_now = self.get_tree_size(best_rpn).item()
                 if best_size_now > 18:
                     dynamic_complexity_penalty *= 1.35
             dynamic_complexity_penalty = min(COMPLEXITY_PENALTY * 3.0, dynamic_complexity_penalty)
@@ -2529,7 +2533,7 @@ class TensorGeneticEngine:
                     # Fuera del cooldown: siempre activo para proteger el global best.
                     _elite_ok = (_post_restart_cooldown <= 0)
                     if best_rpn is not None and _elite_ok:
-                        best_size = self.get_tree_size(best_rpn)
+                        best_size = self.get_tree_size(best_rpn).item()
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             next_pop[0] = best_rpn
                             next_c[0] = best_consts_vec

@@ -51,7 +51,7 @@ class GpuGlobals:
     # ============================================================
     # Population Size
     # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
-    POP_SIZE = 1_000_000
+    POP_SIZE = 500_000
     GENERATIONS = 1_000_000
     
     # Islands
