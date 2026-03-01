@@ -337,7 +337,7 @@ class GPUSymbolicSimplifier:
         pop = population.clone()
         
         # ============ CUDA FAST PATH ============
-        if SIMPLIFY_CUDA_AVAILABLE and L <= 64:
+        if SIMPLIFY_CUDA_AVAILABLE and L <= 256:
             try:
                 # Build int32 arity table for kernel
                 max_id = self.arity_table.size(0)

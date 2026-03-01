@@ -30,7 +30,7 @@
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 // Maximum formula length (tokens)
-#define MAX_FORMULA_LEN 64
+#define MAX_FORMULA_LEN 256
 // Max number of literals for constant folding mapping
 #define MAX_LITERALS 64
 

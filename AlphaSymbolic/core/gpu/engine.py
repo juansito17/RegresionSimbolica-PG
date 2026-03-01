@@ -76,7 +76,9 @@ class TensorGeneticEngine:
 
         
         # --- Advanced Features ---
-        self.sniper = Sniper(self.device)
+        # Sniper operates on 100-point data blocks using PyTorch Adam/lstsq.
+        # GPU Kernel launch overhead makes this extremely slow. Using CPU completely bypasses overhead.
+        self.sniper = Sniper(torch.device('cpu'))
 
         self.pareto = ParetoOptimizer(self.device, GpuGlobals.PARETO_MAX_FRONT_SIZE, dtype=self.dtype)
 
@@ -301,17 +303,17 @@ class TensorGeneticEngine:
              # Try simple offsets first (+C, +C*x, +C*x^2, +C*x^3, +C*x^4)
              # x0 is the primary variable name in the grammar
              offset_templates = ["C", "C * x0", "C * (x0^2)", "C * (x0^3)", "C * (x0^4)"]
+             cand_strs = [f"({base_str} + {t})" for t in offset_templates]
              
-             for template in offset_templates:
-                 candidate_str = f"({base_str} + {template})"
-                 pop_cand, const_cand = self.load_population_from_strings([candidate_str])
-                 if pop_cand is not None:
-                     # Quick optimization of the new term
-                     if GpuGlobals.USE_NANO_PSO:
-                        ref_c, ref_f = self.optimizer.nano_pso(pop_cand, const_cand, x_t, y_t, steps=30)
-                        cand_rmse = ref_f.item()
-                        if cand_rmse < best_rmse:
-                            return candidate_str, cand_rmse, pop_cand[0], ref_c[0]
+             pop_cand, const_cand = self.load_population_from_strings(cand_strs)
+             if pop_cand is not None:
+                 # Quick optimization of the new term (all templates batched together)
+                 if GpuGlobals.USE_NANO_PSO:
+                     ref_c, ref_f = self.optimizer.nano_pso(pop_cand, const_cand, x_t, y_t, steps=30)
+                     best_idx = ref_f.argmin().item()
+                     cand_rmse = ref_f[best_idx].item()
+                     if cand_rmse < best_rmse:
+                         return cand_strs[best_idx], cand_rmse, pop_cand[best_idx], ref_c[best_idx]
              
              # --- Additive Boost: y = f(x) + g(x) ---
              # g(x) = y - f(x)
