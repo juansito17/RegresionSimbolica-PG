@@ -5,9 +5,9 @@ from AlphaSymbolic.core.grammar import ExpressionTree
 from AlphaSymbolic.utils.optimize_constants import optimize_constants
 
 class PhaseManager:
-    def __init__(self, model, device):
+    def __init__(self, model=None, device=None):
         self.model = model
-        self.device = device
+        self.device = device if device else (torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         
     def detect_phase_change(self, x, residuals, min_samples=4):
         """
@@ -82,7 +82,7 @@ class PhaseManager:
         Formula: (1 - Mask)*f_even + Mask*f_odd
         Mask = sin((3.14159 * x0) / 2.0)^2
         """
-        mask = "sq(sin((3.1415926535 * x0) / 2.0))"
+        mask = "pow(sin((3.1415926535 * x0) / 2.0), 2)"
         combined = f"((1.0 - {mask}) * ({f_even}) + {mask} * ({f_odd}))"
         return combined
         
