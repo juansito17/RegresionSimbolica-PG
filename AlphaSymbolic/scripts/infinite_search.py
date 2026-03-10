@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from AlphaSymbolic.search.hybrid_search import hybrid_solve
-from AlphaSymbolic.ui.app_core import get_model
+# from AlphaSymbolic.ui.app_core import get_model (REMOVED: No NN)
 from AlphaSymbolic.core.grammar import ExpressionTree
 from AlphaSymbolic.utils.optimize_constants import optimize_constants, substitute_constants, convert_and_extract_constants
 from AlphaSymbolic.search.phase_manager import PhaseManager
@@ -24,9 +24,12 @@ Y_FULL = GpuGlobals.PROBLEM_Y_FULL
 X_TARGETS = np.array([26, 27], dtype=np.float64)
 Y_TARGETS = np.array([22317699616364044, 234907967154122528], dtype=np.float64)
 
-CSV_FILE = "top_formulas.csv"
-PATTERN_FILE = "pattern_memory.json"
-TOP_K = 5
+DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'results', 'oeis')
+os.makedirs(DATA_DIR, exist_ok=True)
+
+CSV_FILE = os.path.join(DATA_DIR, "top_formulas.csv")
+PATTERN_FILE = os.path.join(DATA_DIR, "pattern_memory.json")
+TOP_K = 10
 MIN_SAMPLE_SIZE = 6 # > 5
 
 import json
@@ -84,12 +87,49 @@ def update_pattern_memory(memory, formula_str):
         return True
     return False
 
+def mutate_formula_structurally(formula_str, max_dist=2):
+    """
+    Takes a formula, finds a random subtree, and replaces it with a random one.
+    This creates structural diversity from elites.
+    """
+    try:
+        tree = ExpressionTree.from_infix(formula_str)
+        if not tree or not tree.is_valid: return formula_str
+        
+        # 1. Collect all nodes
+        nodes = []
+        def collect(n, p, idx):
+            nodes.append((n, p, idx))
+            for i, child in enumerate(n.children):
+                collect(child, n, i)
+        
+        collect(tree.root, None, -1)
+        
+        # 2. Pick a random node to swap (avoid identity root swap if possible)
+        target_node, parent, child_idx = random.choice(nodes)
+        
+        # 3. Generate a small random replacement
+        # Use a depth that won't bloat the formula too much
+        replacement = ExpressionTree.generate_random(max_depth=2, num_variables=3, p_terminal=0.4).root
+        
+        if parent is None:
+            tree.root = replacement
+        else:
+            parent.children[child_idx] = replacement
+            
+        return tree.root.to_infix()
+    except:
+        return formula_str
+
 
 def load_or_create_top_list():
     if os.path.exists(CSV_FILE):
         try:
             df = pd.read_csv(CSV_FILE)
-            return df.to_dict('records')
+            records = df.to_dict('records')
+            # Ensure it's sorted by score immediately after loading
+            records.sort(key=lambda x: x.get('rmsle_global', float('inf')))
+            return records
         except Exception as e:
             print(f"Error loading CSV: {e}")
             return []
@@ -129,7 +169,7 @@ def backup_to_drive():
         # Silently fail if drive not mounted or other issues
         pass
 
-def evaluate_and_save(full_formula_str, residual_formula_str, top_formulas, pattern_memory, origin="Search"):
+def evaluate_and_save(full_formula_str, residual_formula_str, top_formulas, pattern_memory, origin="Search", time_taken=0):
     """
     Evaluates a candidate formula string on the full dataset (History + Targets),
     calculates metrics, and saves to top_formulas if good.
@@ -139,8 +179,14 @@ def evaluate_and_save(full_formula_str, residual_formula_str, top_formulas, patt
         if not tree.is_valid: return False
         
         # Combine all points for validation
-        x_all = np.concatenate((X_FULL, X_TARGETS))
+        x_all_raw = np.concatenate((X_FULL, X_TARGETS))
         y_all = np.concatenate((Y_FULL, Y_TARGETS))
+        
+        # Construct feature matrix for evaluation (3 variables)
+        x_all = np.zeros((len(x_all_raw), 3), dtype=np.float64)
+        x_all[:, 0] = x_all_raw
+        x_all[:, 1] = x_all_raw % GpuGlobals.VAR_MOD_X1
+        x_all[:, 2] = x_all_raw % GpuGlobals.VAR_MOD_X2
         
         y_pred_all = tree.evaluate(x_all)
         y_pred_safe = np.maximum(y_pred_all, 0)
@@ -163,7 +209,8 @@ def evaluate_and_save(full_formula_str, residual_formula_str, top_formulas, patt
             'extrapolation_error': extrap_error_sum,
             'pred_26': pred_26,
             'pred_27': pred_27,
-            'sample_size': 25, # Full
+            'sample_size': origin, # Using origin string which contains 'Search(k=...)' or similar
+            'time': time_taken,
             'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
         }
         
@@ -175,9 +222,13 @@ def evaluate_and_save(full_formula_str, residual_formula_str, top_formulas, patt
         top_formulas.sort(key=lambda x: x.get('rmsle_global', float('inf')))
         
         if len(top_formulas) > TOP_K:
-            del top_formulas[TOP_K:] # Slice in place
+            top_formulas[:] = top_formulas[:TOP_K] 
             
         save_top_list(top_formulas)
+        
+        # Feedback on the current standing
+        best_now = top_formulas[0].get('rmsle_global', 1.0)
+        print(f"  [Top List] Current Global Best RMSLE: {best_now:.6f} ({len(top_formulas)} formulas tracked)")
         
         if update_pattern_memory(pattern_memory, full_formula_str):
              save_pattern_memory(pattern_memory)
@@ -294,7 +345,7 @@ def run_phase_search(iteration, top_formulas, phase_manager, model, device, patt
              refined_res_str = substitute_constants(tree_comb.get_infix(), consts, tree_comb.root.get_constant_positions())
              
              # Reconstruct Full
-             full_formula_str = f"exp({refined_res_str} - (1.943 * x0) + lgamma(x0))"
+             full_formula_str = f"exp({refined_res_str} - ({SLOPE:.4f} * x0) + lgamma(x0 + 1))"
              
              evaluate_and_save(full_formula_str, refined_res_str, top_formulas, pattern_memory, origin="PhaseSplit")
              
@@ -312,13 +363,10 @@ def main():
     # Pandas is required
 
 
-    # Load Model
-    print("Loading Model...")
-    try:
-        MODEL, DEVICE = get_model()
-    except Exception as e:
-        print(f"Failed to load model: {e}")
-        return
+    # Load Model (REMOVED)
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    MODEL = None
+    print(f"Bypassing Neural Network. Using Pure Evolutionary Search on {DEVICE}.")
         
     top_formulas = load_or_create_top_list()
     pattern_memory = load_pattern_memory()
@@ -334,6 +382,32 @@ def main():
     GpuGlobals.USE_LOG_TRANSFORMATION = False
     print(f"Starting infinite search loop... (Press Ctrl+C to stop)")
     iteration = 0
+    
+    # --- AUTO-SIMKIN (Dynamic Slope Calculation) ---
+    # Goal: Flatten the sequence by removing the growth of N! and finding the linear trend.
+    print("Calculating optimal slope (Auto-Simkin)...")
+    epsilon = 1e-9
+    from scipy.special import gammaln
+    
+    # Use all training data to find the trend
+    y_raw_log = np.log(np.abs(Y_FULL) + epsilon)
+    y_log_minus_fact = y_raw_log - gammaln(X_FULL + 1)
+    
+    # Linear Regression (Slope only)
+    # y = SLOPE * x + b
+    # We want to find SLOPE that flattens y_log_minus_fact
+    # Using simple covariance/variance formula for slope
+    x_mean = np.mean(X_FULL)
+    y_mean = np.mean(y_log_minus_fact)
+    numerator = np.sum((X_FULL - x_mean) * (y_log_minus_fact - y_mean))
+    denominator = np.sum((X_FULL - x_mean)**2)
+    
+    if abs(denominator) < 1e-9:
+        SLOPE = 0.0
+    else:
+        SLOPE = numerator / denominator
+        
+    print(f"  [Auto-Simkin] Optimal flattened slope found: {SLOPE:.4f}")
     
     while True:
         iteration += 1
@@ -363,23 +437,31 @@ def main():
         print(f"[Iter {iteration}] Sampling {k} pts (Odds >=8)...", end=" ")
         
         # ... (Seeds Logic unchanged) ...
-        # Prepare Seeds (Evolutionary Feedback)
+        # Prepare Seeds (Evolutionary Feedback + Mutations)
         extra_seeds = []
         if top_formulas:
-            # User request: "8 workers"
             # W0..W4 -> Top 5 formulas
             candidates = top_formulas[:5]
             candidate_formulas = [c['formula'] for c in candidates]
             extra_seeds.extend(candidate_formulas)
-            print(f"+ {len(extra_seeds)} Best")
+            
+            # ELITE PERTURBATION: Mutate the best ones to explore local neighborhood
+            for f in candidate_formulas:
+                extra_seeds.append(mutate_formula_structurally(f))
+            
+            print(f"+ {len(candidate_formulas)} Elites + {len(candidate_formulas)} Mutations")
         
         if pattern_memory:
+            # IMPORTANCE SAMPLING: Patterns that worked before
             sorted_patterns = sorted(pattern_memory.items(), key=lambda x: x[1], reverse=True)
-            candidate_pool = [p[0] for p in sorted_patterns[:5]] 
+            candidate_pool = [p[0] for p in sorted_patterns[:10]] 
             if candidate_pool:
-                chosen_pattern = random.choice(candidate_pool)
-                extra_seeds.append(chosen_pattern)
-                print(f"+ 1 Pattern")
+                # Add 3 variants from patterns
+                for _ in range(3):
+                    chosen_pattern = random.choice(candidate_pool)
+                    # Patterns might have 'C', hybrid_solve handles them
+                    extra_seeds.append(chosen_pattern)
+                print(f"+ 3 Pattern variants")
 
         # ... (Search Logic unchanged) ...
         # Transform target
@@ -394,9 +476,9 @@ def main():
         # Transform target
         # Use abs(y) just in case, though they are positive counts usually.
         # SIMKIN MANEUVER 
-        # 1. Simkin: +1.943 * x0
+        # 1. Simkin: +SLOPE * x0
         # 2. No Parity/Smoothing (Split Dataset)
-        y_sample_flat = np.log(np.abs(y_sample) + epsilon) - factorial_term + (1.943 * x_features[:, 0])
+        y_sample_flat = np.log(np.abs(y_sample) + epsilon) - factorial_term + (SLOPE * x_features[:, 0])
         
         # print first few to debug (in stdout)
         if iteration == 1:
@@ -446,14 +528,15 @@ def main():
                 x_all = np.concatenate((x_hist, x_targ))
                 y_all = np.concatenate((y_hist, y_targ))
                 
-                # Build x_all_features for refinement (2 vars)
-                x_all_features = np.zeros((len(x_all), 2), dtype=np.float64)
+                # Build x_all_features for refinement (3 variables)
+                x_all_features = np.zeros((len(x_all), 3), dtype=np.float64)
                 x_all_features[:, 0] = x_all
-                x_all_features[:, 1] = x_all % 6
+                x_all_features[:, 1] = x_all % GpuGlobals.VAR_MOD_X1
+                x_all_features[:, 2] = x_all % GpuGlobals.VAR_MOD_X2
                 
                 factorial_term_all = gammaln(x_all + 1)
                 # Apply Simkin Correction to Validation Target too (No parity correction)
-                y_all_flat = np.log(np.abs(y_all) + epsilon) - factorial_term_all + (1.943 * x_all_features[:, 0])
+                y_all_flat = np.log(np.abs(y_all) + epsilon) - factorial_term_all + (SLOPE * x_all_features[:, 0])
                 
                 if initial_values:
                     # optimization expects C-tree
@@ -467,13 +550,13 @@ def main():
                          # Check if any constant is very close to an integer and snap it
                          snapped_dict = {}
                          snapped = False
-                         for k, v in constants_dict.items():
+                         for c_idx, v in constants_dict.items():
                              nearest_int = round(v)
                              if abs(v - nearest_int) < 0.02: # Tolerance 0.02
-                                 snapped_dict[k] = float(nearest_int)
+                                 snapped_dict[c_idx] = float(nearest_int)
                                  snapped = True
                              else:
-                                 snapped_dict[k] = v
+                                 snapped_dict[c_idx] = v
                          
                          if snapped:
                              # SAFETY CHECK: Verify Snapped RMSE
@@ -486,24 +569,25 @@ def main():
                                  # 2. Evaluate
                                  tree_snap = ExpressionTree.from_infix(snapped_str)
                                  if tree_snap.is_valid:
-                                    y_pred_snap = tree_snap.evaluate(x_all_features)
-                                    # Calculate RMSE on FLAT space (same as optimization objective)
-                                    mse_snap = np.mean((y_pred_snap - y_all_flat)**2)
-                                    rmse_snap = np.sqrt(mse_snap)
+                                     # Ensure x_all_features is used for evaluation
+                                     y_pred_snap = tree_snap.evaluate(x_all_features)
+                                     # Calculate RMSE on FLAT space (same as optimization objective)
+                                     mse_snap = np.mean((y_pred_snap - y_all_flat)**2)
+                                     rmse_snap = np.sqrt(mse_snap)
                                     
-                                    # 3. Compare: Allow up to 5% degradation for the sake of simplicity
-                                    # Note: rmse_original might be nearly 0. Be careful with ratio.
-                                    # Use absolute difference tolerance for very small errors?
-                                    ratio = 1.05
-                                    if rmse_original < 1e-6: # Ultra perfect fit
-                                        ratio = 2.0 # Allow doubling error if it's tiny (1e-7 -> 2e-7 is fine)
-                                        
-                                    if rmse_snap <= rmse_original * ratio:
-                                        # Accepted!
-                                        constants_dict = snapped_dict
-                                        # print(f"  [Snap] Accepted (RMSE: {rmse_original:.5f} -> {rmse_snap:.5f})")
-                                    else:
-                                        pass # print(f"  [Snap] Rejected (Degradation too high)")
+                                     # 3. Compare: Allow up to 5% degradation for the sake of simplicity
+                                     # Note: rmse_original might be nearly 0. Be careful with ratio.
+                                     # Use absolute difference tolerance for very small errors?
+                                     ratio = 1.05
+                                     if rmse_original < 1e-6: # Ultra perfect fit
+                                         ratio = 2.0 # Allow doubling error if it's tiny (1e-7 -> 2e-7 is fine)
+                                         
+                                     if rmse_snap <= rmse_original * ratio:
+                                         # Accepted!
+                                         constants_dict = snapped_dict
+                                         # print(f"  [Snap] Accepted (RMSE: {rmse_original:.5f} -> {rmse_snap:.5f})")
+                                     else:
+                                         pass # print(f"  [Snap] Rejected (Degradation too high)")
                              except:
                                  pass # If verification fails, keeping original
 
@@ -519,86 +603,24 @@ def main():
             print(f"Refinement failed: {e}") 
         
         # 3. RECONSTRUCTION & Transformation
-        # Formula = exp( Residual + lgamma(x+1) - 1.943*x )
+        # Formula = exp( Residual + lgamma(x+1) - SLOPE*x )
         # No parity correction subtraction needed.
-        full_formula_str = f"exp({residual_formula_str} - (1.943 * x0) + lgamma(x0))"
+        full_formula_str = f"exp({residual_formula_str} - ({SLOPE:.4f} * x0) + lgamma(x0 + 1))"
         # print(f"Reconstructed Full Formula: {full_formula_str}")
 
-        # 4. Evaluate on FULL RANGE (History + Targets) w/ Reconstructed Formula
-        try:
-            tree = ExpressionTree.from_infix(full_formula_str)
-            if not tree.is_valid:
-                print("Invalid reconstructed tree.")
-                # Fallback to evaluate residual directly? No, that's wrong scale.
-                continue
-            
-            # Combine all points for validation
-            x_all = np.concatenate((X_FULL, X_TARGETS))
-            y_all = np.concatenate((Y_FULL, Y_TARGETS))
-            
-            y_pred_all = tree.evaluate(x_all)
-            
-            # Calculate RMSLE on ORIGINAL SPACE
-            y_pred_safe = np.maximum(y_pred_all, 0) # Clip negative predictions
-            
-            # Validating log error
-            # Handle potential overflow in y_pred if it's huge?
-            # if y_pred is inf, log is inf.
-            
-            log_error = np.sqrt(np.mean((np.log1p(y_pred_safe) - np.log1p(y_all))**2))
-            
-            # Also calculate Extrapolation Absolute Error
-            pred_26 = y_pred_all[-2]
-            pred_27 = y_pred_all[-1]
-            extrap_error_sum = abs(pred_26 - Y_TARGETS[0]) + abs(pred_27 - Y_TARGETS[1])
-            
-            time_taken = result.get('time', 0)
-            print(f"\n[SUCCESS] Formula: {full_formula_str}\n          RMSLE (1-27): {log_error:.6f} | Extrap Error: {extrap_error_sum:.2e} | Time: {time_taken:.2f}s")
-            
-            # 5. Update Top List
-            entry = {
-                'formula': full_formula_str, # Store the FULL formula
-                'residual': residual_formula_str, # Store residual for curiosity
-                'rmsle_global': log_error, 
-                'extrapolation_error': extrap_error_sum, 
-                'pred_26': pred_26,
-                'pred_27': pred_27,
-                'sample_size': k,
-                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            # Add to list
-            top_formulas.append(entry)
-            
-            # Deduplicate by formula
-            unique_formulas = {d['formula']: d for d in top_formulas}
-            top_formulas = list(unique_formulas.values())
-            
-            # Sort by RMSLE
-            top_formulas.sort(key=lambda x: x.get('rmsle_global', float('inf')))
-            
-            # Keep Top 5
-            if len(top_formulas) > TOP_K:
-                top_formulas = top_formulas[:TOP_K]
-            
-            # Save
-            save_top_list(top_formulas)
-            
-            # Update Pattern Memory with the new winner
-            if update_pattern_memory(pattern_memory, full_formula_str):
-                 save_pattern_memory(pattern_memory)
-                 backup_to_drive() # Also backup when pattern memory changes
-
-            
-            current_best = top_formulas[0].get('rmsle_global', 999)
-            print(f"Current Best RMSLE: {current_best:.6f}")
-            
-            # 6. Phase Search (AI Physicist)
-            run_phase_search(iteration, top_formulas, phase_manager, MODEL, DEVICE, pattern_memory)
-            
-        except Exception as e:
-            print(f"Evaluation failed: {e}")
-            continue
+        # 4. Evaluate and Save
+        # This replaces the manual save logic to avoid inconsistencies (like the 'k' bug)
+        evaluate_and_save(
+            full_formula_str, 
+            residual_formula_str, 
+            top_formulas, 
+            pattern_memory, 
+            origin=f"Search(k={k})",
+            time_taken=result.get('time', 0)
+        )
+        
+        # 5. Phase Search (AI Physicist)
+        run_phase_search(iteration, top_formulas, phase_manager, MODEL, DEVICE, pattern_memory)
 
 if __name__ == "__main__":
     main()
