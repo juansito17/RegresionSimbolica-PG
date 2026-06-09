@@ -130,14 +130,13 @@ def get_gpu_live_tab(verbose_state=None):
             with gr.Row():
                 stop_btn = gr.Button("DETENER", variant="stop", interactive=False)
                 start_btn = gr.Button("INICIAR EVOLUCIÓN", variant="primary")
-            
-            status_html = gr.HTML(value='<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #64748b; color: #64748b;">Esperando inicio...</div>')
 
         with gr.Column(scale=1, min_width=360, elem_classes="as-main-panel"):
             gr.Markdown("## Dashboard de Evolución")
             current_best_formula = gr.HTML(label="Mejor Fórmula Actual", value=formula_card("", "Mejor fórmula actual"))
             stats_display = gr.HTML(label="Estadísticas", value=metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "—"), ("Islas", "—")]))
             live_plot = gr.Plot(label="Ajuste en Tiempo Real")
+            status_html = gr.HTML(value='<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #64748b; color: #64748b;">Esperando inicio...</div>')
     
     # --- Helper Functions ---
     def load_csv(file):
