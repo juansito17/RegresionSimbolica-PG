@@ -543,7 +543,7 @@ class TensorGeneticEngine:
         
         try:
              # Lazy import
-             from search.beam_search import beam_solve
+             from AlphaSymbolic.search.beam_search import beam_solve
              
              # Convert data for Beam Search (needs CPU or specific shape)
              # beam_solve expects raw x, y
@@ -561,8 +561,7 @@ class TensorGeneticEngine:
              results = beam_solve(
                  x_sub, y_sub, self.model, self.device, 
                  beam_width=10, 
-                 num_variables=self.num_variables,
-                 verbose=False
+                 num_variables=self.num_variables
              )
              
              candidates = [r['formula'] for r in results if 'formula' in r and not r['formula'].startswith("Partial")]
@@ -584,7 +583,7 @@ class TensorGeneticEngine:
         
         try:
              # Lazy import
-             from search.mcts import MCTS
+             from AlphaSymbolic.search.mcts import MCTS
              
              # Sample for speed (MCTS is slow)
              n_samples = min(len(x_t), 50)
@@ -1872,21 +1871,26 @@ class TensorGeneticEngine:
                 # Increment sync counter
                 self._sync_counter += 1
                 
-                # Only sync to CPU when reporting or significant improvement
+                # Only sync to CPU when reporting or every 5 generations
                 _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
-                _gpu_rmse = self._gpu_best_rmse[0].item()  # Single sync
+                _should_sync = (generations % 5 == 0) or (generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0)
                 
-                _improved = _gpu_rmse < (self._cached_best_rmse_cpu - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+                if _should_sync:
+                    _gpu_rmse = self._gpu_best_rmse[0].item()  # Single sync
+                    _improved = _gpu_rmse < (self._cached_best_rmse_cpu - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)
+                else:
+                    _improved = False
                 
-                if _improved or (self._sync_counter % _force_sync_interval == 0):
+                if _improved or (_should_sync and (self._sync_counter % _force_sync_interval == 0)):
                     min_rmse_val = _gpu_rmse
                     min_idx_val = self._gpu_best_idx.item()
                     
                     if _improved:
                         self._cached_best_rmse_cpu = min_rmse_val
+                        self._cached_best_idx_cpu = min_idx_val
                 else:
                     min_rmse_val = self._cached_best_rmse_cpu
-                    min_idx_val = self._gpu_best_idx.item()
+                    min_idx_val = self._cached_best_idx_cpu
                     
                 min_rmse = self._gpu_best_rmse
                 

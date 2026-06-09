@@ -184,7 +184,7 @@ class GPUOptimizer:
         best_c_k = c.clone()
         
         # Try CUDA L-BFGS kernel first
-        if self._has_lbfgs and actual_k <= 64:  # Kernel has limits
+        if self._has_lbfgs and actual_k <= 64 and y_target.numel() <= 1024:  # Kernel has limits
             try:
                 result = self._lbfgs_cuda(pop_k, c, x, y_target, max_iter)
                 if result is not None:

@@ -278,9 +278,7 @@ void launch_update_best(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in update_best: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in update_best: ", cudaGetErrorString(err));
 }
 
 void launch_check_improvement(
@@ -339,7 +337,5 @@ void launch_batch_update_best(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in batch_update_best: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in batch_update_best: ", cudaGetErrorString(err));
 }

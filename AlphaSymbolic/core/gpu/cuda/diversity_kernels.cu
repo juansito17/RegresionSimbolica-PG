@@ -101,9 +101,7 @@ void launch_compute_population_hashes(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in compute_population_hashes: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in compute_population_hashes: ", cudaGetErrorString(err));
 }
 
 // ============================================================
@@ -222,9 +220,7 @@ void launch_structural_dedup(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in structural_dedup: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in structural_dedup: ", cudaGetErrorString(err));
 }
 
 // ============================================================
@@ -382,7 +378,5 @@ void launch_compute_var_presence(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in compute_var_presence: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in compute_var_presence: ", cudaGetErrorString(err));
 }

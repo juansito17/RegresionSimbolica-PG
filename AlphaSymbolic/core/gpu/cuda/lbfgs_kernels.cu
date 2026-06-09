@@ -667,6 +667,7 @@ void launch_lbfgs_optimize(
     
     TORCH_CHECK(L <= LBFGS_MAX_L, "Formula length exceeds LBFGS_MAX_L");
     TORCH_CHECK(K <= LBFGS_MAX_K, "Constants exceed LBFGS_MAX_K");
+    TORCH_CHECK(D <= LBFGS_MAX_D, "Data samples exceed LBFGS_MAX_D");
     
     int threads = 1;  // Currently single-threaded per individual
     int blocks = B;
@@ -696,7 +697,5 @@ void launch_lbfgs_optimize(
     }));
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in lbfgs_optimize: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in lbfgs_optimize: ", cudaGetErrorString(err));
 }

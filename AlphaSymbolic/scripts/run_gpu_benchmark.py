@@ -194,7 +194,7 @@ class BenchmarkSuite:
         print("="*70)
         
         for result in self.results:
-            status = "✓" if result.exact_match else "✗"
+            status = "[PASS]" if result.exact_match else "[FAIL]"
             print(f"\n{status} {result.problem_name}")
             print(f"  Target: {result.target_formula}")
             print(f"  Found:  {result.found_formula or 'None'}")

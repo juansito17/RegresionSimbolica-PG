@@ -505,7 +505,5 @@ void launch_fused_pso(
     }));
 
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in fused_pso: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in fused_pso: ", cudaGetErrorString(err));
 }

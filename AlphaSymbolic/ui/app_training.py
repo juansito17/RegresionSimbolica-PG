@@ -277,7 +277,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
     try:
         MODEL, DEVICE = get_model()
         
-        from search.mcts import MCTS
+        from AlphaSymbolic.search.mcts import MCTS
         
         optimizer = torch.optim.AdamW(MODEL.parameters(), lr=5e-5, weight_decay=0.01)
         # Scheduler: Reduce LR when plateauing to help convergence
@@ -455,7 +455,7 @@ def train_self_play(iterations, problems_per_iter, point_count=10, num_variables
                 fail_losses = [p[0] for p in top_failures]
                 
                 # Simple Greedy Decode to see what it predicts
-                from search.beam_search import BeamSearch
+                from AlphaSymbolic.search.beam_search import BeamSearch
                 # Use beam search with width 1 (Greedy) for speed, with curriculum mask
                 bs = BeamSearch(MODEL, DEVICE, beam_width=1, max_length=20, curriculum_stage=curriculum_stage, num_variables=int(num_variables))
                 

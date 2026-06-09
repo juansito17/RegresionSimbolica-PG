@@ -424,9 +424,7 @@ void launch_rpn_kernel(
     }));
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in launch_rpn_kernel: ", cudaGetErrorString(err));
 }
 
 // --- Phase 2: Crossover & Mutation Kernels ---
@@ -519,9 +517,7 @@ void launch_find_subtree_ranges(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in find_subtree_ranges: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in find_subtree_ranges: ", cudaGetErrorString(err));
 }
 
 __global__ void mutation_kernel(
@@ -974,9 +970,7 @@ void launch_hoist_mutation(
     );
     
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in hoist_mutation: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in hoist_mutation: ", cudaGetErrorString(err));
 }
 
 // --- Phase 3: Tournament Selection ---
@@ -1093,9 +1087,7 @@ void launch_tournament_selection(
     );
      
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in tournament_selection: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in tournament_selection: ", cudaGetErrorString(err));
 }
 
 // --- Phase 4: C++ Orchestrator (evolve_generation) ---
@@ -1743,27 +1735,66 @@ __global__ void rpn_eval_fused_kernel(
 
     // ── 5. Warp-shuffle reduction: sum sq_err and OR any_invalid ──
     // All 32 threads in the warp participate. Idle threads (d_idx >= D) have sq_err=0.
-    // Full mask (all 32 lanes participate)
     unsigned int full_mask = 0xFFFFFFFF;
     uint32_t any_invalid_u = (uint32_t)this_invalid;
 
-    // Butterfly reduction
+    // Butterfly reduction (warp level)
     for (int off = 16; off > 0; off >>= 1) {
         sq_err      += __shfl_xor_sync(full_mask, sq_err, off);
         any_invalid_u |= __shfl_xor_sync(full_mask, any_invalid_u, off);
     }
 
-    // ── 6. Thread 0 writes output ──
-    if (d_idx == 0) {
-        scalar_t rmse;
-        if (any_invalid_u) {
-            rmse = (scalar_t)1e15;
-        } else {
-            scalar_t mse = sq_err / (scalar_t)D;
-            rmse = sqrt(mse);
-            if (isnan(rmse) || isinf(rmse)) rmse = (scalar_t)1e15;
+    // ── 6. Block-level reduction (for multi-warp blocks) ──
+    if (blockDim.x <= 32) {
+        // Single warp: Lane 0 of Warp 0 writes output directly
+        if (d_idx == 0) {
+            scalar_t rmse;
+            if (any_invalid_u) {
+                rmse = (scalar_t)1e15;
+            } else {
+                scalar_t mse = sq_err / (scalar_t)D;
+                rmse = sqrt(mse);
+                if (isnan(rmse) || isinf(rmse)) rmse = (scalar_t)1e15;
+            }
+            out_rmse[b_idx] = rmse;
         }
-        out_rmse[b_idx] = rmse;
+    } else {
+        // Multi-warp: Block reduction using shared memory
+        __shared__ scalar_t shared_sq_err[32];
+        __shared__ uint32_t shared_invalid[32];
+
+        const int warp_id = threadIdx.x / 32;
+        const int lane_id = threadIdx.x % 32;
+
+        if (lane_id == 0) {
+            shared_sq_err[warp_id] = sq_err;
+            shared_invalid[warp_id] = any_invalid_u;
+        }
+        __syncthreads();
+
+        // Warp 0 reduces the warp sums
+        if (warp_id == 0) {
+            int num_warps = blockDim.x / 32;
+            scalar_t block_sq_err = (lane_id < num_warps) ? shared_sq_err[lane_id] : (scalar_t)0.0;
+            uint32_t block_invalid = (lane_id < num_warps) ? shared_invalid[lane_id] : 0;
+
+            for (int off = 16; off > 0; off >>= 1) {
+                block_sq_err  += __shfl_xor_sync(full_mask, block_sq_err, off);
+                block_invalid |= __shfl_xor_sync(full_mask, block_invalid, off);
+            }
+
+            if (lane_id == 0) {
+                scalar_t rmse;
+                if (block_invalid) {
+                    rmse = (scalar_t)1e15;
+                } else {
+                    scalar_t mse = block_sq_err / (scalar_t)D;
+                    rmse = sqrt(mse);
+                    if (isnan(rmse) || isinf(rmse)) rmse = (scalar_t)1e15;
+                }
+                out_rmse[b_idx] = rmse;
+            }
+        }
     }
 }
 
@@ -1824,7 +1855,5 @@ void launch_rpn_eval_fused(
     }));
 
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in rpn_eval_fused: %s\n", cudaGetErrorString(err));
-    }
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in rpn_eval_fused: ", cudaGetErrorString(err));
 }

@@ -109,7 +109,8 @@ class GPUEvaluator:
             population.is_cuda and
             x.is_cuda and
             y_target.is_cuda and
-            (constants is None or constants.is_cuda)
+            (constants is None or constants.is_cuda) and
+            N_samples <= 1024
         )
 
         if can_try_fused:
