@@ -41,6 +41,20 @@ cd AlphaSymbolic
 python app.py
 ```
 
+Por defecto la app corre en modo local. Para URL publica de Gradio o logs detallados:
+
+```powershell
+python app.py --share
+python app.py --verbose
+```
+
+Tambien puedes activar logs detallados con:
+
+```powershell
+$env:ALPHASYMBOLIC_VERBOSE="1"
+python app.py
+```
+
 La app crea una interfaz Gradio con:
 
 - `Buscar Formula`: entrada de datos X/Y, carga CSV y busqueda por Beam Search, MCTS o Alpha-GP Hybrid.
@@ -62,10 +76,18 @@ python AlphaSymbolic\scripts\run_gpu_console.py
 Ejecuta una busqueda GPU tipo consola usando la configuracion de `core/gpu/config.py`.
 
 ```powershell
+python AlphaSymbolic\scripts\run_gpu_console.py --verbose
+```
+
+```powershell
 python AlphaSymbolic\scripts\run_gpu_benchmark.py
 ```
 
 Ejecuta benchmarks sinteticos definidos en el propio script.
+
+```powershell
+python AlphaSymbolic\scripts\run_gpu_benchmark.py --verbose --timeout 10 --pop-size 1000
+```
 
 ```powershell
 python AlphaSymbolic\scripts\profile_gpu_engine.py
@@ -159,6 +181,24 @@ print(engine.device, engine.pop_size, engine.n_islands)
 ```
 
 ---
+
+## Tests de UI
+
+Instala dependencias de desarrollo:
+
+```powershell
+pip install -r AlphaSymbolic\requirements-dev.txt
+python -m playwright install chromium
+```
+
+Ejecuta la suite oficial de UI/E2E:
+
+```powershell
+python -m pytest AlphaSymbolic\tests AlphaSymbolic\tests\ui
+python -m pytest AlphaSymbolic\tests\e2e --browser chromium
+```
+
+La carpeta `tests/` puede contener pruebas legacy locales ignoradas por git. La coleccion oficial queda acotada por `AlphaSymbolic/tests/conftest.py`.
 
 ## Estructura
 

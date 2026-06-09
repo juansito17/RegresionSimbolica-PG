@@ -57,6 +57,7 @@ logs/
 !README.md
 !LICENSE
 !requirements.txt
+!requirements-dev.txt
 outputs/
 results/
 cache/

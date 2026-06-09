@@ -2,6 +2,7 @@
 AlphaSymbolic - Gradio Web Interface
 With GPU/CPU toggle and search method selection.
 """
+import argparse
 import gradio as gr
 import torch
 import sys
@@ -14,8 +15,11 @@ from AlphaSymbolic.ui.app_search import solve_formula, generate_example
 from AlphaSymbolic.ui.app_benchmark import get_benchmark_tab
 from AlphaSymbolic.ui.app_gpu_live import get_gpu_live_tab
 from AlphaSymbolic.ui.theme import get_theme, CUSTOM_CSS
-import pandas as pd
-import io
+from AlphaSymbolic.ui.data_io import load_csv_to_strings
+from AlphaSymbolic.ui.formatting import status_panel
+from AlphaSymbolic.ui.logging_utils import configure_logging, get_logger, set_verbose_with_value
+
+logger = get_logger("UI.APP")
 
 
 def toggle_device(use_gpu):
@@ -25,10 +29,8 @@ def toggle_device(use_gpu):
     return f'<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid {color};"><span style="color: {color}; font-weight: bold;">{device_info}</span></div>'
 
 
-def create_app():
+def create_app(verbose=False):
     """Create the Gradio app."""
-    
-    custom_theme = get_theme()
     
     with gr.Blocks(title="AlphaSymbolic") as demo:
         
@@ -39,38 +41,7 @@ def create_app():
 
         def load_csv_data(file_obj):
             """Load CSV file to X/Y inputs."""
-            if file_obj is None:
-                return None, None
-            
-            try:
-                # auto-detect separator
-                try:
-                    df = pd.read_csv(file_obj.name, sep=None, engine='python')
-                except:
-                    df = pd.read_csv(file_obj.name)
-                
-                if df.shape[1] < 2:
-                    return None, "Error: El archivo debe tener al menos 2 columnas (X..., Y)"
-                
-                # Assume last column is Y, rest are X
-                X = df.iloc[:, :-1].values
-                y = df.iloc[:, -1].values
-                
-                # Format X string
-                # If 1D: "1, 2, 3"
-                # If 2D: "1 2; 3 4"
-                if X.shape[1] == 1:
-                    x_str = ", ".join(map(str, X.flatten()))
-                else:
-                    # Multi-line format
-                    lines = [" ".join(map(str, row)) for row in X]
-                    x_str = "\n".join(lines)
-                
-                y_str = ", ".join(map(str, y.flatten()))
-                
-                return x_str, y_str
-            except Exception as e:
-                return None, f"Error leyendo CSV: {str(e)}"
+            return load_csv_to_strings(file_obj)
 
         # Header
         device_info = get_device_info()
@@ -78,44 +49,51 @@ def create_app():
         gpu_short = device_info.replace('NVIDIA GeForce ', '').replace(' Laptop GPU', '').replace('CUDA (', '').replace(')', '')
         
         gr.HTML(f"""
-        <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px 30px; background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.9)); border-radius: 16px; margin-bottom: 15px; border: 1px solid rgba(6, 182, 212, 0.2); box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);">
+        <div class="as-header">
             <div>
-                <h1 style="margin: 0; font-size: 2.5rem; font-weight: 800; background: linear-gradient(135deg, #06b6d4, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-family: 'Orbitron', sans-serif; letter-spacing: 2px;">
+                <h1 class="as-logo">
                     αSymbolic
                 </h1>
-                <p style="margin: 5px 0 0 0; color: #64748b; font-size: 0.9rem;">
-                    Deep Reinforcement Learning & Symbolic Regression
+                <p class="as-subtitle">
+                    Dashboard técnico de regresión simbólica
                 </p>
             </div>
-            <div style="display: flex; align-items: center; gap: 15px;">
-                <div style="text-align: right;">
-                    <div style="background: {'rgba(34, 197, 94, 0.15)' if 'CUDA' in device_info else 'rgba(251, 191, 36, 0.15)'}; color: {'#22c55e' if 'CUDA' in device_info else '#fbbf24'}; padding: 8px 16px; border-radius: 25px; font-weight: 600; font-size: 0.85rem; border: 1px solid {'rgba(34, 197, 94, 0.3)' if 'CUDA' in device_info else 'rgba(251, 191, 36, 0.3)'};">
-                        {'⚡ GPU' if 'CUDA' in device_info else '💻 CPU'} | {gpu_short}
-                    </div>
-                </div>
+            <div class="as-device-pill">
+                {'GPU' if 'CUDA' in device_info else 'CPU'} · {gpu_short}
             </div>
         </div>
         """)
         
         # Model Selector - Compact inline
-        with gr.Row():
+        verbose_state = gr.State(bool(verbose))
+
+        with gr.Row(elem_classes="as-toolbar"):
             with gr.Column(scale=1):
                 model_selector = gr.Radio(choices=["lite", "pro"], value="lite", label="Modelo", container=False)
+            with gr.Column(scale=1):
+                verbose_toggle = gr.Checkbox(label="Modo verbose", value=bool(verbose), container=False)
             with gr.Column(scale=4):
-                model_status = gr.HTML(value='<div style="padding: 8px 15px; background: rgba(34, 197, 94, 0.1); border-radius: 8px; color: #22c55e; font-size: 0.85rem; border: 1px solid rgba(34, 197, 94, 0.2);">✓ Lite Model (Optimized) - Vocabulary 2.0</div>')
+                model_status = gr.HTML(value=status_panel("Lite Model (Optimized) · Vocabulary 2.0", "success"))
+                verbose_status = gr.HTML(value=status_panel("Modo verbose activado" if verbose else "Modo verbose desactivado", "neutral"))
         
         def on_model_change(preset):
             status, _ = load_model(preset_name=preset)
-            return f'<div style="padding: 8px 15px; background: rgba(34, 197, 94, 0.1); border-radius: 8px; color: #22c55e; font-size: 0.85rem; border: 1px solid rgba(34, 197, 94, 0.2);">✓ {status}</div>'
+            return status_panel(status, "success")
 
         model_selector.change(on_model_change, model_selector, model_status)
+        verbose_toggle.change(
+            lambda enabled: (status_panel(set_verbose_with_value(enabled)[0], "info"), set_verbose_with_value(enabled)[1]),
+            verbose_toggle,
+            [verbose_status, verbose_state],
+            queue=False,
+        )
         
         with gr.Tabs():
             # TAB 1: Search
             with gr.Tab("🔍 Buscar Formula"):
                 with gr.Row():
                     # Column 1: Inputs + Config
-                    with gr.Column(scale=1, min_width=400):
+                    with gr.Column(scale=1, min_width=360, elem_classes="as-sidebar"):
                         gr.Markdown("## Entrada")
                         x_input = gr.Textbox(label="Features (X)", placeholder="1, 2, 3...", lines=3)
                         y_input = gr.Textbox(label="Target (Y)", placeholder="2, 4, 6...", lines=3)
@@ -149,16 +127,15 @@ def create_app():
                             pred_html = gr.HTML(label="Predicciones")
                     
                     # Column 2: Results + Visualization
-                    with gr.Column(scale=1, min_width=400):
+                    with gr.Column(scale=1, min_width=360, elem_classes="as-main-panel"):
                         gr.Markdown("## Resultados")
                         result_html = gr.HTML(label="Fórmula Encontrada")
                         plot_output = gr.Plot(label="Visualización del Ajuste")
                         alt_html = gr.HTML(label="Alternativas")
                 
                 raw_formula = gr.Textbox(visible=False)
-                raw_formula = gr.Textbox(visible=False)
                 solve_btn.click(solve_formula, [x_input, y_input, beam_slider, search_method, workers_slider, pop_size_slider, use_log_chk], 
-                               [result_html, plot_output, pred_html, alt_html, raw_formula])
+                               [result_html, plot_output, pred_html, alt_html, raw_formula], concurrency_limit=1)
             
             # TAB 2: Training
             with gr.Tab("Entrenar Modelo"):
@@ -195,7 +172,7 @@ def create_app():
                 
                 def delete_model_action():
                     import os
-                    from ui.app_core import CURRENT_PRESET
+                    from AlphaSymbolic.ui.app_core import CURRENT_PRESET
                     filename = f"alpha_symbolic_model_{CURRENT_PRESET}.pth"
                     if os.path.exists(filename):
                         os.remove(filename)
@@ -207,13 +184,13 @@ def create_app():
                     reset_state_btn = gr.Button("⚠️ Reset Estado", variant="secondary", size="sm")
 
                 def reset_training_state():
-                    from ui.app_training import TRAINING_STATUS
+                    from AlphaSymbolic.ui.app_training import TRAINING_STATUS
                     TRAINING_STATUS["running"] = False
                     return "Estado reseteado. Intenta entrenar de nuevo."
 
                 reset_state_btn.click(reset_training_state, outputs=[stop_status])
                 delete_model_btn.click(delete_model_action, outputs=[delete_status])
-                stop_train_btn.click(request_stop_training, outputs=[stop_status])
+                stop_train_btn.click(request_stop_training, outputs=[stop_status], queue=False)
                 
                 with gr.Tabs():
                     # Basic
@@ -228,7 +205,7 @@ def create_app():
                             with gr.Column():
                                 result_basic = gr.HTML()
                                 plot_basic = gr.Plot()
-                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic], [result_basic, plot_basic])
+                        train_basic_btn.click(train_basic, [epochs_basic, batch_basic, points_basic], [result_basic, plot_basic], concurrency_limit=1)
                     
                     # Curriculum
                     with gr.Tab("Curriculum"):
@@ -247,7 +224,7 @@ def create_app():
                             with gr.Column():
                                 result_curriculum = gr.HTML()
                                 plot_curriculum = gr.Plot()
-                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum], [result_curriculum, plot_curriculum])
+                        train_curriculum_btn.click(train_curriculum, [epochs_curriculum, batch_curriculum, points_curriculum], [result_curriculum, plot_curriculum], concurrency_limit=1)
                     
                     # Self-Play
                     with gr.Tab("Self-Play"):
@@ -266,7 +243,7 @@ def create_app():
                             with gr.Column():
                                 result_sp = gr.HTML()
                                 plot_sp = gr.Plot()
-                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp])
+                        train_sp_btn.click(train_self_play, [iterations_sp, problems_sp, points_sp], [result_sp, plot_sp], concurrency_limit=1)
                 
                     # Feedback Loop (Teacher-Student)
                     with gr.Tab("Feedback Loop (Hybrid)"):
@@ -285,7 +262,7 @@ def create_app():
                             with gr.Column():
                                 result_fb = gr.HTML()
                                 plot_fb = gr.Plot()
-                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb, workers_slider], [result_fb, plot_fb])
+                        train_fb_btn.click(train_hybrid_feedback_loop, [iterations_fb, problems_fb, timeout_fb, workers_slider], [result_fb, plot_fb], concurrency_limit=1)
                 
                 # --- PRE-TRAINING (Warmup) ---
                 with gr.Accordion("🎓 Escuela Primaria (Pre-Entrenamiento)", open=False):
@@ -297,7 +274,7 @@ def create_app():
                         with gr.Column():
                             result_pre = gr.HTML()
                             plot_pre = gr.Plot()
-                    train_pre_btn.click(train_supervised, [epochs_pre], [result_pre, plot_pre])
+                    train_pre_btn.click(train_supervised, [epochs_pre], [result_pre, plot_pre], concurrency_limit=1)
                 
                 # --- MEMORY TRAINING (Offline RL) ---
                 with gr.Accordion("🧠 Entrenamiento de Memoria (Offline)", open=False):
@@ -309,7 +286,7 @@ def create_app():
                         with gr.Column():
                             result_mem = gr.HTML()
                             plot_mem = gr.Plot()
-                    train_mem_btn.click(train_from_memory, [epochs_mem], [result_mem, plot_mem])
+                    train_mem_btn.click(train_from_memory, [epochs_mem], [result_mem, plot_mem], concurrency_limit=1)
 
                 # --- HALL OF SHAME (Error Analysis) ---
                 with gr.Accordion("Hall of Shame (Analisis de Errores)", open=False):
@@ -333,7 +310,7 @@ def create_app():
             
             # TAB 3: GPU Evolution
             with gr.Tab("⚡ GPU Evolution"):
-                get_gpu_live_tab()
+                get_gpu_live_tab(verbose_state)
             
             # TAB 4: Benchmark
             get_benchmark_tab()
@@ -395,14 +372,19 @@ def create_app():
 # The issue is 'gradio app.py' imports this file, and multiprocessing spawns new processes that import it again.
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AlphaSymbolic Gradio UI")
+    parser.add_argument("--share", action="store_true", help="Crear URL pública de Gradio.")
+    parser.add_argument("--verbose", action="store_true", help="Activar logs detallados.")
+    args = parser.parse_args()
+    configure_logging(args.verbose)
     # If run directly (python app.py)
-    print("Iniciando AlphaSymbolic (Global Init - Direct Execution)...")
+    logger.info("Iniciando AlphaSymbolic...")
     status_init, device_info_init = load_model() 
-    print(f"   {status_init} | {device_info_init}")
-    demo = create_app()
-    print("Abriendo navegador...")
-    from ui.theme import CUSTOM_CSS, get_theme
-    demo.launch(share=True, inbrowser=True, theme=get_theme(), css=CUSTOM_CSS)
+    logger.info("%s | %s", status_init, device_info_init)
+    demo = create_app(verbose=args.verbose)
+    demo.queue(default_concurrency_limit=1)
+    logger.info("Abriendo navegador...")
+    demo.launch(share=args.share, inbrowser=True, theme=get_theme(), css=CUSTOM_CSS)
 else:
     # If imported by 'gradio app.py' or multiprocessing workers
     # We only want to load the model if it's the Main Process (Gradio Server)
@@ -413,15 +395,17 @@ else:
     # define demo globally but lazy load model?
     # No, let's keep it simple.
     
-    print("AlphaSymbolic Module Imported.")
+    configure_logging()
+    logger.info("AlphaSymbolic importado como módulo.")
     # Attempt to load model only if not in a worker process?
     # Actually, for 'gradio app.py', this 'else' block runs.
     # We need 'demo' to be defined here.
     
     try:
         status_init, device_info_init = load_model() 
-        print(f"   {status_init} | {device_info_init}")
+        logger.info("%s | %s", status_init, device_info_init)
     except Exception:
         pass # Might fail in workers, that's fine
 
     demo = create_app()
+    demo.queue(default_concurrency_limit=1)

@@ -5,6 +5,7 @@ Standard benchmark problems for evaluating symbolic regression performance.
 """
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+import argparse
 import torch
 import numpy as np
 import time
@@ -217,3 +218,19 @@ def create_benchmark_suite(device=None, pop_size=1000):
         return TensorGeneticEngine(device=device, pop_size=pop_size, n_islands=4)
     
     return BenchmarkSuite(factory)
+
+
+if __name__ == "__main__":
+    from AlphaSymbolic.ui.logging_utils import configure_logging
+
+    parser = argparse.ArgumentParser(description="AlphaSymbolic GPU benchmark runner")
+    parser.add_argument("--verbose", action="store_true", help="Activar logs detallados.")
+    parser.add_argument("--timeout", type=float, default=10, help="Timeout por problema.")
+    parser.add_argument("--pop-size", type=int, default=1000, help="Población del motor GPU.")
+    parser.add_argument("--problems", nargs="*", default=["poly-1", "poly-2", "poly-3"], help="Problemas a ejecutar.")
+    args = parser.parse_args()
+
+    configure_logging(args.verbose)
+    suite = create_benchmark_suite(pop_size=args.pop_size)
+    suite.run_suite(problem_names=args.problems, timeout_sec=args.timeout)
+    suite.print_report()

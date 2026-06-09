@@ -8,6 +8,9 @@ from AlphaSymbolic.core.grammar import VOCABULARY
 
 from collections import deque
 import time
+from AlphaSymbolic.ui.logging_utils import format_exception, get_logger
+
+logger = get_logger("UI.CORE")
 
 # Global state
 MODEL = None
@@ -101,7 +104,7 @@ def load_model(force_reload=False, preset_name=None):
     VOCAB_SIZE = len(VOCABULARY)
     config = MODEL_PRESETS[CURRENT_PRESET]
     
-    print(f"Loading Model [{CURRENT_PRESET.upper()}]...")
+    logger.info("Cargando modelo [%s]...", CURRENT_PRESET.upper())
     MODEL = AlphaSymbolicModel(
         vocab_size=VOCAB_SIZE + 1, 
         d_model=config['d_model'], 
@@ -128,7 +131,7 @@ def load_model(force_reload=False, preset_name=None):
     elif os.path.exists(filename): # Legacy location
         source_file = filename
     elif os.path.exists(drive_filename):
-        print(f"📦 Local model missing. Loading from Drive: {drive_filename}")
+        logger.info("Modelo local ausente. Cargando desde Drive: %s", drive_filename)
         source_file = drive_filename
 
     if source_file:
@@ -156,7 +159,7 @@ def load_model(force_reload=False, preset_name=None):
                     saved_pe_shape = state_dict['pos_encoder.pe'].shape
                     model_pe_shape = MODEL.pos_encoder.pe.shape
                     if saved_pe_shape != model_pe_shape:
-                        print(f"⚠️ Resizing Positional Encoding from {saved_pe_shape[1]} to {model_pe_shape[1]}. Resetting buffer.")
+                        logger.warning("Redimensionando positional encoding de %s a %s.", saved_pe_shape[1], model_pe_shape[1])
                         del state_dict['pos_encoder.pe']
                         MODEL.load_state_dict(state_dict, strict=False)
                     else:
@@ -168,10 +171,10 @@ def load_model(force_reload=False, preset_name=None):
                 status = f"Modelo cargado ({CURRENT_PRESET})"
                 
         except RuntimeError as e:
-            print(f"⚠️ Error de compatibilidad ({e}). Iniciando modelo fresco.")
+            logger.warning("Error de compatibilidad. Iniciando modelo fresco: %s", e)
             status = f"Nuevo modelo ({CURRENT_PRESET})"
         except Exception as e:
-            print(f"Error cargando: {e}")
+            logger.error("Error cargando modelo: %s", format_exception(e))
             status = "Sin modelo pre-entrenado"
     
     return status, get_device_info()
@@ -214,6 +217,6 @@ def save_model():
                     if os.path.exists(src):
                         shutil.copy(src, os.path.join(drive_path, name))
                         
-                print(f"✅ Data & Model backed up to Drive: {drive_path}")
+                logger.info("Datos y modelo respaldados en Drive: %s", drive_path)
             except Exception as e:
-                print(f"⚠️ Error al respaldar en Drive: {e}")
+                logger.warning("Error al respaldar en Drive: %s", e)

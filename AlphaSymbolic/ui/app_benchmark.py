@@ -1,6 +1,10 @@
 import gradio as gr
 from AlphaSymbolic.utils.benchmark_comparison import run_comparison_benchmark
-from AlphaSymbolic.ui.app_core import get_model, DEVICE
+from AlphaSymbolic.ui.app_core import get_model
+from AlphaSymbolic.ui.formatting import escape_html, metric_grid, status_panel
+from AlphaSymbolic.ui.logging_utils import format_exception, get_logger
+
+logger = get_logger("UI.BENCH")
 
 def get_benchmark_tab():
     with gr.Tab("🥇 Benchmark (IQ Test)"):
@@ -25,8 +29,6 @@ def get_benchmark_tab():
         
         run_btn = gr.Button("🚀 Iniciar Benchmark Comparativo", variant="primary")
         
-        progress_bar = gr.HTML("")
-        
         # Area de resultados
         summary_html = gr.HTML("Resultados aparecerán aquí...")
         
@@ -39,10 +41,10 @@ def get_benchmark_tab():
         def run_bench(selected_methods, gp_timeout, progress=gr.Progress()):
             model_obj, device_obj = get_model()
             if not model_obj:
-                return "<div>⚠️ Error: Modelo no cargado. Ve a la pestaña 'Config' y carga un modelo.</div>", None, []
+                return status_panel("Modelo no cargado.", "error"), []
             
             if not selected_methods:
-                return "<div>⚠️ Error: Selecciona al menos un método.</div>", None, []
+                return status_panel("Selecciona al menos un método.", "warning"), []
                 
             progress(0, desc="Iniciando Benchmark...")
             
@@ -57,9 +59,8 @@ def get_benchmark_tab():
                     progress_callback=lambda p, desc: progress(p, desc=desc)
                 )
             except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return f"<div>❌ Error en Benchmark: {e}</div>", None, []
+                logger.error("Error en benchmark: %s", format_exception(e))
+                return status_panel(f"Error en benchmark: {e}", "error"), []
             
             results = result_data['results']
             summary_dict = result_data['summary']
@@ -80,7 +81,7 @@ def get_benchmark_tab():
                 ])
             
             # Generate HTML Summary
-            html_content = "<div style='display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;'>"
+            html_content = '<div class="as-benchmark-summary">'
             
             # Determine winner if multiple methods
             winner_method = None
@@ -96,16 +97,18 @@ def get_benchmark_tab():
                     
                 trophy = "🏆 GANADOR" if is_winner else ""
                 
-                html_content += f"""
-                <div style="background: {bg_color}; padding: 15px; border-radius: 10px; border: 2px solid {border_color}; min-width: 200px; text-align: center;">
-                    <h2 style="color: {border_color}; margin: 0 0 10px 0;">{method.upper()} {trophy}</h2>
-                    <div style="font-size: 24px; font-weight: bold; margin-bottom: 5px;">{stats['solved']} / {stats['total']}</div>
-                    <div style="color: #ccc; font-size: 14px;">Resueltos</div>
-                    <hr style="border-color: #444; margin: 10px 0;">
-                    <div style="font-size: 14px;">Nota: <b>{stats['score']:.1f}%</b></div>
-                    <div style="font-size: 14px;">Tiempo Avg: <b>{stats['avg_time']:.2f}s</b></div>
-                </div>
-                """
+                html_content += (
+                    f'<section class="as-panel as-benchmark-card" style="border-color:{border_color};background:{bg_color};">'
+                    f'<div class="as-eyebrow">{escape_html(method.upper())} {escape_html(trophy)}</div>'
+                    + metric_grid(
+                        [
+                            ("Resueltos", f"{stats['solved']} / {stats['total']}"),
+                            ("Nota", f"{stats['score']:.1f}%"),
+                            ("Tiempo avg", f"{stats['avg_time']:.2f}s"),
+                        ]
+                    )
+                    + "</section>"
+                )
             html_content += "</div>"
             
             return html_content, rows

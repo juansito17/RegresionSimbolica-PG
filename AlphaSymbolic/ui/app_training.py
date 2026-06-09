@@ -16,7 +16,7 @@ import csv
 import datetime
 
 from AlphaSymbolic.core.grammar import VOCABULARY, TOKEN_TO_ID, OPERATORS, OPERATOR_STAGES, VARIABLES
-from data.synthetic_data import DataGenerator
+from AlphaSymbolic.data.synthetic_data import DataGenerator
 from AlphaSymbolic.ui.app_core import get_model, save_model, TRAINING_STATUS, add_training_error, should_stop_training, reset_stop_flag
 from AlphaSymbolic.core.loss import QuantileLoss
 from AlphaSymbolic.search.hybrid_search import hybrid_solve

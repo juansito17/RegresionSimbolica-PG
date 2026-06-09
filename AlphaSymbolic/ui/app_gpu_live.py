@@ -4,27 +4,47 @@ import numpy as np
 import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 import time
-import html
-from typing import List, Optional
 from AlphaSymbolic.core.gpu import TensorGeneticEngine
 from AlphaSymbolic.core.gpu.config import GpuGlobals
 from AlphaSymbolic.ui.app_search import parse_data, create_fit_plot, generate_example
 from AlphaSymbolic.ui.app_core import get_device
 import pandas as pd
 
-import threading
+from AlphaSymbolic.ui.formatting import formula_card, metric_grid, status_panel
+from AlphaSymbolic.ui.live_state import LiveRunState
+from AlphaSymbolic.ui.logging_utils import configure_logging, format_exception, get_logger
+from AlphaSymbolic.core.grammar import ExpressionTree
 
-# Global state to manage the live engine
+logger = get_logger("UI.GPU")
+ENGINE_CLS = TensorGeneticEngine
+
+# Backward-compatible handle for legacy imports/debug consoles.
 LIVE_ENGINE = None
-# Cross-thread stop signal
-_STOP_EVENT = threading.Event()
 
-def get_gpu_live_tab():
+
+def _fill_live_plot_predictions_with_formula(x, y_pred, formula):
+    """Use the displayed formula as CPU fallback for NaN points in the live plot."""
+    if y_pred is None or np.all(np.isfinite(y_pred)):
+        return y_pred
+    try:
+        tree = ExpressionTree.from_infix(formula)
+        if not tree or not tree.is_valid:
+            return y_pred
+        cpu_pred = np.asarray(tree.evaluate(x), dtype=float)
+        if cpu_pred.shape != np.asarray(y_pred).shape:
+            cpu_pred = cpu_pred.reshape(np.asarray(y_pred).shape)
+        return np.where(np.isfinite(y_pred), y_pred, cpu_pred)
+    except Exception:
+        logger.debug("No se pudo completar predicciones del plot con la formula CPU.", exc_info=True)
+        return y_pred
+
+def get_gpu_live_tab(verbose_state=None):
     """Defines the UI for the GPU Evolution tab."""
+    live_state = gr.State(LiveRunState())
     with gr.Row():
-        with gr.Column(scale=1, min_width=400):
+        with gr.Column(scale=1, min_width=360, elem_classes="as-sidebar"):
             gr.Markdown("## ⚡ Evolución GPU en Tiempo Real")
-            gr.HTML('<div style="margin-bottom: 20px; padding: 5px 15px; background: rgba(34, 197, 94, 0.1); border-radius: 20px; color: #22c55e; font-size: 0.8rem; border: 1px solid rgba(34, 197, 94, 0.2); display: inline-block;">🛡️ MODO PURE GPU GA (Sin Red Neuronal)</div>')
+            gr.HTML('<div class="as-badge">MODO PURE GPU GA · Sin red neuronal</div>')
             # Load from CSV & Examples
             with gr.Accordion("📂 Cargar Datos", open=False):
                 with gr.Row():
@@ -38,14 +58,48 @@ def get_gpu_live_tab():
             x_input = gr.Textbox(label="Features (X)", placeholder="1, 2, 3...", lines=3)
             y_input = gr.Textbox(label="Target (Y)", placeholder="2, 4, 6...", lines=3)
             
-            with gr.Row():
-                pop_size = gr.Slider(10_000, 4_000_000, value=1_000_000, step=10_000, label="Población")
-                islands = gr.Slider(1, 100, value=50, step=1, label="Islas")
-            
-            with gr.Row():
-                max_const = gr.Slider(1, 50, value=10, step=1, label="Máx Constantes")
-                timeout = gr.Slider(0, 300, value=60, step=5, label="Timeout (s)", info="0 para infinito")
-                use_log = gr.Checkbox(label="Use Log Transform", value=False, info="Fit to log(Y) (Recommended for exponential data)")
+            gr.Markdown("### Ajustes de ejecución")
+            with gr.Group(elem_classes="as-execution-settings"):
+                with gr.Row():
+                    pop_size = gr.Slider(
+                        10_000,
+                        4_000_000,
+                        value=250_000,
+                        step=10_000,
+                        label="Población",
+                        info="Seguro para GPU de 4 GB.",
+                    )
+                    islands = gr.Slider(
+                        1,
+                        100,
+                        value=20,
+                        step=1,
+                        label="Islas",
+                        info="Subpoblaciones paralelas.",
+                    )
+
+                with gr.Row():
+                    max_const = gr.Slider(
+                        1,
+                        50,
+                        value=10,
+                        step=1,
+                        label="Constantes",
+                        info="Máximo por fórmula.",
+                    )
+                    timeout = gr.Slider(
+                        0,
+                        300,
+                        value=60,
+                        step=5,
+                        label="Timeout",
+                        info="0 = sin límite.",
+                    )
+                    use_log = gr.Checkbox(
+                        label="Usar log(Y)",
+                        value=False,
+                        info="Para datos exponenciales.",
+                    )
             
             # Operator toggles
             with gr.Accordion("🔧 Operadores Disponibles", open=False):
@@ -74,15 +128,15 @@ def get_gpu_live_tab():
                     op_pow = gr.Checkbox(label="^", value=True, info="Power")
 
             with gr.Row():
-                stop_btn = gr.Button("🛑 DETENER", variant="stop")
-                start_btn = gr.Button("🚀 INICIAR EVOLUCIÓN", variant="primary")
+                stop_btn = gr.Button("DETENER", variant="stop", interactive=False)
+                start_btn = gr.Button("INICIAR EVOLUCIÓN", variant="primary")
             
             status_html = gr.HTML(value='<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #64748b; color: #64748b;">Esperando inicio...</div>')
 
-        with gr.Column(scale=1, min_width=400):
+        with gr.Column(scale=1, min_width=360, elem_classes="as-main-panel"):
             gr.Markdown("## Dashboard de Evolución")
-            current_best_formula = gr.HTML(label="Mejor Fórmula Actual")
-            stats_display = gr.HTML(label="Estadísticas")
+            current_best_formula = gr.HTML(label="Mejor Fórmula Actual", value=formula_card("", "Mejor fórmula actual"))
+            stats_display = gr.HTML(label="Estadísticas", value=metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "—"), ("Islas", "—")]))
             live_plot = gr.Plot(label="Ajuste en Tiempo Real")
     
     # --- Helper Functions ---
@@ -119,46 +173,76 @@ def get_gpu_live_tab():
     btn_trig.click(lambda: generate_example("trig"), outputs=[x_input, y_input])
     btn_exp.click(lambda: generate_example("exp"), outputs=[x_input, y_input])
 
-    def stop_evolution():
-        global LIVE_ENGINE
-        _STOP_EVENT.set()  # Signal the generator loop to stop
-        if LIVE_ENGINE is not None:
-            try:
-                LIVE_ENGINE.stop_flag = True
-            except Exception:
-                pass
-        return '<div style="padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #ef4444; color: #ef4444;">Deteniendo motor...</div>'
+    def stop_evolution(run_state):
+        if run_state is None:
+            run_state = LiveRunState()
+        run_state.request_stop()
+        return status_panel("Deteniendo motor...", "warning"), run_state, gr.update(interactive=True), gr.update(interactive=False)
+
+    def run_live_gpu_evolution_with_state(*args):
+        *ui_args, run_state, verbose_enabled = args
+        if run_state is None:
+            run_state = LiveRunState()
+        for status, best, stats, plot in run_live_gpu_evolution(*ui_args, run_state=run_state, verbose=verbose_enabled):
+            finished = ("Finalizado" in status) or ("Error" in status) or ("No se pudo" in status)
+            yield (
+                status,
+                best,
+                stats,
+                plot,
+                run_state,
+                gr.update(interactive=finished),
+                gr.update(interactive=not finished),
+            )
 
     start_btn.click(
-        run_live_gpu_evolution,
+        run_live_gpu_evolution_with_state,
         inputs=[x_input, y_input, pop_size, islands, max_const, timeout, use_log,
                 op_sin, op_cos, op_tan, op_log, op_exp, op_sqrt, op_abs, op_floor, op_ceil, op_sign,
-                op_gamma, op_lgamma, op_fact, op_mod, op_pow, op_asin, op_acos, op_atan],
-        outputs=[status_html, current_best_formula, stats_display, live_plot]
+                op_gamma, op_lgamma, op_fact, op_mod, op_pow, op_asin, op_acos, op_atan, live_state, verbose_state or gr.State(False)],
+        outputs=[status_html, current_best_formula, stats_display, live_plot, live_state, start_btn, stop_btn],
+        concurrency_limit=1
     )
-    stop_btn.click(stop_evolution, outputs=[status_html])
+    stop_btn.click(stop_evolution, inputs=[live_state], outputs=[status_html, live_state, start_btn, stop_btn], queue=False)
 
 def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, timeout_sec, use_log_transform,
                            op_sin, op_cos, op_tan, op_log, op_exp, op_sqrt, op_abs, op_floor, op_ceil, op_sign,
-                           op_gamma, op_lgamma, op_fact, op_mod, op_pow, op_asin, op_acos, op_atan):
+                           op_gamma, op_lgamma, op_fact, op_mod, op_pow, op_asin, op_acos, op_atan,
+                           run_state=None, verbose=False):
     """Generator that runs the GPU engine and yields updates to the UI."""
     global LIVE_ENGINE
+    configure_logging(verbose)
+    if run_state is None:
+        run_state = LiveRunState()
     
     # 1. Parse Data
     x, y, error = parse_data(x_str, y_str)
     if error:
-        yield f'<div style="color: #ef4444;">{error}</div>', "", "", None
+        yield status_panel(error, "error"), formula_card("", "Mejor fórmula actual"), metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "—"), ("Islas", "—")]), None
         return
 
     device = get_device()
     num_vars = 1 if x.ndim == 1 else x.shape[1]
     
     # 2. Clean up previous engine if any (VRAM safety)
-    if LIVE_ENGINE:
-        del LIVE_ENGINE
+    if run_state.is_running():
+        run_state.request_stop()
+    if run_state.engine:
+        del run_state.engine
         import gc
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    run_state.reset()
+
+    config_names = [
+        "USE_LOG_TRANSFORMATION", "LOSS_FUNCTION", "USE_NEURAL_FLASH", "USE_ALPHA_MCTS",
+        "POP_SIZE", "NUM_ISLANDS", "GENERATIONS", "USE_OP_SIN", "USE_OP_COS", "USE_OP_TAN",
+        "USE_OP_ASIN", "USE_OP_ACOS", "USE_OP_ATAN", "USE_OP_LOG", "USE_OP_EXP", "USE_OP_SQRT",
+        "USE_OP_ABS", "USE_OP_FLOOR", "USE_OP_CEIL", "USE_OP_SIGN", "USE_OP_GAMMA",
+        "USE_OP_LGAMMA", "USE_OP_FACT", "USE_OP_MOD", "USE_OP_POW", "USE_SNIPER"
+    ]
+    previous_config = {name: getattr(GpuGlobals, name, None) for name in config_names}
     
     # --- IMPORTANT: Configure GpuGlobals BEFORE creating Engine ---
     # (Engine's Grammar reads these at construction time)
@@ -203,42 +287,27 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     GpuGlobals.USE_SNIPER = False
     
     # 3. Initialize Engine (NOW it will read the correct operator flags)
-    yield f'<div style="color: #22d3ee;">Inicializando Motor GPU ({pop_size:,} individuos)...</div>', "", "", None
+    yield status_panel(f"Inicializando motor GPU ({int(pop_size):,} individuos)...", "info"), formula_card("", "Mejor fórmula actual"), metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "0.0s"), ("Islas", int(n_islands))]), None
     
-    LIVE_ENGINE = TensorGeneticEngine(
-        device=device,
-        pop_size=int(pop_size),
-        n_islands=int(n_islands),
-        num_variables=num_vars,
-        max_constants=int(max_constants),
-        model=None # Explicitly no model for Pure GPU mode
-    )
+    try:
+        run_state.engine = ENGINE_CLS(
+            device=device,
+            pop_size=int(pop_size),
+            n_islands=int(n_islands),
+            num_variables=num_vars,
+            max_constants=int(max_constants),
+            model=None # Explicitly no model for Pure GPU mode
+        )
+    except Exception as e:
+        for name, value in previous_config.items():
+            setattr(GpuGlobals, name, value)
+        logger.error("No se pudo inicializar el motor GPU: %s", format_exception(e))
+        yield status_panel(f"No se pudo inicializar el motor GPU: {e}", "error"), formula_card("", "Mejor fórmula actual"), metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "—"), ("Islas", int(n_islands))]), None
+        return
     
-    LIVE_ENGINE.stop_flag = False
-    _STOP_EVENT.clear()  # Reset stop signal at the start of a new run
+    LIVE_ENGINE = run_state.engine
+    run_state.engine.stop_flag = False
     
-    # State for the callback
-    state = {
-        "gen": 0,
-        "best_rmse": float('inf'),
-        "best_formula": "",
-        "start_time": time.time(),
-        "last_update": 0,
-        "speed": 0
-    }
-
-    def live_callback(gen, best_rmse, best_rpn, best_consts, is_new_best, island_idx):
-        state["gen"] = gen
-        state["best_rmse"] = best_rmse
-        if is_new_best or not state["best_formula"]:
-            state["best_formula"] = LIVE_ENGINE.rpn_to_infix(best_rpn, best_consts)
-        
-        # Calculate speed
-        now = time.time()
-        elapsed = now - state["start_time"]
-        if elapsed > 0:
-            state["speed"] = (gen * pop_size) / elapsed
-
     # Run engine in a small increments or with a frequent callback
     # The actual engine.run is a blocking loop with a callback.
     # To make it yield, we'd need to modify engine.run to be a generator
@@ -252,50 +321,50 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     import queue
     import threading
     
-    update_queue = queue.Queue()
-    
     def wrapped_callback(gen, best_rmse, best_rpn, best_consts, is_new_best, island_idx):
         if is_new_best or gen % 10 == 0:
             # Simplify before displaying
             try:
                 rpn_batch = best_rpn.unsqueeze(0)  # [1, L]
                 consts_batch = best_consts.unsqueeze(0)  # [1, K]
-                simp_pop, simp_consts, _ = LIVE_ENGINE.gpu_simplifier.simplify_batch(rpn_batch, consts_batch)
+                simp_pop, simp_consts, _ = run_state.engine.gpu_simplifier.simplify_batch(rpn_batch, consts_batch)
                 best_rpn_simp = simp_pop[0]
                 best_consts_simp = simp_consts[0] if simp_consts is not None else best_consts
-            except:
+            except Exception:
                 best_rpn_simp = best_rpn
                 best_consts_simp = best_consts
             
             # Initial assumption: Simplified is best
             final_rpn = best_rpn_simp
             final_consts = best_consts_simp
-            formula = LIVE_ENGINE.rpn_to_infix(final_rpn, final_consts)
+            formula = run_state.engine.rpn_to_infix(final_rpn, final_consts)
             
             # FALLBACK: If simplified is invalid, revert to original
             if formula == "Invalid":
-                print(f"[DEBUG UI] Simplified Invalid! Reverting to original for plot/display...")
+                logger.debug("Simplificación inválida; revirtiendo al RPN original.")
                 
                 # Debug Tokens
                 try:
-                    toks = [LIVE_ENGINE.grammar.id_to_token.get(t.item(), str(t.item())) for t in best_rpn_simp if t.item() in LIVE_ENGINE.grammar.id_to_token]
-                    print(f"Bad Simp Tokens: {toks}")
-                except: pass
+                    toks = [run_state.engine.grammar.id_to_token.get(t.item(), str(t.item())) for t in best_rpn_simp if t.item() in run_state.engine.grammar.id_to_token]
+                    logger.debug("Tokens simplificados inválidos: %s", toks)
+                except Exception:
+                    logger.debug("No se pudieron decodificar tokens inválidos.", exc_info=True)
 
                 # REVERT to Original
                 final_rpn = best_rpn
                 final_consts = best_consts
-                formula = LIVE_ENGINE.rpn_to_infix(final_rpn, final_consts)
+                formula = run_state.engine.rpn_to_infix(final_rpn, final_consts)
                 
                 # If still invalid, print original tokens
                 if formula == "Invalid":
-                    print(f"[DEBUG UI] Original ALSO Invalid!")
+                    logger.debug("El RPN original también es inválido.")
                     try:
-                        toks_orig = [LIVE_ENGINE.grammar.id_to_token.get(t.item(), str(t.item())) for t in best_rpn if t.item() in LIVE_ENGINE.grammar.id_to_token]
-                        print(f"Bad Orig Tokens: {toks_orig}")
-                    except: pass
+                        toks_orig = [run_state.engine.grammar.id_to_token.get(t.item(), str(t.item())) for t in best_rpn if t.item() in run_state.engine.grammar.id_to_token]
+                        logger.debug("Tokens originales inválidos: %s", toks_orig)
+                    except Exception:
+                        logger.debug("No se pudieron decodificar tokens originales.", exc_info=True)
             
-            update_queue.put({
+            run_state.updates.put({
                 "gen": gen,
                 "rmse": best_rmse,
                 "formula": formula, # Now matches final_rpn
@@ -312,11 +381,15 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     else:
         x_input_tensor = x
         
-    thread = threading.Thread(
-        target=LIVE_ENGINE.run,
-        args=(x_input_tensor, y, None, timeout_sec if timeout_sec > 0 else None, wrapped_callback)
-    )
-    thread.start()
+    def engine_target():
+        try:
+            run_state.engine.run(x_input_tensor, y, None, timeout_sec if timeout_sec > 0 else None, wrapped_callback)
+        except Exception as e:
+            logger.error("Error durante evolución GPU: %s", format_exception(e))
+            run_state.updates.put({"error": str(e)})
+
+    run_state.thread = threading.Thread(target=engine_target)
+    run_state.thread.start()
     
     start_time = time.time()
     last_gen = 0
@@ -326,10 +399,15 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     last_best_html = ""
     last_stats_html = ""
     
-    while thread.is_alive() or not update_queue.empty():
+    while run_state.thread.is_alive() or not run_state.updates.empty():
         try:
             # Poll for updates
-            data = update_queue.get(timeout=0.1)
+            data = run_state.updates.get(timeout=0.1)
+            if "error" in data:
+                last_best_html = last_best_html or formula_card("", "Mejor fórmula actual")
+                last_stats_html = last_stats_html or metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", f"{time.time() - start_time:.1f}s"), ("Islas", int(n_islands))])
+                yield status_panel(f"Error durante evolución GPU: {data['error']}", "error"), last_best_html, last_stats_html, last_fig
+                break
             
             gen = data["gen"]
             rmse = data["rmse"]
@@ -338,57 +416,30 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
             elapsed = time.time() - start_time
             speed = (gen * pop_size) / elapsed if elapsed > 0 else 0
             
-            status = f"""
-            <div style="padding: 10px; background: #0f172a; border-radius: 8px; border-left: 3px solid #22d3ee;">
-                <b style="color: #22d3ee;">Ejecutando...</b> | Gen: {gen:,} | Velocidad: {speed:,.0f} evals/s
-            </div>
-            """
-            
-            # Sanitize HTML to prevent rendering issues with <, >
-            formula_safe = html.escape(str(formula)) if formula else "..."
-            
-            best_html = f"""
-            <div style="background: #0f0f23; padding: 15px; border-radius: 10px; border-left: 4px solid #ff6b6b; margin-bottom: 10px; min-height: 60px; display: flex; align-items: center;">
-                <code style="color: #ff6b6b; font-size: 20px; font-weight: bold; overflow-wrap: break-word; white-space: pre-wrap; width: 100%;">{formula_safe}</code>
-            </div>
-            """
-            
-            stats_html = f"""
-            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-                <div style="background: #0f172a; padding: 10px; border-radius: 8px; text-align: center;">
-                    <span style="color: #888; font-size: 0.8rem;">RMSE</span><br>
-                    <span style="color: #22d3ee; font-size: 1.2rem; font-weight: bold;">{rmse:.6e}</span>
-                </div>
-                <div style="background: #0f172a; padding: 10px; border-radius: 8px; text-align: center;">
-                    <span style="color: #888; font-size: 0.8rem;">Generación</span><br>
-                    <span style="color: #22d3ee; font-size: 1.2rem; font-weight: bold;">{gen:,}</span>
-                </div>
-                <div style="background: #0f172a; padding: 10px; border-radius: 8px; text-align: center;">
-                    <span style="color: #888; font-size: 0.8rem;">Tiempo</span><br>
-                    <span style="color: #22d3ee; font-size: 1.2rem; font-weight: bold;">{elapsed:.1f}s</span>
-                </div>
-                <div style="background: #0f172a; padding: 10px; border-radius: 8px; text-align: center;">
-                    <span style="color: #888; font-size: 0.8rem;">Islas</span><br>
-                    <span style="color: #22d3ee; font-size: 1.2rem; font-weight: bold;">{n_islands}</span>
-                </div>
-            </div>
-            """
+            status = status_panel(f"Ejecutando · Gen {gen:,} · {speed:,.0f} evals/s", "info")
+            best_html = formula_card(formula, "Mejor fórmula actual")
+            stats_html = metric_grid([
+                ("RMSE", f"{rmse:.6e}"),
+                ("Generación", f"{gen:,}"),
+                ("Tiempo", f"{elapsed:.1f}s"),
+                ("Islas", int(n_islands)),
+            ])
             
             # Create plot (only every few updates to save CPU)
             fig = None
             if data["new_best"] or gen % 100 == 0:
                 try:
                     # Evaluate using GPU engine directly for 100% accuracy
-                    rpn_tensor = data["rpn"].unsqueeze(0).to(LIVE_ENGINE.device)
-                    consts_tensor = data["consts"].unsqueeze(0).to(LIVE_ENGINE.device, dtype=LIVE_ENGINE.dtype)
+                    rpn_tensor = data["rpn"].unsqueeze(0).to(run_state.engine.device)
+                    consts_tensor = data["consts"].unsqueeze(0).to(run_state.engine.device, dtype=run_state.engine.dtype)
                     
                     # Prepare x properly for engine
                     if num_vars == 1:
-                        x_t = torch.tensor(x if x.ndim == 1 else x.flatten(), device=LIVE_ENGINE.device, dtype=LIVE_ENGINE.dtype).unsqueeze(0) # [1, N]
+                        x_t = torch.tensor(x if x.ndim == 1 else x.flatten(), device=run_state.engine.device, dtype=run_state.engine.dtype).unsqueeze(0) # [1, N]
                     else:
-                        x_t = torch.tensor(x.T if x.shape[0] != num_vars else x, device=LIVE_ENGINE.device, dtype=LIVE_ENGINE.dtype)
+                        x_t = torch.tensor(x.T if x.shape[0] != num_vars else x, device=run_state.engine.device, dtype=run_state.engine.dtype)
                     
-                    preds, sp, err = LIVE_ENGINE.evaluator.vm.eval(rpn_tensor, x_t, consts_tensor)
+                    preds, sp, err = run_state.engine.evaluator.vm.eval(rpn_tensor, x_t, consts_tensor)
                     is_valid = (sp == 1) & (~err)
                     
                     y_pred = preds.squeeze().cpu().numpy()
@@ -398,31 +449,31 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
                     # Inverse transform if needed
                     if use_log_transform: 
                         y_pred = np.exp(y_pred)
-                        
+
+                    y_pred = _fill_live_plot_predictions_with_formula(x, y_pred, formula)
                     fig = create_fit_plot(x, y, y_pred, formula)
                     last_fig = fig
                 except Exception as e:
-                    # Fallback if GPU eval fails
-                    pass
+                    logger.debug("No se pudo refrescar el plot live: %s", format_exception(e), exc_info=True)
             
             last_best_html = best_html
             last_stats_html = stats_html
+            run_state.last_output = (status, best_html, stats_html, last_fig)
             yield status, best_html, stats_html, last_fig
             
         except queue.Empty:
-            if not thread.is_alive() or _STOP_EVENT.is_set():
+            if not run_state.thread.is_alive() or run_state.stop_event.is_set():
                 # Signal the engine to stop if user pressed the button
-                if _STOP_EVENT.is_set() and LIVE_ENGINE is not None:
-                    try:
-                        LIVE_ENGINE.stop_flag = True
-                    except Exception:
-                        pass
+                if run_state.stop_event.is_set():
+                    run_state.request_stop()
                 break
             continue
 
     elapsed = time.time() - start_time
+    for name, value in previous_config.items():
+        setattr(GpuGlobals, name, value)
     yield (
-        f'<div style="padding: 10px; background: #0f172a; border-radius: 8px; border-left: 3px solid #22c55e;"><b>Finalizado</b> en {elapsed:.2f}s</div>',
+        status_panel(f"Finalizado en {elapsed:.2f}s", "success"),
         last_best_html, # Persist last best
         last_stats_html, # Persist last stats
         last_fig  # Persist final plot

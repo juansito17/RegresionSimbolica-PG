@@ -1,10 +1,12 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+import argparse
 import torch
 import numpy as np
 import time
 from AlphaSymbolic.core.gpu import TensorGeneticEngine
+from AlphaSymbolic.ui.logging_utils import configure_logging
 
 # Configuration matching C++ Globals
 # --- CONFIGURATION ---
@@ -142,6 +144,11 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
         sys.stdout.flush()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AlphaSymbolic GPU console runner")
+    parser.add_argument("--verbose", action="store_true", help="Activar logs detallados.")
+    args = parser.parse_args()
+    configure_logging(args.verbose)
+
     print("Starting Genetic Algorithm (GPU Mode)...")
     sys.stdout.flush()
     

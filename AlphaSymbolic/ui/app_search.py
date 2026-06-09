@@ -8,6 +8,16 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import time
 import gradio as gr
+from AlphaSymbolic.ui.data_io import parse_input_data
+from AlphaSymbolic.ui.formatting import (
+    alternatives_list,
+    escape_html,
+    formula_card,
+    metric_grid,
+    prediction_table,
+    status_panel,
+)
+from AlphaSymbolic.ui.logging_utils import format_exception, get_logger
 
 from AlphaSymbolic.core.grammar import ExpressionTree
 from AlphaSymbolic.search.beam_search import BeamSearch
@@ -19,6 +29,8 @@ from AlphaSymbolic.utils.detect_pattern import detect_pattern
 from AlphaSymbolic.utils.optimize_constants import optimize_constants, substitute_constants
 from AlphaSymbolic.ui.app_core import get_model
 
+logger = get_logger("UI.SEARCH")
+
 
 def parse_data(x_str, y_str):
     """
@@ -27,52 +39,16 @@ def parse_data(x_str, y_str):
     1. 1D Comma-separated: "1, 2, 3"
     2. 2D Multi-line/Semi-colon: "1,2; 3,4" or "1 2\n3 4"
     """
-    try:
-        # Pre-process: standardize separators
-        x_str = x_str.strip()
-        y_str = y_str.strip()
-        
-        # Check for multi-line or semi-colon (Multi-Variable)
-        is_multivar = '\n' in x_str or ';' in x_str
-        
-        if is_multivar:
-            # Split into rows
-            rows = [r.strip() for r in x_str.replace(';', '\n').split('\n') if r.strip()]
-            # Parse each row
-            x_data = []
-            for r in rows:
-                # Handle comma or space
-                vals = [float(v) for v in r.replace(',', ' ').split()]
-                x_data.append(vals)
-            x = np.array(x_data, dtype=np.float64)
-            
-            # Y should also be checked, usually 1D but input might be multi-line
-            y_data = [float(v) for v in y_str.replace(';', '\n').replace(',', ' ').split()]
-            y = np.array(y_data, dtype=np.float64)
-            
-        else:
-            # Legacy 1D
-            x = np.array([float(v.strip()) for v in x_str.split(',')], dtype=np.float64)
-            y = np.array([float(v.strip()) for v in y_str.split(',')], dtype=np.float64)
-            
-            # Ensure X is (N, 1) or (N,) depending on usage. 
-            # Logic mostly expects (N,) for 1D, but model needs (N, 1).
-            # Let's keep (N,) for 1D to not break existing plots, handling shape later.
-        
-        if len(x) != len(y):
-            return None, None, f"Error: Cantidad de muestras X ({len(x)}) != Y ({len(y)})"
-            
-        return x, y, None
-    except Exception as e:
-        return None, None, f"Error parseando datos: {str(e)}"
+    parsed = parse_input_data(x_str, y_str)
+    return parsed.x, parsed.y, parsed.error
 
 
 def create_fit_plot(x, y, y_pred, formula):
     """Create a plot showing data vs prediction."""
     from matplotlib.figure import Figure
-    fig = Figure(figsize=(8, 5), facecolor='#1a1a2e')
+    fig = Figure(figsize=(8, 5), facecolor='#0f172a')
     ax = fig.add_subplot(111)
-    ax.set_facecolor('#1a1a2e')
+    ax.set_facecolor('#0f172a')
     
     # Check dimensions
     
@@ -84,11 +60,11 @@ def create_fit_plot(x, y, y_pred, formula):
     if x.ndim > 1 and x.shape[1] > 1:
         # Multi-variable: Plot only target values (Y) vs Index
         indices = np.arange(len(y))
-        ax.scatter(indices, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1.5)
+        ax.scatter(indices, y, color='#0ea5e9', s=72, label='Datos reales', zorder=3, edgecolors='white', linewidth=1.2)
     else:
         # 1D: Plot X vs Y
         if x.ndim > 1: x = x.flatten()
-        ax.scatter(x, y, color='#00d4ff', s=100, label='Datos Reales', zorder=3, edgecolors='white', linewidth=1.5)
+        ax.scatter(x, y, color='#0ea5e9', s=72, label='Datos reales', zorder=3, edgecolors='white', linewidth=1.2)
 
     # Plot Prediction (Handle NaNs)
     if y_pred is not None:
@@ -97,7 +73,7 @@ def create_fit_plot(x, y, y_pred, formula):
             # Filter NaNs
             valid = np.isfinite(y_pred)
             if valid.any():
-                ax.plot(indices[valid], y_pred[valid], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
+                ax.plot(indices[valid], y_pred[valid], color='#f97316', linewidth=2.5, label='Predicción', zorder=2)
         else:
             sort_idx = np.argsort(x)
             x_sorted = x[sort_idx]
@@ -106,18 +82,18 @@ def create_fit_plot(x, y, y_pred, formula):
             # Filter NaNs
             valid = np.isfinite(y_pred_sorted)
             if valid.any():
-                ax.plot(x_sorted[valid], y_pred_sorted[valid], color='#ff6b6b', linewidth=3, label='Prediccion', zorder=2)
+                ax.plot(x_sorted[valid], y_pred_sorted[valid], color='#f97316', linewidth=2.5, label='Predicción', zorder=2)
         
         ax.set_xlabel('X', color='white', fontsize=12)
         ax.set_ylabel('Y', color='white', fontsize=12)
-        ax.set_title('Ajuste de la Formula', color='white', fontsize=14, fontweight='bold')
-        ax.legend(facecolor='#16213e', edgecolor='#00d4ff', labelcolor='white')
+        ax.set_title('Ajuste de la fórmula', color='white', fontsize=14, fontweight='bold')
+        ax.legend(facecolor='#111827', edgecolor='#334155', labelcolor='white')
 
     ax.tick_params(colors='white')
     ax.grid(True, alpha=0.2, color='white')
     
     for spine in ax.spines.values():
-        spine.set_color('#00d4ff')
+        spine.set_color('#475569')
     
     fig.tight_layout()
     return fig
@@ -127,7 +103,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
     """Main solving function with search method selection."""
     x, y, error = parse_data(x_str, y_str)
     if error:
-        return error, None, "", "", ""
+        return status_panel(error, "error"), None, "", "", ""
     
     MODEL, DEVICE = get_model()
     
@@ -200,7 +176,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
     search_time = time.time() - start_time
     
     if not results:
-        return "No se encontraron formulas validas", None, "", "", ""
+        return status_panel("No se encontraron fórmulas válidas.", "warning"), None, "", "", ""
     
     progress(0.7, desc="Optimizando constantes...")
     pareto = ParetoFront()
@@ -208,7 +184,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
     best = pareto.get_best_by_rmse()
     
     if not best:
-        return "Error en optimizacion", None, "", "", ""
+        return status_panel("Error en optimización.", "error"), None, "", "", ""
     
     progress(0.9, desc="Procesando...") 
     tree = ExpressionTree(best.tokens)
@@ -223,7 +199,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
             raw_infix = tree.get_infix()
             display_formula = substitute_constants(raw_infix, best.constants, positions)
         except:
-            pass
+            logger.debug("No se pudo sustituir constantes.", exc_info=True)
     
     # Try to simplify algebraically (x0 + x0 -> 2*x0, etc.)
     try:
@@ -238,7 +214,7 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
             if has_variable and is_not_just_number:
                 display_formula = simplified
     except:
-        pass
+            logger.debug("No se pudo simplificar la fórmula.", exc_info=True)
     
     eval_warning = ""
     # Safe Evaluation for Plotting
@@ -251,46 +227,26 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
         if np.any(np.isnan(y_pred)) or np.any(np.isinf(y_pred)):
              y_pred = np.nan_to_num(y_pred, nan=0.0, posinf=1e9, neginf=-1e9)
     except Exception as e:
-        print(f"Plot Eval Error: {e}")
+        logger.error("Error evaluando fórmula para plot: %s", format_exception(e))
         y_pred = np.zeros_like(y)
-        eval_warning = f"<div style='color: #ef4444; font-weight: bold; margin-bottom: 10px;'>Plot Error: {str(e)}</div>"
+        eval_warning = status_panel(f"Error generando plot: {e}", "error")
     
     fig = create_fit_plot(x, y, y_pred, display_formula)
     
-    # Format results
-    result_html = f"""
-    {eval_warning}
-    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 20px; border-radius: 15px; border: 2px solid #00d4ff;">
-        <h2 style="color: #00d4ff; margin: 0; font-size: 24px;">Formula Encontrada</h2>
-        <div style="background: #0f0f23; padding: 15px; border-radius: 10px; margin: 15px 0; border-left: 4px solid #ff6b6b;">
-            <code style="color: #ff6b6b; font-size: 28px; font-weight: bold;">{display_formula}</code>
-        </div>
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
-            <div style="background: #0f0f23; padding: 10px; border-radius: 8px; text-align: center;">
-                <span style="color: #888;">RMSE</span><br>
-                <span style="color: #00d4ff; font-size: 16px; font-weight: bold;">{best.rmse:.6f}</span>
-            </div>
-            <div style="background: #0f0f23; padding: 10px; border-radius: 8px; text-align: center;">
-                <span style="color: #888;">Nodos</span><br>
-                <span style="color: #00d4ff; font-size: 16px; font-weight: bold;">{best.complexity}</span>
-            </div>
-            <div style="background: #0f0f23; padding: 10px; border-radius: 8px; text-align: center;">
-                <span style="color: #888;">Tiempo</span><br>
-                <span style="color: #00d4ff; font-size: 16px; font-weight: bold;">{search_time:.2f}s</span>
-            </div>
-            <div style="background: #0f0f23; padding: 10px; border-radius: 8px; text-align: center;">
-                <span style="color: #888;">Metodo</span><br>
-                <span style="color: #4ade80; font-size: 16px; font-weight: bold;">{search_method}</span>
-            </div>
-        </div>
-        <div style="margin-top: 15px; padding: 10px; background: #0f0f23; border-radius: 8px;">
-            <span style="color: #888;">Patron:</span> 
-            <span style="color: #ffd93d;">{pattern['type']}</span> 
-            <span style="color: #666;">({pattern['confidence']:.0%})</span>
-            <span style="color: #888; margin-left: 20px;">Device:</span>
-            <span style="color: #4ade80;">{DEVICE.type.upper()}</span>
-        </div>
-    """
+    result_html = (
+        eval_warning
+        + formula_card(display_formula, "Fórmula encontrada")
+        + metric_grid(
+            [
+                ("RMSE", f"{best.rmse:.6f}"),
+                ("Nodos", best.complexity),
+                ("Tiempo", f"{search_time:.2f}s"),
+                ("Método", search_method),
+                ("Patrón", f"{escape_html(pattern['type'])} ({pattern['confidence']:.0%})"),
+                ("Dispositivo", DEVICE.type.upper()),
+            ]
+        )
+    )
     
     # Add constants if any
     # Add constants if any
@@ -302,21 +258,12 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
             clean_consts.append(f"C_{i+1}: {v:.4f}")
         const_str = "  |  ".join(clean_consts)
         
-        result_html += f"""
-        <div style="margin-top: 10px; padding: 10px; background: #0f0f23; border-radius: 8px; border-left: 3px solid #ffd93d;">
-            <span style="color: #888;">Constantes:</span>
-            <span style="color: #fff; font-family: monospace; margin-left: 10px;">{const_str}</span>
-        </div>
-        """
-        
-    result_html += "</div>"
+        result_html += status_panel(f"Constantes: {const_str}", "info")
     
     # Predictions table
-    pred_html = '<table style="width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 10px; overflow: hidden;">'
-    pred_html += '<tr style="background: #16213e;"><th style="padding: 10px; color: #00d4ff;">X</th><th style="color: #00d4ff;">Pred</th><th style="color: #00d4ff;">Real</th><th style="color: #00d4ff;">Delta</th></tr>'
+    pred_rows = []
     for i in range(min(50, len(y))):
         delta = abs(y_pred[i] - y[i])
-        color = "#4ade80" if delta < 0.1 else "#fbbf24" if delta < 1 else "#ef4444"
         
         # Display X nicely
         x_val_str = ""
@@ -325,16 +272,11 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
         else:
              xv = x[i] if x.ndim == 1 else x[i,0]
              x_val_str = f"{xv:.2f}"
-             
-        pred_html += f'<tr style="border-bottom: 1px solid #333;"><td style="padding: 8px; color: white; text-align: center;">{x_val_str}</td><td style="color: white; text-align: center;">{y_pred[i]:.4f}</td><td style="color: white; text-align: center;">{y[i]:.4f}</td><td style="color: {color}; text-align: center; font-weight: bold;">{delta:.4f}</td></tr>'
-    pred_html += '</table>'
+        pred_rows.append((x_val_str, f"{y_pred[i]:.4f}", f"{y[i]:.4f}", f"{delta:.4f}"))
+    pred_html = prediction_table(pred_rows)
     
     # Alternatives
-    alt_html = '<div style="background: #1a1a2e; padding: 15px; border-radius: 10px;">'
-    alt_html += '<h4 style="color: #00d4ff; margin-top: 0;">Alternativas</h4>'
-    for i, sol in enumerate(pareto.solutions[:4]):
-        alt_html += f'<div style="padding: 5px 10px; margin: 5px 0; background: #0f0f23; border-radius: 5px; border-left: 3px solid {"#00d4ff" if i == 0 else "#666"};"><code style="color: {"#ff6b6b" if i == 0 else "#888"};">{sol.formula}</code> <span style="color: #666; font-size: 12px;">RMSE: {sol.rmse:.4f}</span></div>'
-    alt_html += '</div>'
+    alt_html = alternatives_list([(sol.formula, f"{sol.rmse:.4f}") for sol in pareto.solutions[:4]])
     
     return result_html, fig, pred_html, alt_html, display_formula
 
@@ -344,17 +286,28 @@ def generate_example(tipo):
     if tipo == "lineal":
         x = np.linspace(1, 10, 10)
         y = 2 * x + 3
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
     elif tipo == "cuadratico":
         x = np.linspace(-5, 5, 11)
         y = x**2 + 1
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
     elif tipo == "trig":
-        x = np.linspace(0, 6.28, 20)
+        x = np.round(np.linspace(0, 2 * np.pi, 21), 6)
         y = np.sin(x)
+        y[np.isclose(y, 0, atol=1e-6)] = 0.0
+        x_fmt = "{:.6f}"
+        y_fmt = "{:.6f}"
     elif tipo == "exp":
         x = np.linspace(0, 5, 15)
         y = 2 * np.exp(0.5 * x)
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
     else:
         x = np.linspace(1, 10, 10)
         y = 2 * x + 3
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
     
-    return ", ".join([f"{v:.2f}" for v in x]), ", ".join([f"{v:.4f}" for v in y])
+    return ", ".join([x_fmt.format(v) for v in x]), ", ".join([y_fmt.format(v) for v in y])

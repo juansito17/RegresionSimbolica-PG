@@ -14,6 +14,7 @@ logs/
 *.log
 *.txt
 !requirements.txt
+!requirements-dev.txt
 !README.md
 cache/
 .gradio/
@@ -54,3 +55,16 @@ notebooks/
 results/
 cache/
 .gradio/
+!tests/
+tests/*
+!tests/conftest.py
+!tests/ui/
+!tests/ui/**
+!tests/e2e/
+!tests/e2e/**
+tests/**/__pycache__/
+tests/**/*.pyc
+!data/
+data/*
+!data/__init__.py
+!data/synthetic_data.py
