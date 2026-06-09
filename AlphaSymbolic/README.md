@@ -1,113 +1,186 @@
-# AlphaSymbolic 🧠
+# AlphaSymbolic
 
-> **Deep Reinforcement Learning para Regresión Simbólica**
-> *Inspirado en AlphaZero y AlphaTensor*
+> Capa Python/Gradio para regresion simbolica neuro-evolutiva con PyTorch y GPU.
 
-AlphaSymbolic es una inteligencia artificial autónoma capaz de **descubrir fórmulas matemáticas** a partir de datos. Utiliza un enfoque **Híbrido Neuro-Evolutivo** que combina la intuición de una Red Neuronal (Transformer) con la precisión de un Motor Genético (GP) en C++.
+AlphaSymbolic combina varios enfoques:
 
-## 🚀 Características Principales
-
-### 🧠 Arquitectura Híbrida (Neuro-Symbolic)
-- **Red Neuronal Transformer**: Actúa como la "Intuición". Genera hipótesis rápidas (Beam Search) sobre la estructura de la fórmula.
-- **Motor Genético (C++)**: Actúa como el "Maestro". Refina las hipótesis de la red, ajusta constantes y resuelve los casos difíciles.
-- **Hybrid Feedback Loop**: Un ciclo de mejora continua donde la red aprende de las correcciones del motor genético (Teacher-Student Distillation).
-
-### ⚡ Potencia Ajustable (Nuevo)
-- **Modo Lite (Laptop)**: Rápido y ligero (128 dim, 3 capas). Funciona en cualquier CPU/GPU básica. Ideal para desarrollo local.
-- **Modo Pro (Colab/Cloud)**: Cerebro gigante (256 dim, 6 capas). Requiere GPU potente (T4/A100). Capaz de entender conceptos más profundos.
-
-### 🎓 Aprendizaje y Curriculum
-- **Hard Mining**: El sistema identifica activamente los problemas donde la red falla y desafía al Motor GP a resolverlos.
-- **Teacher-Student**: La red neuronal (Alumno) se entrena replicando las soluciones exitosas del GP (Maestro).
-- **Benchmarks Científicos**: Validado con el dataset de Feynman (Física) para redescubrir leyes fundamentales.
-
-### ☁️ Listo para la Nube
-- **Google Colab**: Incluye un script generador (`Code/notebooks/GoogleColab_Project.ipynb`) para correr todo el proyecto gratis en la nube de Google con un solo click.
+- Modelo neuronal Transformer para generar candidatos.
+- Beam Search, MCTS y busqueda hibrida.
+- Motor genetico tensorial en GPU (`TensorGeneticEngine`).
+- Extension CUDA nativa para evaluacion, mutacion, simplificacion y optimizacion de constantes.
+- Interfaz web en Gradio para busqueda, entrenamiento, benchmark y monitoreo.
 
 ---
 
-## 🛠️ Instalación
+## Instalacion
 
-1.  **Clonar repositorio**:
-    ```bash
-    git clone https://github.com/juansito17/RegresionSimbolica-PG.git
-    cd AlphaSymbolic
-    ```
+Desde esta carpeta:
 
-2.  **Instalar dependencias**:
-    ```bash
-    # PyTorch con soporte CUDA (recomendado)
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-    
-    # Librerías auxiliares
-    pip install gradio scipy numpy matplotlib sympy
-    ```
+```powershell
+pip install -r requirements.txt
+```
 
-### ⚡ Aceleración por GPU (CUDA)
-El motor genético utiliza una extensión en C++/CUDA para máxima velocidad. Al clonar el repositorio, debes compilarla manualmente:
+Dependencias principales:
 
-1.  **Requisitos**: NVIDIA CUDA Toolkit y Visual Studio 2022 (con soporte para C++).
-2.  **Compilar**:
-    ```bash
-    cd AlphaSymbolic/core/gpu/cuda
-    ./build_extension.bat
-    ```
-> [!NOTE]
-> Si el script falla, asegúrate de que la ruta a `vcvars64.bat` en el archivo `.bat` coincida con tu instalación de Visual Studio.
+- `torch`
+- `numpy`
+- `scipy`
+- `sympy`
+- `gradio`
+- `gymnasium`
+- `pandas`
 
-3.  **Ejecutar**:
-    ```bash
-    python app.py
-    ```
-    Visita `http://127.0.0.1:7860` en tu navegador.
+Para GPU necesitas un driver NVIDIA funcional. Si PyTorch no detecta CUDA, instala la rueda CUDA adecuada desde la documentacion oficial de PyTorch.
 
 ---
 
-## 🧪 Cómo Usar
+## Ejecutar la App
 
-### 1. Selecciona tu Cerebro
-En la barra superior, elige entre **Lite** (rápido) y **Pro** (potente). Si cambias, la IA reiniciará sus pesos.
+```powershell
+cd AlphaSymbolic
+python app.py
+```
 
-### 2. Entrenamiento (El Gimnasio)
-Ve a la pestaña `Entrenamiento` y activa el **Self-Play Loop**.
-- Verás: "Buscando..." -> "Entrenando..."
-- La IA generará datos, intentará resolverlos, y aprenderá de sus errores.
-- **Tip**: Déjalo correr 1000 iteraciones para ver resultados mágicos.
+La app crea una interfaz Gradio con:
 
-### 3. Búsqueda Híbrida
-Ve a `Buscar Fórmula`.
-- Escribe tus datos X e Y (ej: `1,2,3` y `2,4,6`).
-- Dale a **Buscar Fórmula**.
-- El sistema lanzará un **Neural Beam Search** para generar candidatos y el **Motor GP** los refinará en milisegundos.
-
-### 4. Benchmark (El Test de CI)
-Ve a `Benchmark (IQ Test)`.
-- Dale a **Iniciar Examen**.
-- La IA se enfrentará a 10 problemas clásicos de regresión simbólica sin haberlos visto antes.
-
-### 5. Herramientas Avanzadas (Scripts)
-- **Benchmark Físico**: Ejecuta `python run_benchmark_feynman.py` para probar el modelo con leyes físicas reales (Gravedad, Relatividad, etc.).
-- **Rescate de Datos**: Si cierras la app, usa `python rescue_data.py` para extraer las fórmulas aprendidas de los logs de la consola y guardarlas en CSV.
+- `Buscar Formula`: entrada de datos X/Y, carga CSV y busqueda por Beam Search, MCTS o Alpha-GP Hybrid.
+- `Entrenar Modelo`: entrenamiento basico, curriculum, self-play, feedback loop y memoria.
+- `GPU Evolution`: ejecucion/monitoreo del motor evolutivo GPU.
+- `Benchmark`: problemas clasicos de regresion simbolica.
+- `Informacion`: resumen del dispositivo y operadores.
 
 ---
 
-## 📂 Despliegue en Google Colab
+## Scripts Utiles
 
-Si no tienes GPU potente, usa Google Colab:
-1. Sube el archivo `Code/notebooks/GoogleColab_Project.ipynb` a tu Google Drive.
-2. Ábrelo y cambia el entorno a **T4 GPU**.
-3. Ejecuta todo.
-4. Obtendrás un link público (Gradio) para usar tu IA desde cualquier lugar.
+Ejecutalos desde la raiz del repositorio para conservar imports limpios:
+
+```powershell
+python AlphaSymbolic\scripts\run_gpu_console.py
+```
+
+Ejecuta una busqueda GPU tipo consola usando la configuracion de `core/gpu/config.py`.
+
+```powershell
+python AlphaSymbolic\scripts\run_gpu_benchmark.py
+```
+
+Ejecuta benchmarks sinteticos definidos en el propio script.
+
+```powershell
+python AlphaSymbolic\scripts\profile_gpu_engine.py
+```
+
+Perfila rutas del motor GPU.
+
+```powershell
+python AlphaSymbolic\scripts\infinite_search.py
+```
+
+Lanza una busqueda continua con memoria de patrones y mutacion estructural.
 
 ---
 
-## 🧠 Estructura del Proyecto
+## Configuracion
 
-- `core/`: Modelo Transformer (PyTorch) y Gramática Matemática.
-- `search/`: Algoritmos de Búsqueda (MCTS Paralelo, Beam Search).
-- `ui/`: Interfaz gráfica moderna con Gradio.
-- `data/`: Generadores de ecuaciones y Benchmarks.
-- `utils/`: Optimizador de constantes (BFGS) y runners.
+El archivo principal del motor GPU es:
+
+```text
+AlphaSymbolic/core/gpu/config.py
+```
+
+Parametros frecuentes:
+
+| Parametro | Descripcion |
+|-----------|-------------|
+| `USE_FLOAT32` | Usa `float32` para ganar velocidad en GPUs de consumo. |
+| `FORCE_CPU_MODE` | Fuerza CPU aunque CUDA este disponible. |
+| `USE_CUDA_ORCHESTRATOR` | Activa el orquestador CUDA nativo. |
+| `USE_LOG_TRANSFORMATION` | Transforma `Y` con log. Importante para N-Queens; puede ser incorrecto para datos simples. |
+| `POP_SIZE` | Tamano global de poblacion. |
+| `NUM_ISLANDS` | Cantidad de islas evolutivas. |
+| `MAX_FORMULA_LENGTH` | Longitud maxima de formula. |
+| `MAX_CONSTANTS` | Constantes disponibles por individuo. |
+| `USE_INITIAL_FORMULA` | Inyecta una formula inicial si esta activo. |
+| `INITIAL_FORMULA_STRING` | Formula semilla. |
+
+La configuracion actual esta optimizada para una busqueda sobre N-Queens/OEIS A000170 con variables derivadas de `n`, `n % 6` y `n % 2`.
 
 ---
-*Creado con ❤️ e Inteligencia Artificial.*
+
+## Extension CUDA Nativa
+
+La extension vive en:
+
+```text
+AlphaSymbolic/core/gpu/cuda/
+```
+
+Archivos clave:
+
+- `setup.py`
+- `bindings.cpp`
+- `rpn_kernels.cu`
+- `pso_kernels.cu`
+- `fused_pso_kernels.cu`
+- `simplify_kernels.cu`
+- `lbfgs_kernels.cu`
+- `best_tracker_kernels.cu`
+
+Si ya existe `rpn_cuda_native.cp311-win_amd64.pyd`, fue compilada para Python 3.11 en Windows.
+
+Para recompilar manualmente:
+
+```powershell
+cd AlphaSymbolic\core\gpu\cuda
+python setup.py build_ext --inplace
+```
+
+Requisitos para recompilar en Windows:
+
+- Visual Studio 2022 con C++.
+- CUDA Toolkit compatible.
+- PyTorch instalado.
+
+---
+
+## Smoke Test Rapido
+
+Desde la raiz, en PowerShell:
+
+```powershell
+@'
+import os, sys
+sys.path.insert(0, os.getcwd())
+from AlphaSymbolic.core.gpu import TensorGeneticEngine
+engine = TensorGeneticEngine(num_variables=1, pop_size=256, n_islands=2, max_len=16, max_constants=4)
+print(engine.device, engine.pop_size, engine.n_islands)
+'@ | python -
+```
+
+---
+
+## Estructura
+
+```text
+AlphaSymbolic/
+|-- app.py
+|-- requirements.txt
+|-- pyproject.toml
+|-- core/
+|   |-- model.py
+|   |-- grammar.py
+|   |-- gpu_engine.py
+|   `-- gpu/
+|       |-- engine.py
+|       |-- config.py
+|       |-- operators.py
+|       |-- evaluation.py
+|       |-- optimization.py
+|       |-- gpu_simplifier.py
+|       `-- cuda/
+|-- search/
+|-- scripts/
+|-- ui/
+`-- utils/
+```

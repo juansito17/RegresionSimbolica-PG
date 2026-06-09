@@ -1,309 +1,227 @@
-# 🧬 Fórmula Genética
+# Formula Genetica
 
-> **Regresión Simbólica con Programación Genética y Aceleración GPU**
+> Regresion simbolica con programacion genetica, busqueda neuro-simbolica y aceleracion GPU.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1O2iCFqhXckKg4XF1ZCvpXO_gqt4fmkEI?usp=sharing)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=cplusplus)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-Enabled-76B900.svg?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![OpenMP](https://img.shields.io/badge/OpenMP-Parallel-00ADD8.svg)](https://www.openmp.org/)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python)](https://www.python.org/)
 
-Un sistema de **Programación Genética** de alto rendimiento diseñado para descubrir fórmulas matemáticas a partir de datos numéricos. Combina técnicas evolutivas avanzadas con aceleración por GPU (CUDA) y CPU multi-hilo (OpenMP).
+Este repositorio contiene dos implementaciones complementarias para descubrir formulas matematicas a partir de datos numericos:
 
----
+- `AlphaSymbolic/`: aplicacion Python/Gradio con PyTorch, busqueda hibrida, motor genetico tensorial en GPU y extension CUDA nativa.
+- `Code/`: motor C++17 con CUDA/OpenMP, modelo de islas, operadores geneticos, fitness y suite de pruebas.
 
-## 📑 Tabla de Contenidos
-
-- [🎯 Características Principales](#-características-principales)
-- [🏗️ Arquitectura](#️-arquitectura)
-- [⚡ Requisitos](#-requisitos)
-- [🚀 Instalación y Compilación](#-instalación-y-compilación)
-- [💻 Uso](#-uso)
-- [⚙️ Configuración](#️-configuración)
-- [📊 Ejemplo de Salida](#-ejemplo-de-salida)
-- [🔧 Estructura del Proyecto](#-estructura-del-proyecto)
-- [👤 Autor](#-autor)
-- [📄 Licencia](#-licencia)
+El frente mas activo actualmente es `AlphaSymbolic`, especialmente el motor GPU y los scripts de busqueda continua.
 
 ---
 
-## 🎯 Características Principales
+## Estado Actual
 
-### Algoritmo Evolutivo
-| Característica | Descripción |
-|----------------|-------------|
-| **Modelo de Islas** | Múltiples poblaciones evolucionan en paralelo con migración periódica |
-| **Selección por Torneo** | Con presión de parsimonia para favorecer soluciones simples |
-| **Cruce de Subárboles** | Intercambio de ramas entre árboles de expresión |
-| **Mutación Múltiple** | Cambio de constantes, operadores, inserción/deleción de nodos |
-| **Parámetros Adaptativos** | Tasas de mutación y cruce que evolucionan durante la ejecución |
-
-### Rendimiento
-| Característica | Descripción |
-|----------------|-------------|
-| **Aceleración GPU (CUDA)** | Evaluación masivamente paralela del fitness en GPU NVIDIA |
-| **Paralelismo CPU (OpenMP)** | Fallback multi-hilo para sistemas sin GPU |
-| **Compilación Condicional** | Soporte automático GPU/CPU según disponibilidad |
-
-### Optimización Inteligente
-| Característica | Descripción |
-|----------------|-------------|
-| **Simplificación Algebraica** | Plegado de constantes e identidades matemáticas automático |
-| **Optimización Pareto** | Balance entre precisión y complejidad de la fórmula |
-| **Memoria de Patrones** | Reutilización de sub-estructuras exitosas |
-| **Búsqueda Local** | Refinamiento de las mejores soluciones encontradas |
-| **Detección de Estancamiento** | Inyección de diversidad o terminación temprana |
-
-### Flexibilidad
-| Característica | Descripción |
-|----------------|-------------|
-| **Parser de Fórmulas** | Conversión de texto a árbol de expresión |
-| **Inyección de Fórmula Inicial** | Punto de partida opcional para la evolución |
-| **Función de Fitness Configurable** | RMSE o error potencial con penalización por complejidad |
+- Rama principal de trabajo: `develop`.
+- Python probado localmente: `3.11`.
+- PyTorch con CUDA detectado: `torch 2.5.1+cu121`.
+- Extension CUDA Python existente: `AlphaSymbolic/core/gpu/cuda/rpn_cuda_native.cp311-win_amd64.pyd`.
+- CMake detecta CUDA y genera build GPU para el motor C++.
+- Tests C++ disponibles en el target `TestOperators`.
 
 ---
 
-## 🏗️ Arquitectura
+## Estructura
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ALGORITMO GENÉTICO                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐       ┌─────────┐       │
-│  │ Isla 0  │  │ Isla 1  │  │ Isla 2  │  ...  │ Isla N  │       │
-│  │         │  │         │  │         │       │         │       │
-│  │ Pop[k]  │  │ Pop[k]  │  │ Pop[k]  │       │ Pop[k]  │       │
-│  └────┬────┘  └────┬────┘  └────┬────┘       └────┬────┘       │
-│       │            │            │                  │            │
-│       └────────────┴─────┬──────┴──────────────────┘            │
-│                          │                                      │
-│                    ┌─────▼─────┐                                │
-│                    │ Migración │ (cada N generaciones)          │
-│                    └───────────┘                                │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                    EVALUACIÓN DE FITNESS                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────────────┐    ┌──────────────────────┐          │
-│  │     GPU (CUDA)       │ OR │    CPU (OpenMP)      │          │
-│  │  Evaluación Batch    │    │  Evaluación Paralela │          │
-│  └──────────────────────┘    └──────────────────────┘          │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Árbol de Expresión
-
-Las fórmulas se representan como árboles binarios:
-
-```
-        [+]
-       /   \
-     [*]   [5]
-    /   \
-  [x]   [2]
-
-  Representa: (x * 2) + 5
-```
-
-**Operadores soportados:** `+`, `-`, `*`, `/`, `^` (potencia)
-
----
-
-## ⚡ Requisitos
-
-### Obligatorios
-- **Compilador C++17** (MSVC, g++, clang++)
-- **CMake** ≥ 3.18
-- **OpenMP** (incluido en la mayoría de compiladores)
-
-### Opcionales (para aceleración GPU)
-- **NVIDIA GPU** con Compute Capability ≥ 5.0
-- **CUDA Toolkit** ≥ 11.0
-- **Driver NVIDIA** actualizado
-
----
-
-## 🚀 Instalación y Compilación
-
-### Opción 1: Con GPU (CUDA)
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/juansito17/RegresionSimbolica-PG.git
-cd Algoritmo-Genetico-de-Formulas/Code
-
-# Crear directorio de compilación
-mkdir build && cd build
-
-# Configurar con CMake (detecta CUDA automáticamente)
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# Compilar
-cmake --build . --config Release
-```
-
-### Opción 2: Solo CPU (sin CUDA)
-
-Para compilar sin aceleración GPU, comenta o elimina la línea 55 en `CMakeLists.txt`:
-
-```cmake
-# target_compile_definitions(SymbolicRegressionGP PUBLIC "USE_GPU_ACCELERATION_DEFINED_BY_CMAKE")
-```
-
-Luego sigue los mismos pasos de compilación.
-
-### Windows (Script Rápido)
-
-```batch
-cd Code
-.\run.bat
-```
-
----
-
-## 💻 Uso
-
-### Ejecución Básica
-
-```bash
-# Desde el directorio build
-./SymbolicRegressionGP        # Linux/macOS
-.\SymbolicRegressionGP.exe    # Windows
-```
-
-### Configuración de Datos
-
-Edita `Code/src/Globals.h` para definir tus datos de entrada:
-
-```cpp
-// Valores objetivo (Y)
-const std::vector<double> TARGETS = {92, 352, 724};
-
-// Valores de entrada (X)
-const std::vector<double> X_VALUES = {8, 9, 10};
-```
-
-### Inyección de Fórmula Inicial (Opcional)
-
-Si tienes una aproximación inicial de la fórmula:
-
-```cpp
-const bool USE_INITIAL_FORMULA = true;
-const std::string INITIAL_FORMULA_STRING = "x^2 + 5*x - 3";
-```
-
----
-
-## ⚙️ Configuración
-
-Los parámetros principales se encuentran en `Code/src/Globals.h`:
-
-### Parámetros del Algoritmo
-
-| Parámetro | Valor Default | Descripción |
-|-----------|---------------|-------------|
-| `TOTAL_POPULATION_SIZE` | 50,000 | Tamaño total de la población |
-| `GENERATIONS` | 500,000 | Número máximo de generaciones |
-| `NUM_ISLANDS` | 10 | Número de islas paralelas |
-| `MIGRATION_INTERVAL` | 100 | Generaciones entre migraciones |
-| `MIGRATION_SIZE` | 50 | Individuos intercambiados |
-
-### Parámetros de Evolución
-
-| Parámetro | Valor Default | Descripción |
-|-----------|---------------|-------------|
-| `BASE_MUTATION_RATE` | 0.30 | Tasa de mutación base |
-| `DEFAULT_CROSSOVER_RATE` | 0.85 | Tasa de cruce |
-| `DEFAULT_TOURNAMENT_SIZE` | 30 | Tamaño del torneo de selección |
-| `BASE_ELITE_PERCENTAGE` | 0.15 | Porcentaje de élite preservada |
-
-### Parámetros de Fitness
-
-| Parámetro | Valor Default | Descripción |
-|-----------|---------------|-------------|
-| `USE_RMSE_FITNESS` | `true` | Usar RMSE como métrica |
-| `COMPLEXITY_PENALTY_FACTOR` | 0.005 | Penalización por complejidad |
-| `EXACT_SOLUTION_THRESHOLD` | 1e-8 | Umbral de solución exacta |
-
----
-
-## 📊 Ejemplo de Salida
-
-```
-Info: Running with 10 islands, 5000 individuals per island.
-Evaluating initial population (simplifying all)...
-Initial best fitness: 1.23456789e+02
-Initial best formula size: 5
-Initial best formula: ((x * x) + (x * 3))
-----------------------------------------
-Starting Genetic Algorithm...
-
-========================================
-New Global Best Found (Gen 127, Island 3)
-Fitness: 0.00000142
-Size: 7
-Formula: ((x ^ 2) + ((x * 5) - 3))
-Predictions vs Targets:
-  x=   8.0000: Pred=      92.0000, Target=      92.0000, Diff=      0.0000
-  x=   9.0000: Pred=     352.0001, Target=     352.0000, Diff=      0.0001
-  x=  10.0000: Pred=     724.0000, Target=     724.0000, Diff=      0.0000
-========================================
-
---- Generation 200/500000 (Elapsed: 12.45s) ---
-Overall Best Fitness: 1.42000000e-06
-Best Formula Size: 7
-(Last improvement at gen: 127)
-```
-
----
-
-## 🔧 Estructura del Proyecto
-
-```
+```text
 Algoritmo-Genetico-de-Formulas/
-├── AlphaSymbolic/            # Unified Neuro-Symbolic implementation
-├── Code/                     # Core C++ (GP) implementation
-│   ├── src/                  # Source files
-│   ├── notebooks/            # Notebooks (Colab)
-│   ├── scripts/              # Helper scripts
-│   └── ...
-├── LICENSE                   # Apache 2.0
-└── README.md                 # This file
+|-- AlphaSymbolic/
+|   |-- app.py                         # App Gradio
+|   |-- core/                          # Modelo, gramatica y motor GPU
+|   |-- core/gpu/config.py             # Configuracion principal del motor GPU Python
+|   |-- core/gpu/cuda/                 # Extension CUDA nativa
+|   |-- scripts/run_gpu_console.py     # Busqueda GPU desde consola
+|   |-- scripts/run_gpu_benchmark.py   # Benchmarks sinteticos
+|   |-- scripts/infinite_search.py     # Busqueda continua
+|   |-- search/                        # Beam Search, MCTS e hibridos
+|   |-- ui/                            # Componentes Gradio
+|   `-- utils/
+|-- Code/
+|   |-- CMakeLists.txt
+|   |-- run.bat
+|   |-- scripts/run_tests.bat
+|   `-- src/
+|       |-- Globals.h                  # Configuracion C++
+|       |-- main.cpp                   # Entry point C++
+|       |-- GeneticAlgorithm.*
+|       |-- ExpressionTree.*
+|       |-- Fitness.*
+|       |-- *GPU.cu / *GPU.cuh
+|       `-- TestOperators.cpp
+|-- LICENSE
+`-- README.md
 ```
 
 ---
 
-## 👤 Autor
+## Requisitos
 
-**Juan Manuel Peña Usuga**
+### Python / AlphaSymbolic
 
-- 🎓 Estudiante de Ingeniería Informática (Quinto Semestre)
-- 🏛️ Politécnico Colombiano Jaime Isaza Cadavid
-- 📅 Última actualización: Enero 2026
+- Python 3.9 o superior.
+- PyTorch.
+- NumPy, SciPy, SymPy, Gradio y Pandas.
+- Opcional pero recomendado: GPU NVIDIA con driver actualizado.
+- Para recompilar la extension nativa: CUDA Toolkit y Visual Studio 2022 en Windows.
+
+Instalacion basica:
+
+```powershell
+cd AlphaSymbolic
+pip install -r requirements.txt
+```
+
+Si necesitas instalar PyTorch con CUDA manualmente, usa la rueda apropiada desde la documentacion oficial de PyTorch para tu version de CUDA/driver.
+
+### C++ / Code
+
+- CMake 3.18 o superior.
+- Compilador C++17.
+- OpenMP.
+- Opcional: CUDA Toolkit para build GPU.
+- En Windows, Visual Studio 2022 funciona con el `run.bat` incluido.
 
 ---
 
-## 📄 Licencia
+## Uso Rapido
 
-Este proyecto está licenciado bajo la **Licencia Apache 2.0** - ver el archivo [LICENSE](LICENSE) para más detalles.
+### 1. Abrir la app web
 
+```powershell
+cd AlphaSymbolic
+python app.py
 ```
-Copyright 2026 Juan Manuel Peña Usuga
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+La app lanza Gradio y abre el navegador. Si no se abre automaticamente, revisa la URL que imprime la consola, normalmente `http://127.0.0.1:7860`.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+### 2. Ejecutar busqueda GPU desde consola
+
+Desde la raiz del repositorio:
+
+```powershell
+python AlphaSymbolic\scripts\run_gpu_console.py
+```
+
+Este script usa `AlphaSymbolic/core/gpu/config.py` y, por defecto, esta orientado al problema N-Queens/OEIS A000170.
+
+### 3. Ejecutar benchmark GPU
+
+```powershell
+python AlphaSymbolic\scripts\run_gpu_benchmark.py
+```
+
+### 4. Compilar el motor C++
+
+```powershell
+cd Code
+cmake -S . -B build -G "Visual Studio 17 2022"
+cmake --build build --config Debug
+```
+
+El ejecutable queda en:
+
+```text
+Code/build/Debug/SymbolicRegressionGP.exe
+```
+
+### 5. Ejecutar pruebas C++
+
+```powershell
+cd Code
+cmake --build build --target TestOperators --config Debug
+.\build\Debug\TestOperators.exe
+```
+
+Tambien puedes usar:
+
+```powershell
+cd Code
+.\scripts\run_tests.bat
 ```
 
 ---
 
-<div align="center">
+## Configuracion Importante
 
-**⭐ Si este proyecto te resulta útil, considera darle una estrella ⭐**
+### AlphaSymbolic
 
-</div>
+El archivo principal es:
+
+```text
+AlphaSymbolic/core/gpu/config.py
+```
+
+Parametros clave:
+
+| Parametro | Uso |
+|-----------|-----|
+| `USE_LOG_TRANSFORMATION` | Aplica log a `Y`. Esta activo por defecto para el caso N-Queens. Desactivalo para datos lineales/simples. |
+| `POP_SIZE` | Tamano de poblacion GPU. Valores grandes consumen mucha VRAM. |
+| `NUM_ISLANDS` | Numero de islas evolutivas. |
+| `MAX_FORMULA_LENGTH` | Longitud maxima de formulas RPN. |
+| `MAX_CONSTANTS` | Numero maximo de constantes optimizables. |
+| `USE_CUDA_ORCHESTRATOR` | Usa el orquestador CUDA cuando esta disponible. |
+| `PROBLEM_X_START`, `PROBLEM_X_END`, `PROBLEM_Y_FULL` | Dataset actual de trabajo. |
+
+Para probar datos personalizados desde la app, usa la pestana de busqueda y desactiva transformaciones que no apliquen a tu problema.
+
+### C++
+
+El archivo principal es:
+
+```text
+Code/src/Globals.h
+```
+
+El motor C++ tambien esta configurado actualmente para un caso N-Queens multivariable. `X_VALUES` es `vector<vector<double>>`, no un vector univariable simple.
+
+Tambien puedes pasar datos por archivo al ejecutable:
+
+```powershell
+.\build\Debug\SymbolicRegressionGP.exe --data datos.txt --seed semillas.txt
+```
+
+Formato esperado de `datos.txt`:
+
+```text
+x0_1 x0_2 x0_3 ...
+x1_1 x1_2 x1_3 ...
+y_1  y_2  y_3  ...
+```
+
+La ultima linea es `Y`; las anteriores son variables de entrada.
+
+---
+
+## Operadores
+
+El sistema soporta operadores aritmeticos y funciones avanzadas segun la configuracion activa:
+
+- Aritmeticos: `+`, `-`, `*`, `/`, potencia.
+- Funciones: `sin`, `cos`, `log`, `exp`, `sqrt`, `lgamma/fact` y otras, segun flags.
+- Optimizacion de constantes con PSO/L-BFGS en la parte GPU Python.
+- Simplificacion simbolica y validacion estricta de dominio en varios caminos del motor.
+
+---
+
+## Notas de Mantenimiento
+
+- `Code/build/`, caches, modelos y resultados estan ignorados por git.
+- La extension `rpn_cuda_native.cp311-win_amd64.pyd` esta ignorada, pero puede existir localmente como artefacto compilado.
+- Si cambias Python de version, recompila la extension CUDA porque el sufijo `cp311` solo corresponde a Python 3.11.
+- Los README antiguos mencionaban scripts como `run_benchmark_feynman.py`, `rescue_data.py` y `build_extension.bat`; esos nombres no existen actualmente en el arbol del repo.
+
+---
+
+## Licencia
+
+Este proyecto esta licenciado bajo Apache 2.0. Consulta [LICENSE](LICENSE).
+
+Copyright 2026 Juan Manuel Pena Usuga.
