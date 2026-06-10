@@ -45,7 +45,6 @@ __global__ void pso_update_kernel(
     
     int k = idx % K;
     int tmp = idx / K;
-    int p = tmp % P;
     int b = tmp / P;
     
     scalar_t my_pos = pos[idx];
@@ -84,8 +83,6 @@ __global__ void pso_update_bests_kernel(
     // We parallelize over particles: [B, P]
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= B * P) return;
-    
-    int b = idx / P;
     // int p = idx % P;
     
     scalar_t curr = current_err[idx];
@@ -123,10 +120,13 @@ __global__ void pso_update_gbest_kernel(
     scalar_t local_best_err = (scalar_t)1e30;
     int best_p = -1;
 
-    // Load error for this thread's particle, if it exists
-    if (tid < P) {
-        local_best_err = pbest_err[b * P + tid];
-        best_p = tid;
+    // Load error for this thread's particle, if it exists (warp-strided loop to handle P > 32)
+    for (int p_idx = tid; p_idx < P; p_idx += blockDim.x) {
+        scalar_t err = pbest_err[b * P + p_idx];
+        if (err < local_best_err) {
+            local_best_err = err;
+            best_p = p_idx;
+        }
     }
 
     // Warp-level reduction for minimum error (assuming 32 threads per block)

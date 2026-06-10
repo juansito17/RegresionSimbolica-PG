@@ -282,7 +282,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     GpuGlobals.USE_OP_MOD = op_mod
     GpuGlobals.USE_OP_POW = op_pow
     
-    # Disable Sniper temporarily to debug crash
+    # Disable Sniper (user requested pure GP evolution only)
     GpuGlobals.USE_SNIPER = False
     
     # 3. Initialize Engine (NOW it will read the correct operator flags)

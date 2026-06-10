@@ -214,8 +214,9 @@ class LibraryLearner:
             cnt_w = (cnt + 1.0).log()
             weights = fit_w * cnt_w
             # Sample with replacement
-            n_sample = min(k, int(self.valid.sum().item()))
-            sampled_local = torch.multinomial(weights, n_sample, replacement=(n_sample > int(self.valid.sum().item())))
+            n_valid = int(self.valid.sum().item())
+            n_sample = min(k, n_valid)
+            sampled_local = torch.multinomial(weights, n_sample, replacement=(n_sample > n_valid))
             sampled_global = valid_idx[sampled_local]
             blocks = self.library_tokens[sampled_global]  # [n_sample, max_block_len]
             return blocks

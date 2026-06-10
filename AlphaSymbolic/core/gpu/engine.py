@@ -613,6 +613,11 @@ class TensorGeneticEngine:
         island_size = self.island_size
         mig_size = min(GpuGlobals.MIGRATION_SIZE, island_size // 2)
         
+        # Track migration count for topology alternation
+        if not hasattr(self, '_migration_count'):
+            self._migration_count = 0
+        self._migration_count += 1
+        
         # 1. Reshape fitness to [n_islands, island_size]
         fit_view = fitness.view(self.n_islands, island_size)
         
@@ -628,10 +633,18 @@ class TensorGeneticEngine:
         migrants_pop = population[best_global_idx].view(self.n_islands, mig_size, self.max_len)
         migrants_const = constants[best_global_idx].view(self.n_islands, mig_size, self.max_constants)
         
-        # 5. Circular Shift (Migration Logic): Island i -> Island (i+1)%N
-        # We roll the first dimension to the right
-        shifted_migrants_pop = torch.roll(migrants_pop, shifts=1, dims=0).view(-1, self.max_len)
-        shifted_migrants_const = torch.roll(migrants_const, shifts=1, dims=0).view(-1, self.max_constants)
+        # 5. CONVERGENCE FIX: Topology-Aware Migration
+        # Every 3rd migration, use random permutation instead of circular shift.
+        # This cross-pollinates non-adjacent islands, breaking structural monocultures.
+        if self._migration_count % 3 == 0:
+            # Random topology: shuffle island order
+            perm = torch.randperm(self.n_islands, device=self.device)
+            shifted_migrants_pop = migrants_pop[perm].view(-1, self.max_len)
+            shifted_migrants_const = migrants_const[perm].view(-1, self.max_constants)
+        else:
+            # Standard circular shift: Island i -> Island (i+1)%N
+            shifted_migrants_pop = torch.roll(migrants_pop, shifts=1, dims=0).view(-1, self.max_len)
+            shifted_migrants_const = torch.roll(migrants_const, shifts=1, dims=0).view(-1, self.max_constants)
         
         # 6. Apply in-place (no full clone needed - only ~200 individuals change)
         population[worst_global_idx] = shifted_migrants_pop
@@ -964,11 +977,14 @@ class TensorGeneticEngine:
         try:
             import sympy
             import re as re_mod
-            from sympy import symbols, sin, cos, sqrt, exp, log, Abs, pi
+            from sympy import symbols, sin, cos, sqrt, exp, log, Abs, pi, factorial, gamma, loggamma
             from sympy.parsing.sympy_parser import parse_expr, standard_transformations
             # Use real=True to avoid re(), im(), Abs() from complex assumptions
             x0 = symbols('x0', real=True, positive=False)
-            local_dict = {'x0': x0, 'pi': sympy.pi, 'e': sympy.E, 'abs': Abs, 'neg': lambda a: -a}
+            local_dict = {
+                'x0': x0, 'pi': sympy.pi, 'e': sympy.E, 'abs': Abs, 'neg': lambda a: -a,
+                'fact': factorial, 'gamma': gamma, 'lgamma': loggamma
+            }
             expr = parse_expr(formula_str, local_dict=local_dict,
                              transformations=standard_transformations)
             simplified = sympy.simplify(expr)
@@ -977,6 +993,8 @@ class TensorGeneticEngine:
             result = str(simplified)
             # Sanitize SymPy-specific syntax back to Python-evaluable
             result = result.replace('Abs(', 'abs(')
+            result = result.replace('factorial(', 'fact(')
+            result = result.replace('loggamma(', 'lgamma(')
             result = re_mod.sub(r'\bre\(', '(', result)   # re(x0) → (x0)
             result = re_mod.sub(r'\bim\(', '(0*', result)  # im(x0) → (0*...)
             result = re_mod.sub(r'\bI\b', '0', result)     # imaginary unit → 0
@@ -1030,11 +1048,17 @@ class TensorGeneticEngine:
     def _eval_formula_safe(formula_str, x_np):
         """Try to eval a formula string on numpy data. Returns y_pred or None."""
         import numpy as np
+        import scipy.special
         import warnings
         try:
-            safe_dict = {'x0': x_np, 'sin': np.sin, 'cos': np.cos, 'exp': np.exp,
-                         'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
-                         'pi': np.pi, 'e': np.e, 'neg': lambda a: -a}
+            safe_dict = {
+                'x0': x_np, 'sin': np.sin, 'cos': np.cos, 'exp': np.exp,
+                'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
+                'pi': np.pi, 'e': np.e, 'neg': lambda a: -a,
+                'fact': lambda a: scipy.special.gamma(a + 1),
+                'gamma': scipy.special.gamma,
+                'lgamma': scipy.special.gammaln
+            }
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
                 with np.errstate(all='ignore'):
@@ -2125,7 +2149,6 @@ class TensorGeneticEngine:
                       pop_constants = torch.cat([elite_c, new_c])
                  
                  stagnation = 0
-                 global_stagnation = 0  # BUG-5 FIX: was missing, caused immediate global restart after cataclysm
                  _pso_skip_counter = 0
                  continue
 
@@ -2459,7 +2482,7 @@ class TensorGeneticEngine:
                             # Run Pareto sort on the sample
                             _par_ranks, _par_crowd = self.pareto_optimizer.compute_ranks_and_crowding(_s_fit, _s_comp)
                             # Normalize rank to [0, 1]
-                            _max_rank = float(_par_ranks.max().item()) + 1.0
+                            _max_rank = _par_ranks.max().to(self.dtype) + 1.0
                             _norm_ranks = _par_ranks.to(self.dtype) / _max_rank
                             # Write back to pareto_rank_buf for sampled slots
                             self._pareto_rank_buf.zero_()
@@ -2478,10 +2501,51 @@ class TensorGeneticEngine:
                 if _alps_enabled:
                     _alps_pw = float(getattr(GpuGlobals, 'ALPS_AGE_PENALTY_WEIGHT', 0.05))
                     if _alps_pw > 0:
-                        _age_max = float(individual_ages.max().item()) + 1.0
+                        _age_max = individual_ages.max().to(self.dtype) + 1.0
                         _norm_ages = individual_ages.to(self.dtype) / _age_max
                         selection_metric.add_(_norm_ages, alpha=_alps_pw)
                 
+                # --- CONVERGENCE FIX: Fitness Sharing (Anti-Monoculture) ---
+                # Penalize individuals whose structural hash is shared by too many others
+                # in the same island. This prevents a single phenotype from dominating.
+                # Uses a fast polynomial hash of the first 8 tokens (O(N) GPU, no CPU sync).
+                _fs_interval = 20  # Only compute every 20 gens to minimize overhead
+                if generations % _fs_interval == 0 and global_stagnation > 5:
+                    try:
+                        _hash_len = min(8, population.shape[1])
+                        # Polynomial hash: h = sum(token[i] * prime^i) mod large_prime
+                        _primes = torch.tensor([1, 31, 961, 29791, 923521, 28629151, 887503681, 1103515245],
+                                              device=self.device, dtype=torch.long)[:_hash_len]
+                        _pop_long = population[:, :_hash_len].long()
+                        _hashes = (_pop_long * _primes.unsqueeze(0)).sum(dim=1)  # [pop_size]
+                        
+                        # Per-island: count how many share each hash
+                        _h_view = _hashes.view(self.n_islands, self.island_size)
+                        _sharing_pen = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
+                        
+                        for isl in range(self.n_islands):
+                            _isl_h = _h_view[isl]  # [island_size]
+                            # Count occurrences of each hash in this island
+                            _unique, _inv, _counts = torch.unique(_isl_h, return_inverse=True, return_counts=True)
+                            _cluster_sizes = _counts[_inv].float()  # [island_size]
+                            # Penalty = log2(cluster_size) for clusters > 5% of island
+                            _threshold = max(2, self.island_size // 20)
+                            _pen = torch.where(_cluster_sizes > _threshold,
+                                             torch.log2(_cluster_sizes), 
+                                             torch.zeros_like(_cluster_sizes))
+                            _start = isl * self.island_size
+                            _sharing_pen[_start:_start + self.island_size] = _pen
+                        
+                        # Cache for reuse until next computation
+                        self._cached_sharing_pen = _sharing_pen
+                    except Exception:
+                        pass  # Non-fatal
+                
+                # Apply cached sharing penalty
+                if hasattr(self, '_cached_sharing_pen') and self._cached_sharing_pen is not None:
+                    _fs_weight = 0.05  # Light touch — just enough to break ties
+                    selection_metric.add_(self._cached_sharing_pen, alpha=_fs_weight)
+
                 # --- [END of Penalty Calculation Block] ---
                 
                 # --- SOTA P4: Lexicase Penalty Injection ---

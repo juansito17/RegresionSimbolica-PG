@@ -162,15 +162,10 @@ class MCTS:
                     # For completed formulas, we calculate REAL RMSE
                     try:
                         # Evaluar
-                        # Importar aquí para evitar circular imports si es necesario
-                        from utils.optimize_constants import optimize_constants
-                        
                         # 1. Optimizar constants (Crucial para Accuracy)
                         # Esto es "Phase 1" de TPSR (constantes en las hojas)
                         # Por simplicidad en esta iteración, asumimos que 'evaluate_formula' ya hace algo o usamos el string directo.
                         # Idealmente llamaríamos a BFGS aquí.
-                        
-                        # Use existing _evaluate_formula to get RMSE and optimized constants
                         tree = ExpressionTree(node.tokens)
                         optimized_constants, real_rmse = optimize_constants(tree, x_values, y_values)
                         

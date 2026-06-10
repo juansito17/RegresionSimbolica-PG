@@ -61,21 +61,21 @@ class GpuGlobals:
     # Migration
     MIGRATION_INTERVAL = 30                    # SLOWER: Let islands deviate more before mixing (was 100 or 10)
     MIGRATION_INTERVAL_STAGNATION = 25         # Slower migration during island stagnation
-    MIGRATION_INTERVAL_GLOBAL_STAGNATION = 300 # NEW: durante global stagnation > 20 → casi no migrar para mantener islas aisladas
+    MIGRATION_INTERVAL_GLOBAL_STAGNATION = 100 # CONVERGENCE FIX: 300 was too slow, islands became monocultures without cross-pollination
     MIGRATION_STAGNATION_THRESHOLD = 10
     MIGRATION_SIZE = 80                # OPTIMIZED: más individuos por migración (era 50)
 
     # Stagnation & Restarts
-    STAGNATION_LIMIT = 40              # INCREASED: More time for local refinement (was 25)
-    GLOBAL_STAGNATION_LIMIT = 60       # REVERTED: Trigger global restart faster to escape local minima (was 120)
+    STAGNATION_LIMIT = 50              # CONVERGENCE FIX: More patience before local cataclysm (was 40)
+    GLOBAL_STAGNATION_LIMIT = 100      # CONVERGENCE FIX: Give more time for PSO/BFGS to converge before destroying population (was 60)
     STAGNATION_RANDOM_INJECT_PERCENT = 0.10  # Reduced slightly to keep more elites during plateau.
     
     USE_ISLAND_CATACLYSM = True        # Local restart of island
     CATACLYSM_ELITE_PERCENT = 0.04     # Mantenemos pocos elites para forzar diversidad
     
     SOFT_RESTART_ENABLED = True        # Global soft restart
-    SOFT_RESTART_ELITE_RATIO = 0.0001  # ULTRA-LOW: Solo 100 elites de 1M (era 0.001) — fuerza nuevas estructuras.
-    ESCALATE_RESTART_LIMIT = 1         # ANTI-STAG: 2→1. TRUE HARD restart después del 1er soft restart sin mejora
+    SOFT_RESTART_ELITE_RATIO = 0.005   # CONVERGENCE FIX: Keep 5000 elites (0.5%) to preserve structural diversity (was 0.0001 = too destructive)
+    ESCALATE_RESTART_LIMIT = 3         # CONVERGENCE FIX: 3 soft restarts before TRUE HARD (was 1 = destroyed progress too fast)
     
     USE_STRUCTURAL_RESTART_INJECTION = False  # Sin bias de estructura — búsqueda completamente aleatoria
     STRUCTURAL_RESTART_INJECTION_RATIO = 0.25
@@ -103,8 +103,8 @@ class GpuGlobals:
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
 
     # Tree Constraints
-    MAX_FORMULA_LENGTH = 16
-    MAX_TREE_DEPTH_INITIAL = 5
+    MAX_FORMULA_LENGTH = 48            # CONVERGENCE FIX: 16 was too short for competitive formulas (seed is 128 tokens, random needs ≥30)
+    MAX_TREE_DEPTH_INITIAL = 7         # CONVERGENCE FIX: Deeper initial trees reach structural complexity faster (was 5)
     USE_HARD_DEPTH_LIMIT = True
     MAX_TREE_DEPTH_HARD_LIMIT = 60
     MAX_TREE_DEPTH_MUTATION = 25   # OPTIMIZED: Large subtrees allowed (up to 51 tokens) to shatter local minima.
@@ -199,7 +199,7 @@ class GpuGlobals:
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
     # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
     # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
-    HEADLESS_CHICKEN_RATE = 0.10       # REDUCED: Focus on exploiting good parents (was 0.30)
+    HEADLESS_CHICKEN_RATE = 0.15       # CONVERGENCE FIX: More radical exploration to escape local minima (was 0.10)
     
     # --- SOTA P1: Depth-Fair Crossover ---
     # Standard crossover picks a random NODE as swap point → large subtrees dominate selection.
@@ -231,8 +231,8 @@ class GpuGlobals:
     PREVENT_DUPLICATES = True
     
     # Mutation Bank
-    MUTATION_BANK_SIZE = 2000
-    MUTATION_BANK_REFRESH_INTERVAL = 100  # OPTIMIZED: less overhead (was 50)
+    MUTATION_BANK_SIZE = 5000          # CONVERGENCE FIX: More genetic material for subtree mutations (was 2000)
+    MUTATION_BANK_REFRESH_INTERVAL = 80   # CONVERGENCE FIX: Refresh more often for fresh material (was 100)
 
     # --- SOTA P2: Library Learning ---
     # Extracts frequently-found, high-fitness subtrees and reuses them
@@ -295,15 +295,15 @@ class GpuGlobals:
     USE_NANO_PSO = True
     PSO_INTERVAL = 3               # SPEED: cada 3 gens libera más GPU al GA (era 2)
     PSO_PARTICLES = 30
-    PSO_STEPS_NORMAL = 40          # OPTIMIZED: más pasos por individuo (was 25→40)
+    PSO_STEPS_NORMAL = 50          # CONVERGENCE FIX: More steps for better constant convergence (was 40)
     PSO_STEPS_STAGNATION = 80      # FIX: más pasos para escapar mínimo local (was 40→60→80)
-    PSO_K_NORMAL = 200             # SPEED: menos individuos en modo normal (era 400)
+    PSO_K_NORMAL = 500             # CONVERGENCE FIX: More individuals optimized in normal mode (was 200)
     PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
     PSO_STAGNATION_THRESHOLD = 10
     # ANTI-STAG: PSO adaptativo. Si el best_rpn no cambió desde el último PSO run,
     # saltar PSO_SKIP_IF_NO_STRUCT_CHANGE generaciones para liberar GPU a exploración.
-    PSO_ADAPTIVE = True
-    PSO_SKIP_GENS = 6              # ANTI-STAG: saltar PSO cada N gens si no hubo cambio estructural
+    PSO_ADAPTIVE = False            # CONVERGENCE FIX: Disabled — struct hash was removed, skip logic was always-skip (was True)
+    PSO_SKIP_GENS = 6              # (Unused when PSO_ADAPTIVE=False)
 
     # L-BFGS-B Constant Optimizer
     USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
@@ -324,8 +324,8 @@ class GpuGlobals:
     SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9
     
     # Residual Boosting
-    USE_RESIDUAL_BOOSTING = True
-    USE_SNIPER = True              # ENABLED: PHASE 8 Escape stagnation
+    USE_RESIDUAL_BOOSTING = False     # DISABLED: Algorithm must find formulas on its own (no shortcuts)
+    USE_SNIPER = False                 # DISABLED: Pattern detection is "cheating" — pure GP only
     RESIDUAL_BOOST_INTERVAL = 20
 
     # ============================================================

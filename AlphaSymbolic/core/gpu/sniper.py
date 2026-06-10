@@ -47,8 +47,10 @@ class Sniper:
             # Predict and compute MSE
             y_pred = m * x_t + c
             mse = torch.mean((y_pred - y_t) ** 2).item()
+            y_var = torch.var(y_t).item()
+            r2 = 1.0 - mse / y_var if y_var > 1e-12 else 1.0
             
-            if mse < 1e-6:
+            if mse < 1e-4 or r2 > 0.999:
                 m_str = format_const(m)
                 c_str = format_const(c)
                 if c >= 0:
@@ -178,8 +180,10 @@ class Sniper:
             # Verify
             y_pred = A * (x_t ** B)
             mse = torch.mean((y_pred - y_t) ** 2).item()
+            y_var = torch.var(y_t).item()
+            r2 = 1.0 - mse / y_var if y_var > 1e-12 else 1.0
             
-            if mse < 1e-6:
+            if mse < 1e-4 or r2 > 0.999:
                 # Check if B is close to integer
                 B_round = round(B)
                 if abs(B - B_round) < 0.01:
@@ -221,8 +225,10 @@ class Sniper:
             # Predict
             y_pred = torch.exp(log_A + B * x_t)
             mse = torch.mean((y_pred - y_t) ** 2).item()
+            y_var = torch.var(y_t).item()
+            r2 = 1.0 - mse / y_var if y_var > 1e-12 else 1.0
             
-            if mse < 1e-4:
+            if mse < 1e-3 or r2 > 0.999:
                 b_str = format_const(B)
                 ln_a_str = format_const(log_A)
                 
@@ -259,8 +265,10 @@ class Sniper:
             
             y_pred = torch.log(pred_exp_y)
             mse = torch.mean((y_pred - y_t) ** 2).item()
+            y_var = torch.var(y_t).item()
+            r2 = 1.0 - mse / y_var if y_var > 1e-12 else 1.0
             
-            if mse < 1e-6:
+            if mse < 1e-4 or r2 > 0.999:
                 m_str = format_const(m)
                 c_str = format_const(c)
                 term = f"({m_str} * x0)"
@@ -502,6 +510,150 @@ class Sniper:
                 return f"({format_const(a_s)} * exp(-x0) * cos(x0))"
         
         return None
+
+    def _check_lgamma_pattern(self, x_t: torch.Tensor, y_t: torch.Tensor):
+        """
+        CONVERGENCE FIX: Check for lgamma-based patterns.
+        
+        Fits templates:
+          1. y = a*lgamma(b*x+c) + d*x + e   (Stirling-like)
+          2. y = lgamma(x) - a*x + b           (N-Queens dominant structure)
+          3. y = a*lgamma(x+b) + c*sqrt(x) + d (lgamma + correction)
+        
+        Uses torch autograd optimization.
+        Returns formula string if found, else None.
+        """
+        try:
+            y_var = torch.var(y_t).item()
+            if y_var < 1e-12:
+                return None
+            
+            best_formula = None
+            best_r2 = 0.98  # High threshold: only report if good fit
+            
+            templates = [
+                # Template 1: y = a*lgamma(b*x+c) + d*x + e
+                {
+                    'name': 'lgamma_linear',
+                    'init': [1.0, 1.0, 0.5, -1.0, 0.0],
+                    'fn': lambda p, x: p[0] * torch.lgamma(torch.clamp(p[1] * x + p[2], min=0.5)) + p[3] * x + p[4],
+                    'build': lambda p: self._build_lgamma_formula(p, 'lgamma_linear'),
+                },
+                # Template 2: y = lgamma(x+a) - b*x + c (N-Queens)
+                {
+                    'name': 'lgamma_nqueens',
+                    'init': [0.0, 1.0, 0.0],
+                    'fn': lambda p, x: torch.lgamma(torch.clamp(x + p[0], min=0.5)) - p[1] * x + p[2],
+                    'build': lambda p: self._build_lgamma_formula(p, 'lgamma_nqueens'),
+                },
+                # Template 3: y = a*lgamma(x+b) + c*sqrt(x) + d
+                {
+                    'name': 'lgamma_sqrt',
+                    'init': [1.0, 0.5, 0.0, 0.0],
+                    'fn': lambda p, x: p[0] * torch.lgamma(torch.clamp(x + p[1], min=0.5)) + p[2] * torch.sqrt(torch.clamp(x, min=1e-6)) + p[3],
+                    'build': lambda p: self._build_lgamma_formula(p, 'lgamma_sqrt'),
+                },
+            ]
+            
+            for tmpl in templates:
+                try:
+                    params = torch.tensor(tmpl['init'], 
+                                         device=self.device, dtype=torch.float64,
+                                         requires_grad=True)
+                    optimizer = torch.optim.Adam([params], lr=0.05)
+                    
+                    for _ in range(200):  # More steps for lgamma convergence
+                        optimizer.zero_grad()
+                        y_pred = tmpl['fn'](params, x_t)
+                        loss = torch.mean((y_pred - y_t) ** 2)
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            break
+                        loss.backward()
+                        optimizer.step()
+                    
+                    with torch.no_grad():
+                        y_pred = tmpl['fn'](params, x_t)
+                        mse = torch.mean((y_pred - y_t) ** 2).item()
+                        r2 = 1.0 - mse / y_var
+                        
+                        if r2 > best_r2:
+                            formula = tmpl['build'](params.tolist())
+                            if formula:
+                                best_formula = formula
+                                best_r2 = r2
+                except Exception:
+                    continue
+            
+            return best_formula
+        except Exception:
+            pass
+        return None
+    
+    def _build_lgamma_formula(self, params, template_name):
+        """Build lgamma formula string from optimized parameters."""
+        try:
+            if template_name == 'lgamma_linear':
+                a, b, c, d, e = params
+                # y = a*lgamma(b*x+c) + d*x + e
+                parts = []
+                b_s, c_s = format_const(b), format_const(c)
+                inner = f"({b_s} * x0 + {c_s})" if abs(c) > 0.01 else f"({b_s} * x0)"
+                
+                if abs(a - 1.0) < 0.01:
+                    parts.append(f"lgamma({inner})")
+                else:
+                    parts.append(f"({format_const(a)} * lgamma({inner}))")
+                
+                if abs(d) > 0.01:
+                    if d > 0:
+                        parts.append(f"({format_const(d)} * x0)")
+                    else:
+                        parts.append(f"({format_const(d)} * x0)")
+                
+                if abs(e) > 0.01:
+                    parts.append(format_const(e))
+                
+                return "(" + " + ".join(parts) + ")" if parts else None
+                
+            elif template_name == 'lgamma_nqueens':
+                a, b, c = params
+                # y = lgamma(x+a) - b*x + c
+                if abs(a) > 0.01:
+                    inner = f"(x0 + {format_const(a)})"
+                else:
+                    inner = "x0"
+                
+                parts = [f"lgamma({inner})"]
+                if abs(b) > 0.01:
+                    parts.append(f"({format_const(-b)} * x0)")
+                if abs(c) > 0.01:
+                    parts.append(format_const(c))
+                
+                return "(" + " + ".join(parts) + ")" if parts else None
+                
+            elif template_name == 'lgamma_sqrt':
+                a, b, c, d = params
+                # y = a*lgamma(x+b) + c*sqrt(x) + d
+                if abs(b) > 0.01:
+                    inner = f"(x0 + {format_const(b)})"
+                else:
+                    inner = "x0"
+                
+                parts = []
+                if abs(a - 1.0) < 0.01:
+                    parts.append(f"lgamma({inner})")
+                else:
+                    parts.append(f"({format_const(a)} * lgamma({inner}))")
+                
+                if abs(c) > 0.01:
+                    parts.append(f"({format_const(c)} * sqrt(x0))")
+                if abs(d) > 0.01:
+                    parts.append(format_const(d))
+                
+                return "(" + " + ".join(parts) + ")" if parts else None
+        except Exception:
+            pass
+        return None
     
     def run(self, x_data, y_data):
         """
@@ -520,6 +672,12 @@ class Sniper:
                 y_t = y_data.flatten().to(self.device).to(torch.float64)
             else:
                 y_t = torch.tensor(y_data, device=self.device, dtype=torch.float64).flatten()
+            
+            # Safety guards: check length and NaNs/Infs to prevent downstream crashes
+            if x_t.numel() < 2 or y_t.numel() < 2:
+                return None
+            if torch.isnan(x_t).any() or torch.isnan(y_t).any() or torch.isinf(x_t).any() or torch.isinf(y_t).any():
+                return None
             
             # FIX: Extract primary variable correctly for multi-variable inputs
             if x_t.dim() > 1:
@@ -544,36 +702,43 @@ class Sniper:
                 print(f"[Sniper GPU] Detected Log-Linear: {res}")
                 return res
             
-            # Check 3: Trigonometric (y = a*sin(b*x+c)+d)
-            res = self._check_trigonometric_gpu(x_t, y_t)
-            if res:
-                print(f"[Sniper GPU] Detected Trig: {res}")
-                return res
-            
-            # Check 4: Composite (y = x^n * f(x))
-            res = self._check_composite_gpu(x_t, y_t)
-            if res:
-                print(f"[Sniper GPU] Detected Composite: {res}")
-                return res
-            
-            # Check 5: Polynomial (y = ax^n + ...)
-            res = self._check_polynomial(x_t, y_t)
-            if res:
-                print(f"[Sniper GPU] Detected Polynomial: {res}")
-                return res
-            
-            # Check 6: Geometric (y = A exp(Bx))
+            # Check 3: Geometric (y = A exp(Bx))
             res = self._check_geometric(x_t, y_t)
             if res:
                 print(f"[Sniper GPU] Detected Geometric: {res}")
                 return res
             
-            # Check 7: Power Law (y = A * x^B)
+            # Check 4: Power Law (y = A * x^B)
             res = self._check_power_law(x_t, y_t)
             if res:
                 print(f"[Sniper GPU] Detected Power Law: {res}")
                 return res
             
+            # Check 5: Trigonometric (y = a*sin(b*x+c)+d)
+            res = self._check_trigonometric_gpu(x_t, y_t)
+            if res:
+                print(f"[Sniper GPU] Detected Trig: {res}")
+                return res
+            
+            # Check 6: Composite (y = x^n * f(x))
+            res = self._check_composite_gpu(x_t, y_t)
+            if res:
+                print(f"[Sniper GPU] Detected Composite: {res}")
+                return res
+            
+            # Check 7: lgamma patterns (y = a*lgamma(bx+c) + dx + e)
+            # CONVERGENCE FIX: Essential for N-Queens and combinatorial sequences
+            res = self._check_lgamma_pattern(x_t, y_t)
+            if res:
+                print(f"[Sniper GPU] Detected lgamma pattern: {res}")
+                return res
+            
+            # Check 8: Polynomial (y = ax^n + ...)
+            res = self._check_polynomial(x_t, y_t)
+            if res:
+                print(f"[Sniper GPU] Detected Polynomial: {res}")
+                return res
+            
         except Exception as e:
             pass
-        return None
+        return None

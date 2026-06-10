@@ -435,10 +435,12 @@ __global__ void find_subtree_ranges_kernel(
     int64_t* __restrict__ out_starts,       // [B, L]
     int B, int L, int vocab_size, int PAD_ID
 ) {
-    int b = blockIdx.x; // Batch index
-    int tid = threadIdx.x; // Token index in sequence (0..L-1)
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_threads = B * L;
+    if (idx >= total_threads) return;
     
-    if (b >= B || tid >= L) return;
+    int b = idx / L; // Batch index
+    int tid = idx % L; // Token index in sequence (0..L-1)
     
     const unsigned char* my_pop = &population[b * L];
     int64_t* my_starts = &out_starts[b * L];
@@ -486,7 +488,6 @@ __global__ void find_subtree_ranges_kernel(
             return;
         }
     }
-    // If loop finishes and needed > 0, it's an invalid subtree (incomplete)
 }
 
 void launch_find_subtree_ranges(
@@ -503,11 +504,8 @@ void launch_find_subtree_ranges(
     int L = population.size(1);
     int vocab_size = token_arities.size(0);
     
-    // 1 Block per Individual, L threads per block (since L is usually 30-256)
-    // If L > 1024, need loops, but typically L < 128 here.
-    dim3 blocks(B);
-    dim3 threads(L);
-    if (L > 1024) threads.x = 1024; // Simple cap, logic assumes single block per row implies L <= threads
+    int threads = 256;
+    int blocks = (B * L + threads - 1) / threads;
     
     find_subtree_ranges_kernel<<<blocks, threads>>>(
         population.data_ptr<unsigned char>(),
@@ -531,11 +529,10 @@ __global__ void mutation_kernel(
     float mutation_rate,
     int B, int L, int vocab_size, int PAD_ID
 ) {
-    int b = blockIdx.x;
-    int tid = threadIdx.x;
-    if (b >= B || tid >= L) return;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_threads = B * L;
+    if (idx >= total_threads) return;
     
-    int idx = b * L + tid;
     int64_t token = (int64_t)population[idx];
     
     if (token == PAD_ID) return;
@@ -583,9 +580,8 @@ void launch_mutation_kernel(
     int L = population.size(1);
     int vocab_size = token_arities.size(0);
     
-    dim3 blocks(B);
-    dim3 threads(L);
-    if (L > 1024) threads.x = 1024;
+    int threads = 256;
+    int blocks = (B * L + threads - 1) / threads;
     
     mutation_kernel<<<blocks, threads>>>(
         population.data_ptr<unsigned char>(),
@@ -688,10 +684,12 @@ __global__ void crossover_splicing_kernel(
     unsigned char* __restrict__ child2,        // [N, L] (uint8)
     int N_pairs, int L, int PAD_ID
 ) {
-    int n = blockIdx.x; // Pair index
-    int t = threadIdx.x; // Token index in child
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_threads = N_pairs * L;
+    if (idx >= total_threads) return;
     
-    if (n >= N_pairs || t >= L) return;
+    int n = idx / L; // Pair index
+    int t = idx % L; // Token index in child
     
     // --- Child 1 Construction ---
     // Child 1 = P1_Pre + P2_Sub + P1_Post
@@ -866,11 +864,9 @@ void launch_crossover_splicing(
     int N = parent1.size(0);
     int L = parent1.size(1);
     
-    dim3 blocks(N);
-    dim3 threads(L);
-    if (L > 1024) threads.x = 1024;
+    int threads = 256;
+    int blocks = (N * L + threads - 1) / threads;
     
-
     crossover_splicing_kernel<<<blocks, threads>>>(
         parent1.data_ptr<unsigned char>(),
         parent2.data_ptr<unsigned char>(),
@@ -1231,16 +1227,68 @@ std::vector<torch::Tensor> evolve_generation(
     auto best_idx = torch::argmin(fit_f32);
     winner_idx.index_put_({0}, best_idx);
     
+
+    
     auto parents = population.index_select(0, winner_idx);
     auto parent_consts = constants.index_select(0, winner_idx);
     
     // 2. Crossover (Proper Subtree Crossover with SAFETY CHECKS)
     // BUG-ELT-1 Fix: Skip the elite (pos 0) from crossover to prevent structural contamination.
-    // The elite will be preserved in the next_pop[0] without mixing as a parent.
-    int n_available = B - 1;
-    int n_pairs = n_available / 2;
-    auto parents1 = parents.slice(0, 1, 1 + 2*n_pairs, 2).contiguous();
-    auto parents2 = parents.slice(0, 2, 1 + 2*n_pairs, 2).contiguous();
+    // The elite will be preserved in next_pop[0].
+    // To ensure strict island isolation, we group parent index pairs strictly within their islands.
+    int island_size = B / n_islands;
+    std::vector<int64_t> p1_src;
+    std::vector<int64_t> p2_src;
+    std::vector<int64_t> c1_dest;
+    std::vector<int64_t> c2_dest;
+    
+    std::vector<int64_t> copy_src;
+    std::vector<int64_t> copy_dest;
+    
+    // Elite of Island 0 is copied directly to slot 0
+    copy_src.push_back(0);
+    copy_dest.push_back(0);
+    
+    for (int k = 0; k < n_islands; ++k) {
+        int start = k * island_size;
+        int end = (k + 1) * island_size;
+        
+        int avail_start = (k == 0) ? start + 1 : start;
+        int avail_len = end - avail_start;
+        int p_k = avail_len / 2;
+        
+        for (int i = 0; i < p_k; ++i) {
+            int p1_idx = avail_start + 2 * i;
+            int p2_idx = avail_start + 2 * i + 1;
+            
+            p1_src.push_back(p1_idx);
+            p2_src.push_back(p2_idx);
+            
+            c1_dest.push_back(p1_idx);
+            c2_dest.push_back(p2_idx);
+        }
+        
+        if (avail_len % 2 != 0) {
+            int leftover_idx = end - 1;
+            copy_src.push_back(leftover_idx);
+            copy_dest.push_back(leftover_idx);
+        }
+    }
+    
+    auto p1_src_t = torch::tensor(p1_src, long_opt);
+    auto p2_src_t = torch::tensor(p2_src, long_opt);
+    auto c1_dest_t = torch::tensor(c1_dest, long_opt);
+    auto c2_dest_t = torch::tensor(c2_dest, long_opt);
+    
+    auto copy_src_t = torch::tensor(copy_src, long_opt);
+    auto copy_dest_t = torch::tensor(copy_dest, long_opt);
+    
+    int n_pairs = p1_src_t.size(0);
+    
+
+    
+    auto parents1 = parents.index_select(0, p1_src_t).contiguous();
+    auto parents2 = parents.index_select(0, p2_src_t).contiguous();
     
     // Find Subtree Starts using kernel [N, L]
     auto all_starts1 = torch::zeros({n_pairs, L}, long_opt);
@@ -1262,9 +1310,6 @@ std::vector<torch::Tensor> evolve_generation(
     auto s2 = all_starts2.gather(1, e2.unsqueeze(1)).squeeze(1);
     
     // --- Length Safety Check ---
-    // P1 new: P1_Pre + P2_Sub + P1_Post
-    // P2 new: P2_Pre + P1_Sub + P2_Post
-    
     auto len_pre1 = s1;
     auto len_sub2 = e2 - s2 + 1;
     auto len_post1 = lengths1 - (e1 + 1);
@@ -1295,8 +1340,6 @@ std::vector<torch::Tensor> evolve_generation(
     auto final_c2 = torch::where(cx_mask, child2, parents2);
     
     // --- SOTA P0: Fallback Headless Chicken Crossover ---
-    // If trees are too bloated to cross (safe_mask = false) but wanted to,
-    // inject a random tree from the mutation bank to immediately break stagnation.
     if (mutation_bank.numel() > 0) {
         auto fallback_mask = want_cx & (~safe_mask.unsqueeze(1));
         auto bank_size = mutation_bank.size(0);
@@ -1311,17 +1354,15 @@ std::vector<torch::Tensor> evolve_generation(
         final_c2 = torch::where(fallback_mask, rand_bank2, final_c2);
     }
     
-    // Fixed: Interleave back to original order [0, 1, 2, 3...]
-    // cat gives [0, 2, 4...] followed by [1, 3, 5...] which scrambles islands!
-    // BUG-ELT-1 Fix: Prepend the elite (parents[0]) and interleave the rest.
-    auto children = torch::stack({final_c1, final_c2}, 1).reshape({2*n_pairs, L});
-    auto offspring = torch::cat({parents.slice(0, 0, 1), children}, 0);
+    auto offspring = torch::empty_like(parents);
+    offspring.index_copy_(0, c1_dest_t, final_c1);
+    offspring.index_copy_(0, c2_dest_t, final_c2);
+    offspring.index_copy_(0, copy_dest_t, parents.index_select(0, copy_src_t));
     
-    auto consts1_orig = parent_consts.slice(0, 1, 1 + 2*n_pairs, 2).contiguous();
-    auto consts2_orig = parent_consts.slice(0, 2, 1 + 2*n_pairs, 2).contiguous();
+    auto consts1_orig = parent_consts.index_select(0, p1_src_t).contiguous();
+    auto consts2_orig = parent_consts.index_select(0, p2_src_t).contiguous();
     
     // --- SOTA I1: Simulated Binary Crossover (SBX) for Constants ---
-    // Blend parent constants into a continuous real-valued landscape before structural splicing.
     float sbx_eta = 2.0;
     auto u_sbx = torch::rand({n_pairs, K}, float_opt);
     auto beta_sbx = torch::where(u_sbx <= 0.5, 
@@ -1331,7 +1372,6 @@ std::vector<torch::Tensor> evolve_generation(
     auto mask_sbx = (torch::rand({n_pairs, K}, float_opt) < 0.5); // 50% probability to blend each constant
     auto consts1 = torch::where(mask_sbx, 0.5 * ((1.0 + beta_sbx) * consts1_orig + (1.0 - beta_sbx) * consts2_orig), consts1_orig).contiguous();
     auto consts2 = torch::where(mask_sbx, 0.5 * ((1.0 - beta_sbx) * consts1_orig + (1.0 + beta_sbx) * consts2_orig), consts2_orig).contiguous();
-
     
     auto child1_consts = torch::empty_like(consts1);
     auto child2_consts = torch::empty_like(consts2);
@@ -1357,12 +1397,11 @@ std::vector<torch::Tensor> evolve_generation(
     
     auto final_c1_consts = torch::where(cx_mask_consts, child1_consts, consts1);
     auto final_c2_consts = torch::where(cx_mask_consts, child2_consts, consts2);
-
+    
     // If Headless Chicken Crossover happened, substitute with bank
     if (mutation_bank.numel() > 0) {
         auto fallback_mask_consts = (want_cx & (~safe_mask.unsqueeze(1))).squeeze(1).unsqueeze(1);
         
-        // Randomly initialized constants for Headless Chicken Trees
         auto rand_c1_consts = torch::empty_like(consts1).uniform_(-10.0f, +10.0f);
         auto rand_c2_consts = torch::empty_like(consts2).uniform_(-10.0f, +10.0f);
         
@@ -1370,24 +1409,10 @@ std::vector<torch::Tensor> evolve_generation(
         final_c2_consts = torch::where(fallback_mask_consts, rand_c2_consts, final_c2_consts);
     }
     
-    auto children_consts = torch::stack({final_c1_consts, final_c2_consts}, 1).reshape({2*n_pairs, K});
-    auto offspring_consts = torch::cat({parent_consts.slice(0, 0, 1), children_consts}, 0);
-    
-    // Elitism Check: Ensure first row of offspring is the global best from previous generation
-    // Index 0 is now guaranteed to be the elite, and we force it again just in case of padding.
-    offspring.index_put_({0}, parents.index({0}));
-    offspring_consts.index_put_({0}, parent_consts.index({0}));
-    
-    if (offspring.size(0) < B) {
-        auto last_p = parents.slice(0, B-1, B);
-        auto last_c = parent_consts.slice(0, B-1, B);
-        offspring = torch::cat({offspring, last_p}, 0);
-        offspring_consts = torch::cat({offspring_consts, last_c}, 0);
-    }
-    if (offspring.size(0) > B) {
-        offspring = offspring.slice(0, 0, B);
-        offspring_consts = offspring_consts.slice(0, 0, B);
-    }
+    auto offspring_consts = torch::empty_like(parent_consts);
+    offspring_consts.index_copy_(0, c1_dest_t, final_c1_consts);
+    offspring_consts.index_copy_(0, c2_dest_t, final_c2_consts);
+    offspring_consts.index_copy_(0, copy_dest_t, parent_consts.index_select(0, copy_src_t));
     
     // 3. Mutation 
     // Types: Point (Standard), Structural (Bank), Hoist (New)

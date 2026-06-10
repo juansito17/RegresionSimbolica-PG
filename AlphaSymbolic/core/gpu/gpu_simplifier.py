@@ -408,6 +408,8 @@ class GPUSymbolicSimplifier:
                 return pop, constants, 0
             except Exception as e:
                 print(f"[GPUSimplifier] CUDA kernel failed: {e}")
+                if 'original_dtype' in locals() and pop.dtype != original_dtype:
+                    pop = pop.to(original_dtype)
                 pass  # Fall through to Python implementation
 
         return self._simplify_fallback_passes(pop, constants, max_passes, original_population=population)
