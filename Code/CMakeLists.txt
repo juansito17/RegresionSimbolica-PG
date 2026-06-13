@@ -5,7 +5,14 @@ project(SymbolicRegressionGP LANGUAGES CXX)
 
 # Fix for "PTX was compiled with an unsupported toolchain" on Colab T4
 # This forces generation of SASS (binary) for the current GPU, avoiding JIT issues.
-set(CMAKE_CUDA_ARCHITECTURES native)
+# On CI (like GitHub Actions), default to Ampere (86) since no GPU is present.
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    if(DEFINED ENV{GITHUB_ACTIONS})
+        set(CMAKE_CUDA_ARCHITECTURES 86)
+    else()
+        set(CMAKE_CUDA_ARCHITECTURES native)
+    endif()
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
