@@ -304,10 +304,65 @@ def generate_example(tipo):
         y = 2 * np.exp(0.5 * x)
         x_fmt = "{:.2f}"
         y_fmt = "{:.4f}"
+    elif tipo == "mv_lineal":
+        x0, x1 = np.meshgrid(np.linspace(1, 5, 4), np.linspace(1, 5, 4))
+        x = np.column_stack((x0.flatten(), x1.flatten()))
+        x = np.array([[float(f"{v:.2f}") for v in row] for row in x])
+        y = 2 * x[:, 0] + 3 * x[:, 1] - 1
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
+    elif tipo == "mv_cuadratico":
+        x0, x1 = np.meshgrid(np.linspace(-2, 2, 4), np.linspace(-2, 2, 4))
+        x = np.column_stack((x0.flatten(), x1.flatten()))
+        x = np.array([[float(f"{v:.2f}") for v in row] for row in x])
+        y = x[:, 0]**2 + x[:, 1]**2 + 1
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
+    elif tipo == "mv_trig":
+        x0, x1 = np.meshgrid(np.linspace(0, np.pi, 4), np.linspace(0, np.pi, 4))
+        x = np.column_stack((x0.flatten(), x1.flatten()))
+        x = np.array([[float(f"{v:.4f}") for v in row] for row in x])
+        y = np.sin(x[:, 0]) + np.cos(x[:, 1])
+        x_fmt = "{:.4f}"
+        y_fmt = "{:.4f}"
+    elif tipo == "mv_exp":
+        x0, x1 = np.meshgrid(np.linspace(0, 3, 4), np.linspace(0, 3, 4))
+        x = np.column_stack((x0.flatten(), x1.flatten()))
+        x = np.array([[float(f"{v:.2f}") for v in row] for row in x])
+        y = np.exp(0.5 * x[:, 0]) + 2 * x[:, 1]
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
+    elif tipo == "mv_lineal_3d":
+        x0, x1, x2 = np.meshgrid(np.linspace(1, 3, 3), np.linspace(1, 3, 3), np.linspace(1, 3, 3))
+        x = np.column_stack((x0.flatten(), x1.flatten(), x2.flatten()))
+        x = np.array([[float(f"{v:.2f}") for v in row] for row in x])
+        y = x[:, 0] + 2 * x[:, 1] - 1.5 * x[:, 2] + 3
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
+    elif tipo == "mv_cuadratico_3d":
+        x0, x1, x2 = np.meshgrid(np.linspace(-2, 2, 3), np.linspace(-2, 2, 3), np.linspace(-2, 2, 3))
+        x = np.column_stack((x0.flatten(), x1.flatten(), x2.flatten()))
+        x = np.array([[float(f"{v:.2f}") for v in row] for row in x])
+        y = x[:, 0] * x[:, 1] + x[:, 2]**2 - 1
+        x_fmt = "{:.2f}"
+        y_fmt = "{:.4f}"
+    elif tipo == "mv_4d":
+        x0, x1, x2, x3 = np.meshgrid(np.linspace(1, 2, 2), np.linspace(1, 2, 2), np.linspace(0, np.pi, 2), np.linspace(0, 1, 2))
+        x = np.column_stack((x0.flatten(), x1.flatten(), x2.flatten(), x3.flatten()))
+        x = np.array([[float(f"{v:.4f}") for v in row] for row in x])
+        y = x[:, 0] * x[:, 1] + np.sin(x[:, 2]) - np.exp(0.5 * x[:, 3])
+        x_fmt = "{:.4f}"
+        y_fmt = "{:.4f}"
     else:
         x = np.linspace(1, 10, 10)
         y = 2 * x + 3
         x_fmt = "{:.2f}"
         y_fmt = "{:.4f}"
     
-    return ", ".join([x_fmt.format(v) for v in x]), ", ".join([y_fmt.format(v) for v in y])
+    if x.ndim == 1:
+        x_str = ", ".join([x_fmt.format(v) for v in x])
+    else:
+        x_str = "\n".join(" ".join(x_fmt.format(v) for v in row) for row in x)
+        
+    y_str = ", ".join([y_fmt.format(v) for v in y])
+    return x_str, y_str

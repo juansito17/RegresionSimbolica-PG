@@ -49,11 +49,23 @@ def get_gpu_live_tab(verbose_state=None):
             with gr.Accordion("📂 Cargar Datos", open=False):
                 with gr.Row():
                     csv_file = gr.File(label="Cargar desde CSV", file_types=[".csv", ".txt"])
+                gr.Markdown("**Ejemplos 1D**")
                 with gr.Row():
                     btn_lin = gr.Button("Lineal")
                     btn_quad = gr.Button("Cuad")
                     btn_trig = gr.Button("Trig")
                     btn_exp = gr.Button("Exp")
+                gr.Markdown("**Ejemplos Multivariable (2D)**")
+                with gr.Row():
+                    btn_mv_lin = gr.Button("MV Lineal")
+                    btn_mv_quad = gr.Button("MV Cuad")
+                    btn_mv_trig = gr.Button("MV Trig")
+                    btn_mv_exp = gr.Button("MV Exp")
+                gr.Markdown("**Ejemplos Multivariable (3D / 4D)**")
+                with gr.Row():
+                    btn_mv_lin3d = gr.Button("MV Lineal (3D)")
+                    btn_mv_quad3d = gr.Button("MV Cuad (3D)")
+                    btn_mv_4d = gr.Button("MV Complejo (4D)")
 
             x_input = gr.Textbox(label="Features (X)", placeholder="1, 2, 3...", lines=3)
             y_input = gr.Textbox(label="Target (Y)", placeholder="2, 4, 6...", lines=3)
@@ -171,6 +183,13 @@ def get_gpu_live_tab(verbose_state=None):
     btn_quad.click(lambda: generate_example("cuadratico"), outputs=[x_input, y_input])
     btn_trig.click(lambda: generate_example("trig"), outputs=[x_input, y_input])
     btn_exp.click(lambda: generate_example("exp"), outputs=[x_input, y_input])
+    btn_mv_lin.click(lambda: generate_example("mv_lineal"), outputs=[x_input, y_input])
+    btn_mv_quad.click(lambda: generate_example("mv_cuadratico"), outputs=[x_input, y_input])
+    btn_mv_trig.click(lambda: generate_example("mv_trig"), outputs=[x_input, y_input])
+    btn_mv_exp.click(lambda: generate_example("mv_exp"), outputs=[x_input, y_input])
+    btn_mv_lin3d.click(lambda: generate_example("mv_lineal_3d"), outputs=[x_input, y_input])
+    btn_mv_quad3d.click(lambda: generate_example("mv_cuadratico_3d"), outputs=[x_input, y_input])
+    btn_mv_4d.click(lambda: generate_example("mv_4d"), outputs=[x_input, y_input])
 
     def stop_evolution(run_state):
         if run_state is None:

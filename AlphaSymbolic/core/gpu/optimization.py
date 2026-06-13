@@ -4,6 +4,7 @@ from typing import Tuple
 from .config import GpuGlobals
 from .evaluation import GPUEvaluator
 from .operators import GPUOperators
+from .cuda_loader import load_rpn_cuda_native
 
 class RPNBackwardFunction(torch.autograd.Function):
     @staticmethod
@@ -23,7 +24,7 @@ class RPNBackwardFunction(torch.autograd.Function):
         elif not x.is_contiguous():
             x_cuda = x.contiguous()
             
-        import rpn_cuda_native
+        rpn_cuda_native = load_rpn_cuda_native()
         
         rpn_cuda_native.eval_rpn(
             population.contiguous(),
@@ -56,7 +57,7 @@ class RPNBackwardFunction(torch.autograd.Function):
         vm = ctx.vm
         
         grad_constants = torch.zeros_like(constants)
-        import rpn_cuda_native
+        rpn_cuda_native = load_rpn_cuda_native()
         
         rpn_cuda_native.eval_rpn_backward(
             population.contiguous(),
@@ -93,7 +94,7 @@ class GPUOptimizer:
         self.device = device
         self.dtype = dtype
         try:
-            import rpn_cuda_native
+            rpn_cuda_native = load_rpn_cuda_native()
             self._has_fused_pso = hasattr(rpn_cuda_native, 'fused_pso')
             self._has_lbfgs = hasattr(rpn_cuda_native, 'lbfgs_optimize')
             self._rpn_cuda = rpn_cuda_native if (self._has_fused_pso or self._has_lbfgs) else None
@@ -452,7 +453,7 @@ class GPUOptimizer:
         
         # P1-1: Detect CUDA availability ONCE before loop
         try:
-            import rpn_cuda_native
+            rpn_cuda_native = load_rpn_cuda_native()
             _use_cuda_pso = True
         except ImportError:
             _use_cuda_pso = False

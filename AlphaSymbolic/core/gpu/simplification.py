@@ -19,15 +19,10 @@ except ImportError:
     SYMPY_AVAILABLE = False
     
 from .grammar import PAD_ID, GPUGrammar
+from .cuda_loader import load_rpn_cuda_native
 
 try:
-    from sys import path as sys_path
-    from os import path as os_path
-    # Ensure CUDA module is reachable
-    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
-    if cuda_path not in sys_path: sys_path.append(cuda_path)
-    
-    import rpn_cuda_native
+    rpn_cuda_native = load_rpn_cuda_native()
     RPN_CUDA_AVAILABLE = True
 except ImportError:
     RPN_CUDA_AVAILABLE = False

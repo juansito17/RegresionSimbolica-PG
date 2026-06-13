@@ -153,7 +153,8 @@ void launch_find_subtree_ranges(
     const torch::Tensor& population,
     const torch::Tensor& token_arities,
     torch::Tensor& out_starts,
-    int PAD_ID
+    int PAD_ID,
+    torch::Tensor out_lengths = torch::Tensor()
 );
 
 void launch_mutation_kernel(
@@ -184,7 +185,8 @@ void launch_crossover_splicing(
     const torch::Tensor& ends2,
     torch::Tensor& child1,
     torch::Tensor& child2,
-    int PAD_ID
+    int PAD_ID,
+    const torch::Tensor& cx_mask = torch::Tensor()
 );
 
 // --- Phase 3 Forward Declarations ---
@@ -250,7 +252,11 @@ std::vector<torch::Tensor> evolve_generation(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    int n_islands
+    int n_islands,
+    torch::Tensor cached_p1_src,
+    torch::Tensor cached_p2_src,
+    torch::Tensor cached_copy_src,
+    torch::Tensor cached_island_base
 );
 
 // --- Phase 6 Forward Declaration: Fused PSO ---
@@ -404,6 +410,15 @@ void launch_batch_update_best(
     float tolerance
 );
 
+void launch_constant_perturbation(
+    torch::Tensor& constants,
+    float rate,
+    float sigma,
+    float c_min,
+    float c_max,
+    uint32_t seed
+);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("eval_rpn", &run_rpn_cuda, "RPN Evaluation Kernel (CUDA)");
     m.def("eval_rpn_fused", &launch_rpn_eval_fused, "Fused RPN Eval+RMSE (block-per-individual, zero warp divergence)",
@@ -423,10 +438,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("population"), py::arg("constants"), py::arg("vocab"), py::arg("arities"), py::arg("PAD_ID"), py::arg("precision") = 4);
     
     // Phase 2
-    m.def("find_subtree_ranges", &launch_find_subtree_ranges, "Find Subtree Ranges (CUDA)");
+    m.def("find_subtree_ranges", &launch_find_subtree_ranges, "Find Subtree Ranges (CUDA)",
+        py::arg("population"), py::arg("token_arities"), py::arg("out_starts"),
+        py::arg("PAD_ID"), py::arg("out_lengths") = torch::Tensor());
     m.def("mutate_population", &launch_mutation_kernel, "Mutation Kernel (CUDA)");
-    m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)");
+    m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)",
+        py::arg("parent1"), py::arg("parent2"), py::arg("starts1"), py::arg("ends1"),
+        py::arg("starts2"), py::arg("ends2"), py::arg("child1"), py::arg("child2"),
+        py::arg("PAD_ID"), py::arg("cx_mask") = torch::Tensor());
     m.def("validate_rpn_batch", &launch_validate_rpn_batch, "Validate RPN Batch Kernel (CUDA)");
+    m.def("constant_perturbation", &launch_constant_perturbation, "In-place constant perturbation (CUDA)",
+        py::arg("constants"), py::arg("rate"), py::arg("sigma"),
+        py::arg("c_min"), py::arg("c_max"), py::arg("seed"));
     
     // Phase 3
     m.def("tournament_selection", &launch_tournament_selection, "Tournament Selection (CUDA)",
@@ -456,7 +479,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("op_gamma"), py::arg("op_lgamma"),
         py::arg("op_asin"), py::arg("op_acos"), py::arg("op_atan"),
         py::arg("pi_val"), py::arg("e_val"),
-        py::arg("n_islands") = 1
+        py::arg("n_islands") = 1,
+        py::arg("cached_p1_src") = torch::empty({0}, torch::kInt64),
+        py::arg("cached_p2_src") = torch::empty({0}, torch::kInt64),
+        py::arg("cached_copy_src") = torch::empty({0}, torch::kInt64),
+        py::arg("cached_island_base") = torch::empty({0}, torch::kInt64)
     );
 
     // Phase 5: Simplifier + Generator Kernels

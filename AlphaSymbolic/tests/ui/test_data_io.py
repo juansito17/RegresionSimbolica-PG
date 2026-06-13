@@ -71,3 +71,53 @@ def test_load_csv_multivariable_formats_x_by_rows(tmp_path):
 
     assert x_str == "1 2\n4 5"
     assert y_str == "3, 9"
+
+
+def test_generate_example_mv_lineal_is_parseable():
+    x_str, y_str = generate_example("mv_lineal")
+    parsed = parse_input_data(x_str, y_str)
+
+    assert parsed.error is None
+    assert parsed.x.shape == (16, 2)
+    assert parsed.y.shape == (16,)
+    assert np.allclose(parsed.y, 2 * parsed.x[:, 0] + 3 * parsed.x[:, 1] - 1)
+
+
+def test_generate_example_mv_cuadratico_is_parseable():
+    x_str, y_str = generate_example("mv_cuadratico")
+    parsed = parse_input_data(x_str, y_str)
+
+    assert parsed.error is None
+    assert parsed.x.shape == (16, 2)
+    assert parsed.y.shape == (16,)
+    assert np.allclose(parsed.y, parsed.x[:, 0]**2 + parsed.x[:, 1]**2 + 1)
+
+
+def test_generate_example_mv_lineal_3d_is_parseable():
+    x_str, y_str = generate_example("mv_lineal_3d")
+    parsed = parse_input_data(x_str, y_str)
+
+    assert parsed.error is None
+    assert parsed.x.shape == (27, 3)
+    assert parsed.y.shape == (27,)
+    assert np.allclose(parsed.y, parsed.x[:, 0] + 2 * parsed.x[:, 1] - 1.5 * parsed.x[:, 2] + 3)
+
+
+def test_generate_example_mv_cuadratico_3d_is_parseable():
+    x_str, y_str = generate_example("mv_cuadratico_3d")
+    parsed = parse_input_data(x_str, y_str)
+
+    assert parsed.error is None
+    assert parsed.x.shape == (27, 3)
+    assert parsed.y.shape == (27,)
+    assert np.allclose(parsed.y, parsed.x[:, 0] * parsed.x[:, 1] + parsed.x[:, 2]**2 - 1)
+
+
+def test_generate_example_mv_4d_is_parseable():
+    x_str, y_str = generate_example("mv_4d")
+    parsed = parse_input_data(x_str, y_str)
+
+    assert parsed.error is None
+    assert parsed.x.shape == (16, 4)
+    assert parsed.y.shape == (16,)
+    assert np.allclose(parsed.y, parsed.x[:, 0] * parsed.x[:, 1] + np.sin(parsed.x[:, 2]) - np.exp(0.5 * parsed.x[:, 3]), atol=1e-3)

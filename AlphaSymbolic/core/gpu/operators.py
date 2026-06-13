@@ -2,18 +2,15 @@
 import torch
 import random
 import numpy as np
+import time
 from typing import List, Tuple
 from AlphaSymbolic.core.grammar import OPERATORS, ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
 from .config import GpuGlobals
+from .cuda_loader import load_rpn_cuda_native
 
 try:
-    from sys import path as sys_path
-    from os import path as os_path
-    # Ensure CUDA module is reachable
-    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
-    if cuda_path not in sys_path: sys_path.append(cuda_path)
-    import rpn_cuda_native
+    rpn_cuda_native = load_rpn_cuda_native()
     RPN_CUDA_AVAILABLE = True
 except ImportError:
     RPN_CUDA_AVAILABLE = False
@@ -39,6 +36,7 @@ class GPUOperators:
         
         # Arity masks
         self._init_arity_masks()
+        self._empty_token_ids = torch.empty(0, device=self.device, dtype=self.pop_dtype)
 
     def _get_rand_floats(self, shape) -> torch.Tensor:
         numel = shape[0] * shape[1] if len(shape) == 2 else (shape[0] if len(shape) == 1 else np.prod(shape))
@@ -97,8 +95,6 @@ class GPUOperators:
         # ============ CUDA FAST PATH ============
         if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'compute_var_presence') and population.is_cuda:
             try:
-                import rpn_cuda_native
-                
                 # Compute variable presence for all individuals at once
                 var_presence = torch.empty(n_force, dtype=torch.int32, device=device)
                 id_x_start = self.grammar.token_to_id.get('x0', 
@@ -234,13 +230,13 @@ class GPUOperators:
         # ============ CUDA FAST PATH ============
         if RPN_CUDA_AVAILABLE:
             try:
-                population = torch.zeros(size, max_len, dtype=self.pop_dtype, device=device)
+                population = torch.empty(size, max_len, dtype=self.pop_dtype, device=device)
                 seed = random.getrandbits(62)
                 
                 # Ensure contiguous int64 tensors
                 t_ids = self.terminal_ids.contiguous()
-                u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
-                b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
+                u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else self._empty_token_ids
+                b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
                 
                 # OPTIMIZED: calcular pesos de categoría desde OPERATOR_WEIGHTS (bug fix: antes 1.0 fijo)
                 _op_w = GpuGlobals.OPERATOR_WEIGHTS
@@ -393,7 +389,7 @@ class GPUOperators:
         if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'validate_rpn_batch') and population.is_cuda:
             try:
                 B, L = population.shape
-                valid_mask = torch.zeros(B, dtype=torch.bool, device=self.device)
+                valid_mask = torch.empty(B, dtype=torch.bool, device=self.device)
                 if not hasattr(self, 'token_arity_int'): self.token_arity_int = self.token_arity.to(dtype=torch.int32)
                 rpn_cuda_native.validate_rpn_batch(population, self.token_arity_int, valid_mask, PAD_ID)
                 return valid_mask
@@ -431,11 +427,11 @@ class GPUOperators:
         # CUDA fast path
         if RPN_CUDA_AVAILABLE:
             try:
-                population = torch.zeros(size, max_len, dtype=self.pop_dtype, device=device)
+                population = torch.empty(size, max_len, dtype=self.pop_dtype, device=device)
                 seed = random.getrandbits(62)
                 t_ids = self.terminal_ids.contiguous()
-                u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
-                b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else torch.zeros(0, dtype=torch.long, device=device)
+                u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else self._empty_token_ids
+                b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
                 # OPTIMIZED: mismos pesos de categoría que generate_random_population_gpu
                 _op_w = GpuGlobals.OPERATOR_WEIGHTS
                 _bin_sum = sum(_op_w[:6])
@@ -758,11 +754,14 @@ class GPUOperators:
         # Antes, el kernel se llamaba incluso con tensores CPU, causando RuntimeError.
         if RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'find_subtree_ranges') and population.is_cuda:
             B, L = population.shape
-            starts = torch.full((B, L), -1, dtype=torch.long, device=self.device)
+            starts = torch.empty((B, L), dtype=torch.long, device=self.device)
             # Ensure token_arity_int exists (legacy safety)
             if not hasattr(self, 'token_arity_int'): self.token_arity_int = self.token_arity.to(dtype=torch.int32)
             
-            rpn_cuda_native.find_subtree_ranges(population, self.token_arity_int, starts, PAD_ID)
+            rpn_cuda_native.find_subtree_ranges(
+                population, self.token_arity_int, starts, PAD_ID,
+                torch.empty(0, dtype=torch.long, device=self.device)
+            )
             return starts
 
         # PyTorch Fallback
@@ -1345,13 +1344,11 @@ class GPUOperators:
         valid_mask = self._validate_rpn_batch(population)
         invalid_mask = ~valid_mask
         
-        # Asynchronous evaluation: no CPU sync via .item() unless absolutely needed
-        if not invalid_mask.any():
-            return population, constants, 0
-            
-        n_invalid = int(invalid_mask.sum().item())
-
         invalid_idx = invalid_mask.nonzero(as_tuple=True)[0]
+        n_invalid = invalid_idx.numel()
+        if n_invalid == 0:
+            return population, constants, 0
+
         population[invalid_idx] = self.generate_random_population(n_invalid)
 
         if constants is not None and constants.numel() > 0:
@@ -1398,6 +1395,17 @@ class GPUOperators:
         Returns:
             constants tensor (modified in-place, also returned for chaining).
         """
+        if (RPN_CUDA_AVAILABLE and constants.is_cuda and constants.dim() == 2 and constants.is_contiguous() and
+                constants.dtype in (torch.float32, torch.float64) and rate > 0 and sigma > 0):
+            try:
+                c_min = float(getattr(GpuGlobals, 'CONSTANT_MIN_VALUE', -10.0))
+                c_max = float(getattr(GpuGlobals, 'CONSTANT_MAX_VALUE', 10.0))
+                seed = time.time_ns() & 0xFFFFFFFF
+                rpn_cuda_native.constant_perturbation(constants, float(rate), float(sigma), c_min, c_max, int(seed))
+                return constants
+            except Exception:
+                pass
+
         B, K = constants.shape
         # Decide which individuals get perturbed
         rand_floats = self._get_rand_floats((B,))

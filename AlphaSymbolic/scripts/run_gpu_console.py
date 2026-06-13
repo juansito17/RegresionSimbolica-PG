@@ -146,6 +146,14 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AlphaSymbolic GPU console runner")
     parser.add_argument("--verbose", action="store_true", help="Activar logs detallados.")
+    parser.add_argument("--prediction-table", action="store_true",
+                        help="Mostrar tabla Predicciones vs Targets en cada nuevo mejor. Mas diagnostico, menos velocidad.")
+    parser.add_argument("--progress-interval", type=int, default=100,
+                        help="Generaciones entre reportes de progreso.")
+    parser.add_argument("--max-generations", type=int, default=None,
+                        help="Limitar generaciones para benchmark/debug. Por defecto usa config.py.")
+    parser.add_argument("--timeout-sec", type=float, default=None,
+                        help="Limitar segundos de ejecucion. Por defecto corre hasta resolver o max-generations.")
     args = parser.parse_args()
     configure_logging(args.verbose)
 
@@ -169,7 +177,10 @@ if __name__ == "__main__":
     # to ensure consistency with the optimized stress test results.
     # GpuGlobals.NUM_ISLANDS = 40 <--- REMOVED (Uses config.py value)
     
-    GpuGlobals.PROGRESS_REPORT_INTERVAL = 100
+    GpuGlobals.PROGRESS_REPORT_INTERVAL = max(1, args.progress_interval)
+    GpuGlobals.CONSOLE_SHOW_PREDICTION_TABLE = bool(args.prediction_table)
+    if args.max_generations is not None:
+        GpuGlobals.GENERATIONS = max(1, args.max_generations)
     # GpuGlobals.USE_PARETO_SELECTION = False  # Removed override to respect config.py
     
     # Engine will use Globals defaults for pop_size and n_islands
@@ -199,7 +210,7 @@ if __name__ == "__main__":
             x_input, 
             TARGETS, 
             seeds=seeds, 
-            timeout_sec=None,  # Infinite time
+            timeout_sec=args.timeout_sec,
             callback=console_mimic_callback
         )
 

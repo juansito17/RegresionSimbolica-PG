@@ -62,6 +62,7 @@ class LibraryLearner:
         # Config
         self.max_block_len = int(getattr(GpuGlobals, 'LIBRARY_MAX_BLOCK_LEN', 8))
         self.top_k_fraction = float(getattr(GpuGlobals, 'LIBRARY_TOP_K_FRACTION', 0.05))
+        self.top_k_max = int(getattr(GpuGlobals, 'LIBRARY_TOP_K_MAX', 8192))
         self.update_interval = int(getattr(GpuGlobals, 'LIBRARY_UPDATE_INTERVAL', 10))
 
         # Library storage: [capacity, max_block_len] token tensor
@@ -117,8 +118,10 @@ class LibraryLearner:
     def _do_update(self, population: torch.Tensor, fitness_rmse: torch.Tensor) -> None:
         n = population.shape[0]
         k = max(1, int(n * self.top_k_fraction))
+        if self.top_k_max > 0:
+            k = min(k, self.top_k_max)
         # Sample top-K by fitness (smallest RMSE)
-        _, top_idx = torch.topk(fitness_rmse, k, largest=False)
+        _, top_idx = torch.topk(fitness_rmse, k, largest=False, sorted=False)
         top_pop = population[top_idx]  # [k, max_len]
 
         # Extract all windows of length max_block_len from each individual

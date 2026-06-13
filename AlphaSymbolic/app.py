@@ -102,11 +102,25 @@ def create_app(verbose=False):
                             file_upload = gr.File(label="Seleccionar archivo", file_types=[".csv", ".txt"], file_count="single")
                             file_upload.change(load_csv_data, inputs=[file_upload], outputs=[x_input, y_input])
                         
+                        gr.HTML('<div style="margin-top: 10px; margin-bottom: 5px; font-weight: bold; font-size: 0.85em; color: #a1a1aa;">Ejemplos 1D</div>')
                         with gr.Row():
                             gr.Button("Lineal", size="sm").click(lambda: generate_example("lineal"), outputs=[x_input, y_input])
                             gr.Button("Cuad", size="sm").click(lambda: generate_example("cuadratico"), outputs=[x_input, y_input])
                             gr.Button("Trig", size="sm").click(lambda: generate_example("trig"), outputs=[x_input, y_input])
                             gr.Button("Exp", size="sm").click(lambda: generate_example("exp"), outputs=[x_input, y_input])
+                        
+                        gr.HTML('<div style="margin-top: 10px; margin-bottom: 5px; font-weight: bold; font-size: 0.85em; color: #a1a1aa;">Ejemplos Multivariable (2D)</div>')
+                        with gr.Row():
+                            gr.Button("MV Lineal", size="sm").click(lambda: generate_example("mv_lineal"), outputs=[x_input, y_input])
+                            gr.Button("MV Cuad", size="sm").click(lambda: generate_example("mv_cuadratico"), outputs=[x_input, y_input])
+                            gr.Button("MV Trig", size="sm").click(lambda: generate_example("mv_trig"), outputs=[x_input, y_input])
+                            gr.Button("MV Exp", size="sm").click(lambda: generate_example("mv_exp"), outputs=[x_input, y_input])
+                        
+                        gr.HTML('<div style="margin-top: 10px; margin-bottom: 5px; font-weight: bold; font-size: 0.85em; color: #a1a1aa;">Ejemplos Multivariable (3D / 4D)</div>')
+                        with gr.Row():
+                            gr.Button("MV Lineal (3D)", size="sm").click(lambda: generate_example("mv_lineal_3d"), outputs=[x_input, y_input])
+                            gr.Button("MV Cuad (3D)", size="sm").click(lambda: generate_example("mv_cuadratico_3d"), outputs=[x_input, y_input])
+                            gr.Button("MV Complejo (4D)", size="sm").click(lambda: generate_example("mv_4d"), outputs=[x_input, y_input])
                         
                         gr.Markdown("---")
                         search_method = gr.Radio(

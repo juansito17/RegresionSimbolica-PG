@@ -19,6 +19,7 @@ from .operators import GPUOperators
 from .optimization import GPUOptimizer
 from .simplification import GPUSimplifier
 from .gpu_simplifier import GPUSymbolicSimplifier
+from .cuda_loader import load_rpn_cuda_native
 
 class TensorGeneticEngine:
     def __init__(self, device=None, pop_size=None, max_len=None, num_variables=1, max_constants=5, n_islands=None, model=None):
@@ -690,7 +691,7 @@ class TensorGeneticEngine:
         flat_all_idx = global_rand_idx.view(-1)
         
         try:
-             import rpn_cuda_native
+             rpn_cuda_native = load_rpn_cuda_native()
              # CUDA Fast Path
              # We need indices as [B, TourSize]
              # flat_all_idx is [B * TourSize]. Reshape to [B, TourSize]
@@ -744,7 +745,7 @@ class TensorGeneticEngine:
         Returns: (new_population, new_constants, new_fitness)
         """
         try:
-            import rpn_cuda_native as rpn_cuda
+            rpn_cuda = load_rpn_cuda_native()
             from .cuda_vm import CudaRPNVM
         except ImportError:
             print("[Engine] WARNING: CUDA orchestrator not available, falling back to Python")
@@ -828,6 +829,34 @@ class TensorGeneticEngine:
         if mad_eps is None:
             mad_eps = torch.empty(0, device=self.device)
 
+        # Static island-pairing indices: avoid rebuilding arange/cat tensors inside C++ every generation.
+        idx_key = (self.pop_size, self.n_islands, self.island_size, self.device.type, self.device.index)
+        if getattr(self, '_cached_orchestrator_indices_key', None) != idx_key:
+            p1_parts = []
+            p2_parts = []
+            copy_parts = [torch.zeros(1, device=self.device, dtype=torch.long)]
+            for island in range(self.n_islands):
+                start = island * self.island_size
+                end = (island + 1) * self.island_size
+                avail_start = start + 1 if island == 0 else start
+                avail_len = end - avail_start
+                pair_count = avail_len // 2
+                if pair_count > 0:
+                    p1 = torch.arange(avail_start, avail_start + 2 * pair_count, 2, device=self.device, dtype=torch.long)
+                    p1_parts.append(p1)
+                    p2_parts.append(p1 + 1)
+                if avail_len % 2:
+                    copy_parts.append(torch.full((1,), end - 1, device=self.device, dtype=torch.long))
+
+            self._cached_orchestrator_indices = {
+                'p1': torch.cat(p1_parts).contiguous() if p1_parts else torch.empty(0, device=self.device, dtype=torch.long),
+                'p2': torch.cat(p2_parts).contiguous() if p2_parts else torch.empty(0, device=self.device, dtype=torch.long),
+                'copy': torch.cat(copy_parts).contiguous(),
+            }
+            self._cached_orchestrator_indices_key = idx_key
+
+        cached_idx = self._cached_orchestrator_indices
+
         _args = [
             population, _f32c(constants), _f32c(fitness), _f32c(abs_errors),
             x_in, y_in, lengths.contiguous(), 
@@ -841,7 +870,8 @@ class TensorGeneticEngine:
             vm.op_sin, vm.op_cos, vm.op_tan, vm.op_log, vm.op_exp,
             vm.op_sqrt, vm.op_abs, vm.op_neg, vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
             vm.op_gamma, vm.op_lgamma, vm.op_asin, vm.op_acos, vm.op_atan,
-            3.14159265359, 2.718281828, self.n_islands
+            3.14159265359, 2.718281828, self.n_islands,
+            cached_idx['p1'], cached_idx['p2'], cached_idx['copy']
         ]
         
         result = rpn_cuda.evolve_generation(*_args)
@@ -1489,7 +1519,7 @@ class TensorGeneticEngine:
                     
         # Patterns (GPU-native, no CPU transfer)
 
-        pats = self.detect_patterns(y_t)
+        pats = self.detect_patterns(y_t) if getattr(GpuGlobals, 'USE_PATTERN_SEEDS', False) else []
         if pats:
 
             pat_pop, pat_consts = self.load_population_from_strings(pats)
@@ -1505,6 +1535,10 @@ class TensorGeneticEngine:
         best_rmse = float('inf')
         best_rpn = None
         best_consts_vec = None
+        self.last_run_best_rmse = float('inf')
+        self.last_run_generations = 0
+        self.last_run_best_formula = None
+        self.last_run_converged = False
         stagnation = 0
         global_stagnation = 0  # Solo se resetea con mejora real, no con cataclismo
         generations = 0
@@ -1800,15 +1834,15 @@ class TensorGeneticEngine:
                     if _in_stagnation:
                         k_top = k_opt // 2
                         k_rand = k_opt - k_top
-                        _, _top_part = torch.topk(selection_metric if _cached_var_pen is not None else fitness_rmse, k_top, largest=False)
+                        _, _top_part = torch.topk(selection_metric if _cached_var_pen is not None else fitness_rmse, k_top, largest=False, sorted=False)
                         _rand_part = torch.randperm(self.pop_size, device=self.device)[:k_rand]
                         top_idx = torch.cat([_top_part, _rand_part])
                     elif _cached_var_pen is not None:
                         _pso_metric = fitness_rmse.clone()
                         _pso_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
-                        _, top_idx = torch.topk(_pso_metric, k_opt, largest=False)
+                        _, top_idx = torch.topk(_pso_metric, k_opt, largest=False, sorted=False)
                     else:
-                        _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False)
+                        _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False, sorted=False)
                     
                     opt_pop = population[top_idx]
                     opt_consts = pop_constants[top_idx]
@@ -1833,7 +1867,7 @@ class TensorGeneticEngine:
                     generations % _bfgs_interval == 0):
                 _bfgs_k = min(getattr(GpuGlobals, 'BFGS_TOP_K', 50), self.pop_size)
                 _bfgs_iters = getattr(GpuGlobals, 'BFGS_MAX_ITER', 30)
-                _, _bfgs_top_idx = torch.topk(fitness_rmse, _bfgs_k, largest=False)
+                _, _bfgs_top_idx = torch.topk(fitness_rmse, _bfgs_k, largest=False, sorted=False)
                 _bfgs_pop = population[_bfgs_top_idx]
                 _bfgs_consts = pop_constants[_bfgs_top_idx]
                 try:
@@ -1868,7 +1902,7 @@ class TensorGeneticEngine:
             
             # Try CUDA Best Tracker kernel
             try:
-                import rpn_cuda_native
+                rpn_cuda_native = load_rpn_cuda_native()
                 # Prepare fitness (must be float32 for kernel)
                 fit_f32 = fitness_rmse.float() if fitness_rmse.dtype != torch.float32 else fitness_rmse
                 
@@ -1895,9 +1929,15 @@ class TensorGeneticEngine:
                 # Increment sync counter
                 self._sync_counter += 1
                 
-                # Only sync to CPU when reporting or every 5 generations
+                # Only sync to CPU periodically or when reporting.
                 _force_sync_interval = max(10, GpuGlobals.PROGRESS_REPORT_INTERVAL // 2)
-                _should_sync = (generations % 5 == 0) or (generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0)
+                _best_sync_interval = max(1, int(getattr(GpuGlobals, 'BEST_SYNC_INTERVAL', 10)))
+                _should_sync = (
+                    generations == 1 or
+                    (generations % _best_sync_interval == 0) or
+                    (generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0)
+                )
+                _best_check_fresh = _should_sync
                 
                 if _should_sync:
                     _gpu_rmse = self._gpu_best_rmse[0].item()  # Single sync
@@ -1938,6 +1978,7 @@ class TensorGeneticEngine:
                 
                 if _improved_gpu or (self._sync_counter % _force_sync_interval == 0):
                     min_rmse_val = min_rmse.item()
+                    _best_check_fresh = True
                     if _improved_gpu:
                         min_idx_val = min_idx.item()
                         self._gpu_best_rmse_fallback = min_rmse_val
@@ -1946,6 +1987,7 @@ class TensorGeneticEngine:
                 else:
                     min_rmse_val = getattr(self, '_gpu_best_rmse_fallback', float('inf'))
                     min_idx_val = getattr(self, '_cached_best_idx_cpu', 0)
+                    _best_check_fresh = False
             
             # NaN check using the value we have
             if min_rmse_val == min_rmse_val and min_rmse_val < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
@@ -1965,11 +2007,13 @@ class TensorGeneticEngine:
                     best_rmse = min_rmse_val
                     best_rpn = candidate_rpn.clone()
                     best_consts_vec = candidate_consts.clone()
+                    self.last_run_best_rmse = best_rmse
 
                     # On-the-fly symbolic cleanup for promising but bloated formulas.
                     # This is generic and data-driven (no benchmark-specific templates).
                     try:
                         candidate_size_now = self.get_tree_size(best_rpn).item()
+                        self._cached_best_tree_size = candidate_size_now
                         if candidate_size_now >= 18 and best_rmse < max(0.2, GpuGlobals.GOOD_ENOUGH_RMSE * 4.0):
                             cand_formula = self.rpn_to_infix(best_rpn, best_consts_vec)
                             simp_formula = self._post_simplify_formula(cand_formula, x_t, y_t)
@@ -1982,6 +2026,7 @@ class TensorGeneticEngine:
                                         best_rmse = simp_rmse
                                         best_rpn = simp_pop[0].clone()
                                         best_consts_vec = simp_const[0].clone()
+                                        self._cached_best_tree_size = self.get_tree_size(best_rpn).item()
                     except Exception:
                         pass
 
@@ -2038,6 +2083,10 @@ class TensorGeneticEngine:
                     # Optimization: Only run heavy SymPy simplification for high-quality solutions
                     if best_rmse < 0.01:
                         formula = self._post_simplify_formula(formula, x_t, y_t)
+                    self.last_run_best_rmse = best_rmse
+                    self.last_run_generations = generations
+                    self.last_run_best_formula = formula
+                    self.last_run_converged = True
                     return formula
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
 
@@ -2046,20 +2095,22 @@ class TensorGeneticEngine:
                     if best_rmse < 1e100:
                         last_reported_fitness = best_rmse
                         callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
-            elif min_rmse_val == min_rmse_val and best_rpn is not None and min_rmse_val <= (best_rmse + GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
+            elif _best_check_fresh and min_rmse_val == min_rmse_val and best_rpn is not None and min_rmse_val <= (best_rmse + GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
                 # Tie-break by simplicity for equivalent fitness.
                 # BUG FIX: Use _gpu_best_rpn instead of population[min_idx_val]
                 # min_idx_val is 0 when using CUDA kernel, and population[0] is NOT the best individual
                 # The kernel stores the actual best in _gpu_best_rpn
-                candidate_rpn = self._gpu_best_rpn.clone()
-                candidate_consts = self._gpu_best_consts.clone().to(self.dtype)
-                cand_size = self.get_tree_size(candidate_rpn).item()
-                best_size = self.get_tree_size(best_rpn).item()
+                cand_size = self.get_tree_size(self._gpu_best_rpn).item()
+                best_size = getattr(self, '_cached_best_tree_size', None)
+                if best_size is None:
+                    best_size = self.get_tree_size(best_rpn).item()
+                    self._cached_best_tree_size = best_size
 
                 # Accept simpler candidate if fitness is effectively equivalent.
                 if cand_size + 1 < best_size and min_rmse_val <= best_rmse * 1.02 + GpuGlobals.FITNESS_EQUALITY_TOLERANCE:
-                    best_rpn = candidate_rpn.clone()
-                    best_consts_vec = candidate_consts.clone()
+                    best_rpn = self._gpu_best_rpn.clone()
+                    best_consts_vec = self._gpu_best_consts.clone().to(self.dtype)
+                    self._cached_best_tree_size = cand_size
                     self.best_global_rpn = best_rpn
                     self.best_global_consts = best_consts_vec
             else:
@@ -2587,12 +2638,13 @@ class TensorGeneticEngine:
                         self.library_learner.inject_into_mutation_bank(self.mutation_bank, fraction=_lib_frac)
 
 
+                orchestrator_pso_steps = 0
                 next_pop, next_c, next_fit = self.evolve_generation_cuda(
                     population, pop_constants, selection_metric, abs_errors, x_t, y_t, self.mutation_bank,
                     mutation_rate=current_mutation_rate,
                     crossover_rate=GpuGlobals.DEFAULT_CROSSOVER_RATE,
                     tournament_size=effective_tournament,
-                    pso_steps=0, # Disable global PSO to avoid OOM
+                    pso_steps=orchestrator_pso_steps, # Disable global PSO to avoid OOM
                     pso_particles=GpuGlobals.PSO_PARTICLES,
                     lengths=lengths, # Pass lengths for Parsimony Pressure
                     mad_eps=None    # Let it calculate MAD inside or pass if available
@@ -2603,14 +2655,19 @@ class TensorGeneticEngine:
                     next_pop = next_pop[:self.pop_size]
                     next_c = next_c[:self.pop_size]
                     # P0-1: Cache the fitness from C++ for reuse in next iteration
-                    cached_next_fit = next_fit[:self.pop_size] if next_fit is not None else None
+                    cached_next_fit = next_fit[:self.pop_size] if (next_fit is not None and orchestrator_pso_steps > 0) else None
+                    if orchestrator_pso_steps <= 0:
+                        next_fit = None
                     # Global Elite Injection: preserve best formula en posición 0.
                     # ANTI-STAG FIX: Durante el cooldown post-restart, NO inyectar el elite global
                     # para que la población fresca explore sin contaminarse con la estructura vieja.
                     # Fuera del cooldown: siempre activo para proteger el global best.
                     _elite_ok = (_post_restart_cooldown <= 0)
                     if best_rpn is not None and _elite_ok:
-                        best_size = self.get_tree_size(best_rpn).item()
+                        best_size = getattr(self, '_cached_best_tree_size', None)
+                        if best_size is None:
+                            best_size = self.get_tree_size(best_rpn).item()
+                            self._cached_best_tree_size = best_size
                         if best_size > GpuGlobals.TRIVIAL_FORMULA_MAX_TOKENS or best_rmse <= GpuGlobals.TRIVIAL_FORMULA_ALLOW_RMSE:
                             next_pop[0] = best_rpn
                             next_c[0] = best_consts_vec
@@ -2805,8 +2862,10 @@ class TensorGeneticEngine:
             # Repair invalid RPNs produced by crossover/mutation to avoid collapse to trivial survivors.
             # Repair invalids — always invalidate cache (repair puede cambiar individuos).
             # Eliminado n_repaired > 0 check: evita sync GPU→CPU con .item().
-            next_pop, next_c, _ = self.operators.repair_invalid_population(next_pop, next_c)
-            cached_next_fit = None
+            _repair_interval = max(1, int(getattr(GpuGlobals, 'REPAIR_INVALID_INTERVAL', 1)))
+            if generations % _repair_interval == 0:
+                next_pop, next_c, _ = self.operators.repair_invalid_population(next_pop, next_c)
+                cached_next_fit = None
 
             # --- SIMPLIFICATION ---
             if GpuGlobals.USE_SIMPLIFICATION and generations % GpuGlobals.SIMPLIFICATION_INTERVAL == 0:
@@ -2879,6 +2938,29 @@ class TensorGeneticEngine:
             population = population[:self.pop_size]
             pop_constants = pop_constants[:self.pop_size]
                  
+        # Capture a final best candidate for telemetry and bounded benchmarks. This
+        # performs one end-of-run sync only, preserving the hot generation path.
+        try:
+            final_rmse_t, final_idx_t = torch.min(fitness_rmse, dim=0)
+            final_rmse = final_rmse_t.item()
+            if final_rmse == final_rmse and final_rmse < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
+                final_idx = final_idx_t.item()
+                best_rmse = final_rmse
+                best_rpn = population[final_idx].clone()
+                best_consts_vec = pop_constants[final_idx].clone()
+                self.best_global_rmse = best_rmse
+                self.best_global_rpn = best_rpn
+                self.best_global_consts = best_consts_vec
+        except Exception:
+            pass
+
+        if getattr(GpuGlobals, 'SKIP_FINAL_FORMULA_BUILD', False):
+            self.last_run_best_rmse = best_rmse
+            self.last_run_generations = generations
+            self.last_run_best_formula = None
+            self.last_run_converged = best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD
+            return None
+
         if best_rpn is not None:
              # --- Final Simplification Pass (only keep if fitness does not worsen) ---
              try:
@@ -2931,5 +3013,13 @@ class TensorGeneticEngine:
                          formula = formula_pre
              except Exception:
                  pass
+             self.last_run_best_rmse = best_rmse
+             self.last_run_generations = generations
+             self.last_run_best_formula = formula
+             self.last_run_converged = best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD
              return formula
+        self.last_run_best_rmse = best_rmse
+        self.last_run_generations = generations
+        self.last_run_best_formula = None
+        self.last_run_converged = False
         return None

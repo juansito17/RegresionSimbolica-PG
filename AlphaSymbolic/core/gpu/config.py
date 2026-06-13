@@ -101,6 +101,7 @@ class GpuGlobals:
 
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
+    USE_PATTERN_SEEDS = False          # SPEED/PURE GP: skip startup allclose pattern probes unless explicitly enabled
 
     # Tree Constraints
     MAX_FORMULA_LENGTH = 48            # CONVERGENCE FIX: 16 was too short for competitive formulas (seed is 128 tokens, random needs ≥30)
@@ -194,6 +195,7 @@ class GpuGlobals:
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
     DEDUPLICATION_INTERVAL = 100   # SPEED: menos overhead de escaneo (era 50)
+    REPAIR_INVALID_INTERVAL = 5    # SPEED: strict eval penalizes invalids; repair periodically to refresh diversity
     
     # --- SOTA P0: Headless Chicken Crossover ---
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
@@ -241,7 +243,8 @@ class GpuGlobals:
     USE_LIBRARY_LEARNING = True           # Enable library learning
     LIBRARY_MAX_BLOCK_LEN = 8             # Max token length of stored subtrees
     LIBRARY_TOP_K_FRACTION = 0.05        # Top-% of pop to scan for subtrees
-    LIBRARY_UPDATE_INTERVAL = 10          # Update library every N generations
+    LIBRARY_TOP_K_MAX = 8192             # SPEED: cap library scan; top 50k was costly on 1M populations
+    LIBRARY_UPDATE_INTERVAL = 20          # SPEED: update library less often; keeps blocks useful without stalling 1M-pop runs
     LIBRARY_INJECT_FRACTION = 0.05       # Fraction of mutation bank to fill with library blocks
     LIBRARY_CAPACITY = 512               # Number of slots in the library hash table
 
@@ -293,9 +296,9 @@ class GpuGlobals:
     # ============================================================
     # Particle Swarm Optimization (PSO)
     USE_NANO_PSO = True
-    PSO_INTERVAL = 3               # SPEED: cada 3 gens libera más GPU al GA (era 2)
+    PSO_INTERVAL = 4               # SPEED: cada 4 gens libera más GPU al GA; benchmark-validated vs 3/5
     PSO_PARTICLES = 30
-    PSO_STEPS_NORMAL = 50          # CONVERGENCE FIX: More steps for better constant convergence (was 40)
+    PSO_STEPS_NORMAL = 40          # SPEED: fewer constant-polish steps; benchmark-validated with PSO_INTERVAL=4
     PSO_STEPS_STAGNATION = 80      # FIX: más pasos para escapar mínimo local (was 40→60→80)
     PSO_K_NORMAL = 500             # CONVERGENCE FIX: More individuals optimized in normal mode (was 200)
     PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
@@ -360,9 +363,10 @@ class GpuGlobals:
     #                  9. REPORTING & EXIT
     # ============================================================
     PROGRESS_REPORT_INTERVAL = 100
+    BEST_SYNC_INTERVAL = 10        # SPEED: sync GPU best tracker less often; progress still reports every interval
     # Console table forces preds.detach().cpu().numpy() on every new best.
     # Disable to avoid frequent GPU->CPU synchronization and CPU spikes.
-    CONSOLE_SHOW_PREDICTION_TABLE = True
+    CONSOLE_SHOW_PREDICTION_TABLE = False
     
     # Early Exit
     EXACT_SOLUTION_THRESHOLD = 1e-6

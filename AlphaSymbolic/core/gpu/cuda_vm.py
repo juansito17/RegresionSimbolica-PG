@@ -2,19 +2,17 @@
 import os
 import sys
 import torch
+from .cuda_loader import load_rpn_cuda_native
 
 _CUDA_DIR = os.path.join(os.path.dirname(__file__), 'cuda')
 if _CUDA_DIR not in sys.path:
-    sys.path.append(_CUDA_DIR)
+    sys.path.insert(0, _CUDA_DIR)
 
 try:
-    from . import rpn_cuda_native as rpn_cuda
+    rpn_cuda = load_rpn_cuda_native()
 except ImportError:
-    try:
-        import rpn_cuda_native as rpn_cuda
-    except ImportError:
-        rpn_cuda = None
-        print("[CUDA VM] Warning: 'rpn_cuda_native' extension not found. Please compile it.")
+    rpn_cuda = None
+    print("[CUDA VM] Warning: 'rpn_cuda_native' extension not found. Please compile it.")
 
 class CudaRPNVM:
     def __init__(self, grammar, device):

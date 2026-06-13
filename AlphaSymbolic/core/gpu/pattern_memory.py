@@ -8,15 +8,11 @@ OPTIMIZED: Uses CUDA structural hash kernel for consistent, fast hashing.
 """
 import torch
 from typing import Tuple
+from .cuda_loader import load_rpn_cuda_native
 
 # Try to import CUDA hash kernel
 try:
-    from sys import path as sys_path
-    from os import path as os_path
-    cuda_path = os_path.join(os_path.dirname(__file__), 'cuda')
-    if cuda_path not in sys_path: sys_path.append(cuda_path)
-    
-    import rpn_cuda_native
+    rpn_cuda_native = load_rpn_cuda_native()
     CUDA_HASH_AVAILABLE = hasattr(rpn_cuda_native, 'compute_population_hashes')
 except ImportError:
     CUDA_HASH_AVAILABLE = False

@@ -433,6 +433,7 @@ __global__ void find_subtree_ranges_kernel(
     const unsigned char* __restrict__ population, // [B, L] (uint8)
     const int* __restrict__ token_arities,  // [VocabSize]
     int64_t* __restrict__ out_starts,       // [B, L]
+    int64_t* __restrict__ out_lengths,      // [B] or nullptr
     int B, int L, int vocab_size, int PAD_ID
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -450,7 +451,16 @@ __global__ void find_subtree_ranges_kernel(
     // Default invalid
     my_starts[tid] = -1;
     
-    if (token == PAD_ID) return;
+    if (token == PAD_ID) {
+        if (out_lengths != nullptr && (tid == 0 || my_pop[tid - 1] != PAD_ID)) {
+            out_lengths[b] = tid;
+        }
+        return;
+    }
+
+    if (out_lengths != nullptr && tid == L - 1) {
+        out_lengths[b] = L;
+    }
     
     // Get arity
     int arity = 0;
@@ -494,11 +504,13 @@ void launch_find_subtree_ranges(
     const torch::Tensor& population,
     const torch::Tensor& token_arities,
     torch::Tensor& out_starts,
-    int PAD_ID
+    int PAD_ID,
+    torch::Tensor out_lengths = torch::Tensor()
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(token_arities);
     CHECK_INPUT(out_starts);
+    if (out_lengths.defined() && out_lengths.numel() > 0) CHECK_INPUT(out_lengths);
     
     int B = population.size(0);
     int L = population.size(1);
@@ -506,16 +518,76 @@ void launch_find_subtree_ranges(
     
     int threads = 256;
     int blocks = (B * L + threads - 1) / threads;
+    int64_t* out_lengths_ptr = (out_lengths.defined() && out_lengths.numel() > 0) ? out_lengths.data_ptr<int64_t>() : nullptr;
     
     find_subtree_ranges_kernel<<<blocks, threads>>>(
         population.data_ptr<unsigned char>(),
         token_arities.data_ptr<int32_t>(),
         out_starts.data_ptr<int64_t>(),
+        out_lengths_ptr,
         B, L, vocab_size, PAD_ID
     );
     
     cudaError_t err = cudaGetLastError();
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in find_subtree_ranges: ", cudaGetErrorString(err));
+}
+
+__global__ void select_subtree_points_kernel(
+    const float* __restrict__ rand_vals,      // [N]
+    const int64_t* __restrict__ lengths,      // [N]
+    const int64_t* __restrict__ starts,       // [N, L]
+    int64_t* __restrict__ out_start,          // [N]
+    int64_t* __restrict__ out_end,            // [N]
+    int N, int L
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+
+    int64_t len = lengths[n];
+    if (len < 1) len = 1;
+    if (len > L) len = L;
+
+    float r = rand_vals[n];
+    int64_t e = (int64_t)(r * (float)len);
+    if (e < 0) e = 0;
+    if (e >= L) e = L - 1;
+    if (e >= len) e = len - 1;
+
+    int64_t s = starts[n * L + e];
+    if (s < 0) s = e;
+    out_start[n] = s;
+    out_end[n] = e;
+}
+
+void launch_select_subtree_points(
+    const torch::Tensor& rand_vals,
+    const torch::Tensor& lengths,
+    const torch::Tensor& starts,
+    torch::Tensor& out_start,
+    torch::Tensor& out_end
+) {
+    CHECK_INPUT(rand_vals);
+    CHECK_INPUT(lengths);
+    CHECK_INPUT(starts);
+    CHECK_INPUT(out_start);
+    CHECK_INPUT(out_end);
+
+    int N = rand_vals.size(0);
+    int L = starts.size(1);
+    int threads = 256;
+    int blocks = (N + threads - 1) / threads;
+
+    select_subtree_points_kernel<<<blocks, threads>>>(
+        rand_vals.data_ptr<float>(),
+        lengths.data_ptr<int64_t>(),
+        starts.data_ptr<int64_t>(),
+        out_start.data_ptr<int64_t>(),
+        out_end.data_ptr<int64_t>(),
+        N, L
+    );
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in select_subtree_points: ", cudaGetErrorString(err));
 }
 
 __global__ void mutation_kernel(
@@ -680,6 +752,7 @@ __global__ void crossover_splicing_kernel(
     const int64_t* __restrict__ ends1,   // [N]
     const int64_t* __restrict__ starts2, // [N]
     const int64_t* __restrict__ ends2,   // [N]
+    const bool* __restrict__ cx_mask,     // [N] or nullptr
     unsigned char* __restrict__ child1,        // [N, L] (uint8)
     unsigned char* __restrict__ child2,        // [N, L] (uint8)
     int N_pairs, int L, int PAD_ID
@@ -690,6 +763,12 @@ __global__ void crossover_splicing_kernel(
     
     int n = idx / L; // Pair index
     int t = idx % L; // Token index in child
+
+    if (cx_mask != nullptr && !cx_mask[n]) {
+        child1[n * L + t] = parent1[n * L + t];
+        child2[n * L + t] = parent2[n * L + t];
+        return;
+    }
     
     // --- Child 1 Construction ---
     // Child 1 = P1_Pre + P2_Sub + P1_Post
@@ -758,12 +837,21 @@ __global__ void crossover_constants_kernel(
     const int64_t* __restrict__ ends1,        // [N]
     const int64_t* __restrict__ starts2,      // [N]
     const int64_t* __restrict__ ends2,        // [N]
+    const bool* __restrict__ cx_mask,         // [N]
     float* __restrict__ child1_consts,        // [N, K]
     float* __restrict__ child2_consts,        // [N, K]
     int N_pairs, int L, int K, int id_C
 ) {
     int n = blockIdx.x * blockDim.x + threadIdx.x;
     if (n >= N_pairs) return;
+
+    if (cx_mask != nullptr && !cx_mask[n]) {
+        for (int j = 0; j < K; ++j) {
+            child1_consts[n * K + j] = consts1[n * K + j];
+            child2_consts[n * K + j] = consts2[n * K + j];
+        }
+        return;
+    }
 
     int64_t s1 = starts1[n];
     int64_t e1 = ends1[n];
@@ -850,6 +938,40 @@ __global__ void crossover_constants_kernel(
     }
 }
 
+__global__ void sbx_constants_kernel(
+    const float* __restrict__ consts1_orig,
+    const float* __restrict__ consts2_orig,
+    const float* __restrict__ u_sbx,
+    const float* __restrict__ mask_rand,
+    float* __restrict__ consts1_out,
+    float* __restrict__ consts2_out,
+    int total,
+    float eta
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+
+    float c1 = consts1_orig[idx];
+    float c2 = consts2_orig[idx];
+    float u = u_sbx[idx];
+    float inv = 1.0f / (eta + 1.0f);
+    float beta;
+    if (u <= 0.5f) {
+        beta = powf(2.0f * u, inv);
+    } else {
+        float denom = fminf(fmaxf(1.0f - u, 1e-7f), 1.0f);
+        beta = powf(1.0f / (2.0f * denom), inv);
+    }
+
+    if (mask_rand[idx] < 0.5f) {
+        consts1_out[idx] = 0.5f * ((1.0f + beta) * c1 + (1.0f - beta) * c2);
+        consts2_out[idx] = 0.5f * ((1.0f - beta) * c1 + (1.0f + beta) * c2);
+    } else {
+        consts1_out[idx] = c1;
+        consts2_out[idx] = c2;
+    }
+}
+
 void launch_crossover_splicing(
     const torch::Tensor& parent1,
     const torch::Tensor& parent2,
@@ -859,10 +981,12 @@ void launch_crossover_splicing(
     const torch::Tensor& ends2,
     torch::Tensor& child1,
     torch::Tensor& child2,
-    int PAD_ID
+    int PAD_ID,
+    const torch::Tensor& cx_mask = torch::Tensor()
 ) {
     int N = parent1.size(0);
     int L = parent1.size(1);
+    const bool* cx_mask_ptr = (cx_mask.defined() && cx_mask.numel() > 0) ? cx_mask.data_ptr<bool>() : nullptr;
     
     int threads = 256;
     int blocks = (N * L + threads - 1) / threads;
@@ -874,6 +998,7 @@ void launch_crossover_splicing(
         ends1.data_ptr<int64_t>(),
         starts2.data_ptr<int64_t>(),
         ends2.data_ptr<int64_t>(),
+        cx_mask_ptr,
         child1.data_ptr<unsigned char>(),
         child2.data_ptr<unsigned char>(),
         N, L, PAD_ID
@@ -969,6 +1094,85 @@ void launch_hoist_mutation(
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in hoist_mutation: ", cudaGetErrorString(err));
 }
 
+// --- Constant Perturbation: in-place local search for numeric constants ---
+
+__device__ __forceinline__ uint32_t perturb_hash_u32(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+__device__ __forceinline__ float perturb_uniform01(uint32_t x) {
+    return ((perturb_hash_u32(x) >> 8) + 1.0f) * (1.0f / 16777217.0f);
+}
+
+template <typename scalar_t>
+__global__ void constant_perturbation_kernel(
+    scalar_t* __restrict__ constants,
+    int B,
+    int K,
+    float rate,
+    float sigma,
+    float c_min,
+    float c_max,
+    uint32_t seed
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = B * K;
+    if (idx >= total) return;
+
+    int row = idx / K;
+    int col = idx - row * K;
+    uint32_t row_key = seed ^ ((uint32_t)(row + 1) * 0x9e3779b9u);
+    if (perturb_uniform01(row_key) >= rate) return;
+
+    uint32_t nkey1 = row_key ^ ((uint32_t)(col + 1) * 0x85ebca6bu);
+    uint32_t nkey2 = row_key ^ ((uint32_t)(col + 1) * 0xc2b2ae35u);
+    float u1 = fmaxf(perturb_uniform01(nkey1), 1e-7f);
+    float u2 = perturb_uniform01(nkey2);
+    float z = sqrtf(-2.0f * logf(u1)) * cosf(6.283185307179586f * u2);
+
+    float value = (float)constants[idx];
+    float scale = fabsf(value) * sigma + 1e-4f;
+    float next = value + z * scale;
+    next = fminf(fmaxf(next, c_min), c_max);
+    constants[idx] = (scalar_t)next;
+}
+
+void launch_constant_perturbation(
+    torch::Tensor& constants,
+    float rate,
+    float sigma,
+    float c_min,
+    float c_max,
+    uint32_t seed
+) {
+    CHECK_INPUT(constants);
+    if (constants.numel() == 0 || rate <= 0.0f || sigma <= 0.0f) return;
+
+    int B = constants.size(0);
+    int K = constants.size(1);
+    int total = B * K;
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
+
+    AT_DISPATCH_FLOATING_TYPES(constants.scalar_type(), "constant_perturbation_cuda", [&] {
+        constant_perturbation_kernel<scalar_t><<<blocks, threads>>>(
+            constants.data_ptr<scalar_t>(),
+            B, K,
+            rate, sigma,
+            c_min, c_max,
+            seed
+        );
+    });
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in constant_perturbation: ", cudaGetErrorString(err));
+}
+
 // --- Phase 3: Tournament Selection ---
 
 __global__ void tournament_selection_kernel(
@@ -1039,6 +1243,73 @@ __global__ void tournament_selection_kernel(
     selected_idx[idx] = best_idx;
 }
 
+__global__ void tournament_selection_offsets_kernel(
+    const float* __restrict__ fitness,      // [PopSize]
+    const float* __restrict__ errors,       // [PopSize, N_data] or nullptr
+    const int* __restrict__ rand_offsets,   // [PopSize, TourSize], local island offsets or global indices
+    const int* __restrict__ rand_cases,     // [PopSize] or nullptr
+    int64_t* __restrict__ selected_idx,     // [PopSize]
+    const float* __restrict__ lengths,      // [PopSize] or nullptr
+    const float* __restrict__ mad_eps,      // [N_data] or nullptr
+    int pop_size, int tour_size, int n_data,
+    int island_size, int n_islands
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= pop_size) return;
+
+    int base = 0;
+    int span = pop_size;
+    if (n_islands > 1) {
+        span = max(1, island_size);
+        base = (idx / span) * span;
+        span = min(span, pop_size - base);
+        span = max(1, span);
+    }
+
+    const int* my_offsets = &rand_offsets[idx * tour_size];
+    int case_idx = (rand_cases != nullptr) ? rand_cases[idx] : -1;
+
+    int first_offset = my_offsets[0];
+    int64_t best_idx = (int64_t)(base + (first_offset % span));
+    if (best_idx < 0) best_idx = 0;
+    if (best_idx >= pop_size) best_idx = pop_size - 1;
+
+    float best_val = (case_idx >= 0 && errors != nullptr)
+        ? errors[best_idx * n_data + case_idx]
+        : fitness[best_idx];
+    float best_len = (lengths != nullptr) ? lengths[best_idx] : 1000000.0f;
+
+    for (int k = 1; k < tour_size; ++k) {
+        int offset = my_offsets[k];
+        int64_t candidate = (int64_t)(base + (offset % span));
+        if (candidate < 0) candidate = 0;
+        if (candidate >= pop_size) candidate = pop_size - 1;
+
+        float val = (case_idx >= 0 && errors != nullptr)
+            ? errors[candidate * n_data + case_idx]
+            : fitness[candidate];
+        float len = (lengths != nullptr) ? lengths[candidate] : 1000000.0f;
+
+        bool improve = false;
+        if (val < best_val) {
+            improve = true;
+        } else if (lengths != nullptr) {
+            float epsilon = (case_idx >= 0 && mad_eps != nullptr) ? mad_eps[case_idx] : ((case_idx >= 0) ? 1e-3f : 1e-9f);
+            if (fabsf(val - best_val) < epsilon && len < best_len) {
+                improve = true;
+            }
+        }
+
+        if (improve) {
+            best_val = val;
+            best_idx = candidate;
+            best_len = len;
+        }
+    }
+
+    selected_idx[idx] = best_idx;
+}
+
 void launch_tournament_selection(
     const torch::Tensor& fitness,
     const torch::Tensor& errors,
@@ -1084,6 +1355,51 @@ void launch_tournament_selection(
      
     cudaError_t err = cudaGetLastError();
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in tournament_selection: ", cudaGetErrorString(err));
+}
+
+void launch_tournament_selection_offsets(
+    const torch::Tensor& fitness,
+    const torch::Tensor& errors,
+    const torch::Tensor& rand_offsets,
+    const torch::Tensor& rand_cases,
+    torch::Tensor& selected_idx,
+    const torch::Tensor& lengths,
+    const torch::Tensor& mad_eps,
+    int island_size,
+    int n_islands
+) {
+    CHECK_INPUT(fitness);
+    CHECK_INPUT(rand_offsets);
+    CHECK_INPUT(selected_idx);
+    if (errors.numel() > 0) CHECK_INPUT(errors);
+    if (rand_cases.numel() > 0) CHECK_INPUT(rand_cases);
+
+    int B = fitness.size(0);
+    int K = rand_offsets.size(1);
+    int n_data = (errors.numel() > 0) ? errors.size(1) : 0;
+
+    int threads = 256;
+    int blocks = (B + threads - 1) / threads;
+
+    const float* errors_ptr = (errors.numel() > 0) ? errors.data_ptr<float>() : nullptr;
+    const int* cases_ptr = (rand_cases.numel() > 0) ? rand_cases.data_ptr<int>() : nullptr;
+    const float* lengths_ptr = (lengths.numel() > 0) ? lengths.data_ptr<float>() : nullptr;
+    const float* mad_eps_ptr = (mad_eps.numel() > 0) ? mad_eps.data_ptr<float>() : nullptr;
+
+    tournament_selection_offsets_kernel<<<blocks, threads>>>(
+        fitness.data_ptr<float>(),
+        errors_ptr,
+        rand_offsets.data_ptr<int>(),
+        cases_ptr,
+        selected_idx.data_ptr<int64_t>(),
+        lengths_ptr,
+        mad_eps_ptr,
+        B, K, n_data,
+        island_size, n_islands
+    );
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in tournament_selection_offsets: ", cudaGetErrorString(err));
 }
 
 // --- Phase 4: C++ Orchestrator (evolve_generation) ---
@@ -1167,7 +1483,11 @@ std::vector<torch::Tensor> evolve_generation(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    int n_islands
+    int n_islands,
+    torch::Tensor cached_p1_src,
+    torch::Tensor cached_p2_src,
+    torch::Tensor cached_copy_src,
+    torch::Tensor cached_island_base
 ) {
     // Full Orchestrator: Selection + Crossover + Mutation + PSO
     
@@ -1188,20 +1508,16 @@ std::vector<torch::Tensor> evolve_generation(
     // ranges = [0, 0, 0...], [100, 100, 100...]
     // rand = ranges + randint(0, island_size)
     
-    torch::Tensor rand_idx;
+    torch::Tensor rand_offsets;
+    int selection_island_size = B;
     if (n_islands > 1) {
         int island_size = B / n_islands;
         if (island_size < 1) island_size = 1; // Safety
-        
-        auto arange = torch::arange(B, long_opt);
-        // Fixed: Use explicit floor division to stay in integer domain
-        auto island_base = torch::div(arange, island_size, "floor") * island_size; 
-        
-        auto rand_offsets = torch::randint(0, island_size, {B, tournament_size}, long_opt);
-        rand_idx = (island_base.unsqueeze(1) + rand_offsets).to(torch::kInt64).clamp(0, B-1).contiguous();
+        selection_island_size = island_size;
+        rand_offsets = torch::randint(0, island_size, {B, tournament_size}, int_opt);
     } else {
         // Panmictic (Global)
-        rand_idx = torch::randint(0, B, {B, tournament_size}, long_opt);
+        rand_offsets = torch::randint(0, B, {B, tournament_size}, int_opt);
     }
     
     auto winner_idx = torch::empty({B}, long_opt);
@@ -1221,93 +1537,88 @@ std::vector<torch::Tensor> evolve_generation(
     
     auto lengths_f32 = (lengths.numel() > 0 && lengths.scalar_type() != torch::kFloat32) ? lengths.to(torch::kFloat32) : lengths;
     auto mad_eps_f32 = (mad_eps.defined() && mad_eps.numel() > 0 && mad_eps.scalar_type() != torch::kFloat32) ? mad_eps.to(torch::kFloat32) : mad_eps;
-    launch_tournament_selection(fit_f32, err_f32, rand_idx, rand_cases, winner_idx, lengths_f32, mad_eps_f32);
+    launch_tournament_selection_offsets(
+        fit_f32, err_f32, rand_offsets, rand_cases, winner_idx, lengths_f32, mad_eps_f32,
+        selection_island_size, n_islands
+    );
     
     // --- Elitism: Preserve the best individual at index 0 ---
     auto best_idx = torch::argmin(fit_f32);
     winner_idx.index_put_({0}, best_idx);
     
 
-    
-    auto parents = population.index_select(0, winner_idx);
-    auto parent_consts = constants.index_select(0, winner_idx);
-    
     // 2. Crossover (Proper Subtree Crossover with SAFETY CHECKS)
     // BUG-ELT-1 Fix: Skip the elite (pos 0) from crossover to prevent structural contamination.
     // The elite will be preserved in next_pop[0].
     // To ensure strict island isolation, we group parent index pairs strictly within their islands.
     int island_size = B / n_islands;
-    std::vector<int64_t> p1_src;
-    std::vector<int64_t> p2_src;
-    std::vector<int64_t> c1_dest;
-    std::vector<int64_t> c2_dest;
-    
-    std::vector<int64_t> copy_src;
-    std::vector<int64_t> copy_dest;
-    
-    // Elite of Island 0 is copied directly to slot 0
-    copy_src.push_back(0);
-    copy_dest.push_back(0);
-    
-    for (int k = 0; k < n_islands; ++k) {
-        int start = k * island_size;
-        int end = (k + 1) * island_size;
-        
-        int avail_start = (k == 0) ? start + 1 : start;
-        int avail_len = end - avail_start;
-        int p_k = avail_len / 2;
-        
-        for (int i = 0; i < p_k; ++i) {
-            int p1_idx = avail_start + 2 * i;
-            int p2_idx = avail_start + 2 * i + 1;
+    torch::Tensor p1_src_t, p2_src_t, copy_src_t;
+    if (cached_p1_src.defined() && cached_p2_src.defined() && cached_copy_src.defined() &&
+        cached_p1_src.numel() == cached_p2_src.numel() && cached_copy_src.numel() > 0) {
+        p1_src_t = cached_p1_src;
+        p2_src_t = cached_p2_src;
+        copy_src_t = cached_copy_src;
+    } else {
+        std::vector<torch::Tensor> p1_parts;
+        std::vector<torch::Tensor> p2_parts;
+        std::vector<torch::Tensor> copy_parts;
+
+        copy_parts.push_back(torch::zeros({1}, long_opt));
+
+        for (int k = 0; k < n_islands; ++k) {
+            int start = k * island_size;
+            int end = (k + 1) * island_size;
             
-            p1_src.push_back(p1_idx);
-            p2_src.push_back(p2_idx);
-            
-            c1_dest.push_back(p1_idx);
-            c2_dest.push_back(p2_idx);
+            int avail_start = (k == 0) ? start + 1 : start;
+            int avail_len = end - avail_start;
+            int p_k = avail_len / 2;
+
+            if (p_k > 0) {
+                auto p1_part = torch::arange(avail_start, avail_start + 2 * p_k, 2, long_opt);
+                p1_parts.push_back(p1_part);
+                p2_parts.push_back(p1_part + 1);
+            }
+
+            if (avail_len % 2 != 0) {
+                copy_parts.push_back(torch::full({1}, end - 1, long_opt));
+            }
         }
-        
-        if (avail_len % 2 != 0) {
-            int leftover_idx = end - 1;
-            copy_src.push_back(leftover_idx);
-            copy_dest.push_back(leftover_idx);
-        }
+
+        p1_src_t = p1_parts.empty() ? torch::empty({0}, long_opt) : torch::cat(p1_parts).contiguous();
+        p2_src_t = p2_parts.empty() ? torch::empty({0}, long_opt) : torch::cat(p2_parts).contiguous();
+        copy_src_t = torch::cat(copy_parts).contiguous();
     }
-    
-    auto p1_src_t = torch::tensor(p1_src, long_opt);
-    auto p2_src_t = torch::tensor(p2_src, long_opt);
-    auto c1_dest_t = torch::tensor(c1_dest, long_opt);
-    auto c2_dest_t = torch::tensor(c2_dest, long_opt);
-    
-    auto copy_src_t = torch::tensor(copy_src, long_opt);
-    auto copy_dest_t = torch::tensor(copy_dest, long_opt);
+    auto c1_dest_t = p1_src_t;
+    auto c2_dest_t = p2_src_t;
+    auto copy_dest_t = copy_src_t;
     
     int n_pairs = p1_src_t.size(0);
     
-
+    auto p1_winner_idx = winner_idx.index_select(0, p1_src_t);
+    auto p2_winner_idx = winner_idx.index_select(0, p2_src_t);
+    auto copy_winner_idx = winner_idx.index_select(0, copy_src_t);
     
-    auto parents1 = parents.index_select(0, p1_src_t).contiguous();
-    auto parents2 = parents.index_select(0, p2_src_t).contiguous();
+    auto parents1 = population.index_select(0, p1_winner_idx).contiguous();
+    auto parents2 = population.index_select(0, p2_winner_idx).contiguous();
     
     // Find Subtree Starts using kernel [N, L]
-    auto all_starts1 = torch::zeros({n_pairs, L}, long_opt);
-    auto all_starts2 = torch::zeros({n_pairs, L}, long_opt);
+    auto all_starts1 = torch::empty({n_pairs, L}, long_opt);
+    auto all_starts2 = torch::empty({n_pairs, L}, long_opt);
+    auto lengths1 = torch::empty({n_pairs}, long_opt);
+    auto lengths2 = torch::empty({n_pairs}, long_opt);
     
-    launch_find_subtree_ranges(parents1, token_arities, all_starts1, PAD_ID);
-    launch_find_subtree_ranges(parents2, token_arities, all_starts2, PAD_ID);
+    launch_find_subtree_ranges(parents1, token_arities, all_starts1, PAD_ID, lengths1);
+    launch_find_subtree_ranges(parents2, token_arities, all_starts2, PAD_ID, lengths2);
     
-    // Actual lengths (used for safety check)
-    auto lengths1 = (parents1 != PAD_ID).sum(1).to(torch::kLong);
-    auto lengths2 = (parents2 != PAD_ID).sum(1).to(torch::kLong);
-    
-    // Safe rand index: avoid choosing 0-length if possible
-    auto e1 = (torch::rand({n_pairs}, float_opt) * lengths1.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
-    auto e2 = (torch::rand({n_pairs}, float_opt) * lengths2.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
-    
-    // Get corresponding starts
-    auto s1 = all_starts1.gather(1, e1.unsqueeze(1)).squeeze(1);
-    auto s2 = all_starts2.gather(1, e2.unsqueeze(1)).squeeze(1);
+    // Pick safe subtree endpoints and matching starts in one compact kernel.
+    auto rand_e1 = torch::rand({n_pairs}, float_opt);
+    auto rand_e2 = torch::rand({n_pairs}, float_opt);
+    auto s1 = torch::empty({n_pairs}, long_opt);
+    auto e1 = torch::empty({n_pairs}, long_opt);
+    auto s2 = torch::empty({n_pairs}, long_opt);
+    auto e2 = torch::empty({n_pairs}, long_opt);
+    launch_select_subtree_points(rand_e1, lengths1, all_starts1, s1, e1);
+    launch_select_subtree_points(rand_e2, lengths2, all_starts2, s2, e2);
     
     // --- Length Safety Check ---
     auto len_pre1 = s1;
@@ -1323,55 +1634,49 @@ std::vector<torch::Tensor> evolve_generation(
     // Mask of valid crossovers (outcome <= L)
     auto safe_mask = (new_len1 <= L) & (new_len2 <= L);
     
-    // Create children
-    auto child1 = torch::full_like(parents1, PAD_ID);
-    auto child2 = torch::full_like(parents2, PAD_ID);
-    
-    // Splice! (Only efficient to do all, then revert unsafe ones)
-    launch_crossover_splicing(parents1, parents2, s1, e1, s2, e2, child1, child2, PAD_ID);
+    // Create children. The splicing kernel writes every token, copying parents when crossover is disabled.
+    auto child1 = torch::empty_like(parents1);
+    auto child2 = torch::empty_like(parents2);
     
     // Apply crossover rate mask AND Safety Mask
     // If unsafe, we treat it as "crossover failed" -> keep parents
     auto cx_prob = torch::rand({n_pairs, 1}, float_opt);
     auto want_cx = (cx_prob < crossover_rate);
     auto cx_mask = want_cx & safe_mask.unsqueeze(1);
+    auto cx_mask_flat = cx_mask.squeeze(1).contiguous();
     
-    auto final_c1 = torch::where(cx_mask, child1, parents1);
-    auto final_c2 = torch::where(cx_mask, child2, parents2);
+    launch_crossover_splicing(parents1, parents2, s1, e1, s2, e2, child1, child2, PAD_ID, cx_mask_flat);
     
-    // --- SOTA P0: Fallback Headless Chicken Crossover ---
-    if (mutation_bank.numel() > 0) {
-        auto fallback_mask = want_cx & (~safe_mask.unsqueeze(1));
-        auto bank_size = mutation_bank.size(0);
-        
-        auto rand_bank_idx1 = torch::randint(0, bank_size, {n_pairs}, long_opt);
-        auto rand_bank1 = mutation_bank.index_select(0, rand_bank_idx1);
-        
-        auto rand_bank_idx2 = torch::randint(0, bank_size, {n_pairs}, long_opt);
-        auto rand_bank2 = mutation_bank.index_select(0, rand_bank_idx2);
-        
-        final_c1 = torch::where(fallback_mask, rand_bank1, final_c1);
-        final_c2 = torch::where(fallback_mask, rand_bank2, final_c2);
-    }
+    auto final_c1 = child1;
+    auto final_c2 = child2;
     
-    auto offspring = torch::empty_like(parents);
+    auto offspring = torch::empty_like(population);
     offspring.index_copy_(0, c1_dest_t, final_c1);
     offspring.index_copy_(0, c2_dest_t, final_c2);
-    offspring.index_copy_(0, copy_dest_t, parents.index_select(0, copy_src_t));
+    offspring.index_copy_(0, copy_dest_t, population.index_select(0, copy_winner_idx));
     
-    auto consts1_orig = parent_consts.index_select(0, p1_src_t).contiguous();
-    auto consts2_orig = parent_consts.index_select(0, p2_src_t).contiguous();
+    auto consts1_orig = constants.index_select(0, p1_winner_idx).contiguous();
+    auto consts2_orig = constants.index_select(0, p2_winner_idx).contiguous();
     
     // --- SOTA I1: Simulated Binary Crossover (SBX) for Constants ---
     float sbx_eta = 2.0;
     auto u_sbx = torch::rand({n_pairs, K}, float_opt);
-    auto beta_sbx = torch::where(u_sbx <= 0.5, 
-        torch::pow(2.0 * u_sbx, 1.0 / (sbx_eta + 1.0)), 
-        torch::pow(1.0 / (2.0 * torch::clamp(1.0 - u_sbx, 1e-7, 1.0)), 1.0 / (sbx_eta + 1.0)));
-    
-    auto mask_sbx = (torch::rand({n_pairs, K}, float_opt) < 0.5); // 50% probability to blend each constant
-    auto consts1 = torch::where(mask_sbx, 0.5 * ((1.0 + beta_sbx) * consts1_orig + (1.0 - beta_sbx) * consts2_orig), consts1_orig).contiguous();
-    auto consts2 = torch::where(mask_sbx, 0.5 * ((1.0 - beta_sbx) * consts1_orig + (1.0 + beta_sbx) * consts2_orig), consts2_orig).contiguous();
+    auto mask_sbx_rand = torch::rand({n_pairs, K}, float_opt); // 50% probability to blend each constant
+    auto consts1 = torch::empty_like(consts1_orig);
+    auto consts2 = torch::empty_like(consts2_orig);
+    int sbx_total = n_pairs * K;
+    int threads_sbx = 256;
+    int blocks_sbx = (sbx_total + threads_sbx - 1) / threads_sbx;
+    sbx_constants_kernel<<<blocks_sbx, threads_sbx>>>(
+        consts1_orig.data_ptr<float>(),
+        consts2_orig.data_ptr<float>(),
+        u_sbx.data_ptr<float>(),
+        mask_sbx_rand.data_ptr<float>(),
+        consts1.data_ptr<float>(),
+        consts2.data_ptr<float>(),
+        sbx_total,
+        sbx_eta
+    );
     
     auto child1_consts = torch::empty_like(consts1);
     auto child2_consts = torch::empty_like(consts2);
@@ -1387,32 +1692,19 @@ std::vector<torch::Tensor> evolve_generation(
         e1.data_ptr<int64_t>(),
         s2.data_ptr<int64_t>(),
         e2.data_ptr<int64_t>(),
+        cx_mask.data_ptr<bool>(),
         child1_consts.data_ptr<float>(),
         child2_consts.data_ptr<float>(),
         n_pairs, L, K, id_C
     );
     
-    // Fallback mask for offspring where crossover failed
-    auto cx_mask_consts = cx_mask.squeeze(1).unsqueeze(1); // shape [n_pairs, 1]
+    auto final_c1_consts = child1_consts;
+    auto final_c2_consts = child2_consts;
     
-    auto final_c1_consts = torch::where(cx_mask_consts, child1_consts, consts1);
-    auto final_c2_consts = torch::where(cx_mask_consts, child2_consts, consts2);
-    
-    // If Headless Chicken Crossover happened, substitute with bank
-    if (mutation_bank.numel() > 0) {
-        auto fallback_mask_consts = (want_cx & (~safe_mask.unsqueeze(1))).squeeze(1).unsqueeze(1);
-        
-        auto rand_c1_consts = torch::empty_like(consts1).uniform_(-10.0f, +10.0f);
-        auto rand_c2_consts = torch::empty_like(consts2).uniform_(-10.0f, +10.0f);
-        
-        final_c1_consts = torch::where(fallback_mask_consts, rand_c1_consts, final_c1_consts);
-        final_c2_consts = torch::where(fallback_mask_consts, rand_c2_consts, final_c2_consts);
-    }
-    
-    auto offspring_consts = torch::empty_like(parent_consts);
+    auto offspring_consts = torch::empty_like(constants);
     offspring_consts.index_copy_(0, c1_dest_t, final_c1_consts);
     offspring_consts.index_copy_(0, c2_dest_t, final_c2_consts);
-    offspring_consts.index_copy_(0, copy_dest_t, parent_consts.index_select(0, copy_src_t));
+    offspring_consts.index_copy_(0, copy_dest_t, constants.index_select(0, copy_winner_idx));
     
     // 3. Mutation 
     // Types: Point (Standard), Structural (Bank), Hoist (New)
@@ -1430,13 +1722,14 @@ std::vector<torch::Tensor> evolve_generation(
         hoist_mask = (mut_rand >= 0.8);
     } else {
         point_mask = (mut_rand < 0.8);
-        struct_mask = torch::zeros({B}, torch::TensorOptions().dtype(torch::kBool).device(device));
         hoist_mask = (mut_rand >= 0.8);
     }
 
     // BUG-ELT-1 Fix: Exclude elite (index 0) from all mutations to preserve pure best.
     point_mask.index_put_({0}, false);
-    struct_mask.index_put_({0}, false);
+    if (has_bank) {
+        struct_mask.index_put_({0}, false);
+    }
     hoist_mask.index_put_({0}, false);
     
     // Apply mutation rate to masks? No, we apply rate INSIDE the kernels usually,
@@ -1464,7 +1757,7 @@ std::vector<torch::Tensor> evolve_generation(
     // B. Structural Mutation Path (Grafting from Bank)
     // OPTIMIZED: eliminado .any().item<bool>() y .sum().item<int>() — ambos forzaban sync GPU→CPU.
     // n_struct se obtiene de struct_idx.size(0) tras nonzero() sin sync adicional.
-    {
+    if (has_bank) {
         auto struct_idx = torch::nonzero(struct_mask).squeeze(1);
         int n_struct = (int)struct_idx.size(0);
         if (n_struct > 0) {
@@ -1474,22 +1767,24 @@ std::vector<torch::Tensor> evolve_generation(
         auto bank_indices = torch::randint(0, bank_size, {n_struct}, long_opt);
         auto bank_trees = mutation_bank.index_select(0, bank_indices);
         
-        auto starts_pop = torch::zeros({n_struct, L}, long_opt);
-        auto starts_bank = torch::zeros({n_struct, L}, long_opt);
-        launch_find_subtree_ranges(struct_pop, token_arities, starts_pop, PAD_ID);
-        launch_find_subtree_ranges(bank_trees, token_arities, starts_bank, PAD_ID);
+        auto starts_pop = torch::empty({n_struct, L}, long_opt);
+        auto starts_bank = torch::empty({n_struct, L}, long_opt);
+        auto len_pop = torch::empty({n_struct}, long_opt);
+        auto len_bank = torch::empty({n_struct}, long_opt);
+        launch_find_subtree_ranges(struct_pop, token_arities, starts_pop, PAD_ID, len_pop);
+        launch_find_subtree_ranges(bank_trees, token_arities, starts_bank, PAD_ID, len_bank);
         
-        auto len_pop = (struct_pop != PAD_ID).sum(1).to(torch::kLong);
-        auto len_bank = (bank_trees != PAD_ID).sum(1).to(torch::kLong);
+        auto rand_e_pop = torch::rand({n_struct}, float_opt);
+        auto rand_e_bank = torch::rand({n_struct}, float_opt);
+        auto s_pop = torch::empty({n_struct}, long_opt);
+        auto e_pop = torch::empty({n_struct}, long_opt);
+        auto s_bank = torch::empty({n_struct}, long_opt);
+        auto e_bank = torch::empty({n_struct}, long_opt);
+        launch_select_subtree_points(rand_e_pop, len_pop, starts_pop, s_pop, e_pop);
+        launch_select_subtree_points(rand_e_bank, len_bank, starts_bank, s_bank, e_bank);
         
-        auto e_pop = (torch::rand({n_struct}, float_opt) * len_pop.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
-        auto e_bank = (torch::rand({n_struct}, float_opt) * len_bank.to(torch::kFloat32)).to(torch::kLong).clamp(0, L-1);
-        
-        auto s_pop = starts_pop.gather(1, e_pop.unsqueeze(1)).squeeze(1);
-        auto s_bank = starts_bank.gather(1, e_bank.unsqueeze(1)).squeeze(1);
-        
-        auto child = torch::full_like(struct_pop, PAD_ID);
-        auto dummy_child = torch::full_like(struct_pop, PAD_ID); 
+        auto child = torch::empty_like(struct_pop);
+        auto dummy_child = torch::empty_like(struct_pop);
         
         launch_crossover_splicing(struct_pop, bank_trees, s_pop, e_pop, s_bank, e_bank, child, dummy_child, PAD_ID);
         
@@ -1508,7 +1803,7 @@ std::vector<torch::Tensor> evolve_generation(
         auto hoist_pop = offspring.index_select(0, hoist_idx);
         
         // Find subtree ranges for hoist candidates
-        auto starts_hoist = torch::zeros({hoist_pop.size(0), L}, long_opt);
+        auto starts_hoist = torch::empty({hoist_pop.size(0), L}, long_opt);
         launch_find_subtree_ranges(hoist_pop, token_arities, starts_hoist, PAD_ID);
         
         auto r_floats = torch::rand({hoist_pop.size(0)}, float_opt);
@@ -1522,10 +1817,12 @@ std::vector<torch::Tensor> evolve_generation(
     } // end hoist_mask scope
     
     // 4. NanoPSO (Constant Optimization)
-    auto gbest_pos = offspring_consts.clone();
-    auto gbest_err = torch::full({B}, std::numeric_limits<float>::infinity(), float_opt);
+    auto final_consts_out = offspring_consts;
+    auto final_fit_out = torch::empty({0}, float_opt);
 
     if (pso_steps > 0) {
+        auto gbest_pos = offspring_consts.clone();
+        auto gbest_err = torch::full({B}, std::numeric_limits<float>::infinity(), float_opt);
         auto pop_expanded = offspring.repeat_interleave(pso_particles, 0); // [B*P, L]
         
         int total_particles = B * pso_particles;
@@ -1585,11 +1882,13 @@ std::vector<torch::Tensor> evolve_generation(
             
             launch_pso_update(pos, vel, pbest_pos, gbest_pos, r1, r2, pso_w, pso_c1, pso_c2);
         }
+        final_consts_out = gbest_pos;
+        final_fit_out = gbest_err;
     }
 
     
     // Return: [NewPop, NewConsts, NewFitness]
-    return {offspring, gbest_pos, gbest_err};
+    return {offspring, final_consts_out, final_fit_out};
 }
 
 // ============================================================
@@ -1665,6 +1964,7 @@ __global__ void rpn_eval_fused_kernel(
 
     const scalar_t ERROR_VAL = (scalar_t)1e30;
 
+    if (active) {
     for (int pc = 0; pc < L && pc < FUSED_MAX_L; ++pc) {
         int64_t token = (int64_t)prog[pc];
         if (token == PAD_ID) break;
@@ -1741,32 +2041,46 @@ __global__ void rpn_eval_fused_kernel(
         if (__builtin_expect(error, 0)) break;
         stack[sp++] = res;
     }
+    }
 
     // ── 4. Compute this thread's squared error ──
     // Invalid = any math error, stack broken, NaN/Inf pred
     scalar_t sq_err;
     bool this_invalid;
+    bool metric_overflow;
     if (active) {
         bool valid = (!error) && (sp == 1);
         scalar_t pred = valid ? stack[sp - 1] : ERROR_VAL;
         valid = valid && !isnan(pred) && !isinf(pred);
-        scalar_t diff = valid ? (pred - y_target[d_idx]) : ERROR_VAL;
-        sq_err = valid ? (diff * diff) : ERROR_VAL;
         this_invalid = !valid;
+        if (valid) {
+            scalar_t diff = pred - y_target[d_idx];
+            scalar_t abs_diff = (diff < (scalar_t)0.0) ? -diff : diff;
+            metric_overflow = isnan(diff) || isinf(diff) || abs_diff > (scalar_t)4e18;
+            sq_err = metric_overflow ? (scalar_t)0.0 : (diff * diff);
+            metric_overflow = metric_overflow || isnan(sq_err) || isinf(sq_err);
+            if (metric_overflow) sq_err = (scalar_t)0.0;
+        } else {
+            sq_err = ERROR_VAL;
+            metric_overflow = false;
+        }
     } else {
         sq_err = (scalar_t)0.0;   // Idle threads contribute nothing
         this_invalid = false;
+        metric_overflow = false;
     }
 
     // ── 5. Warp-shuffle reduction: sum sq_err and OR any_invalid ──
     // All 32 threads in the warp participate. Idle threads (d_idx >= D) have sq_err=0.
     unsigned int full_mask = 0xFFFFFFFF;
     uint32_t any_invalid_u = (uint32_t)this_invalid;
+    uint32_t any_metric_overflow_u = (uint32_t)metric_overflow;
 
     // Butterfly reduction (warp level)
     for (int off = 16; off > 0; off >>= 1) {
         sq_err      += __shfl_xor_sync(full_mask, sq_err, off);
         any_invalid_u |= __shfl_xor_sync(full_mask, any_invalid_u, off);
+        any_metric_overflow_u |= __shfl_xor_sync(full_mask, any_metric_overflow_u, off);
     }
 
     // ── 6. Block-level reduction (for multi-warp blocks) ──
@@ -1776,6 +2090,8 @@ __global__ void rpn_eval_fused_kernel(
             scalar_t rmse;
             if (any_invalid_u) {
                 rmse = (scalar_t)1e15;
+            } else if (any_metric_overflow_u) {
+                rmse = sqrt((scalar_t)1e15);
             } else {
                 scalar_t mse = sq_err / (scalar_t)D;
                 rmse = sqrt(mse);
@@ -1787,6 +2103,7 @@ __global__ void rpn_eval_fused_kernel(
         // Multi-warp: Block reduction using shared memory
         __shared__ scalar_t shared_sq_err[32];
         __shared__ uint32_t shared_invalid[32];
+        __shared__ uint32_t shared_metric_overflow[32];
 
         const int warp_id = threadIdx.x / 32;
         const int lane_id = threadIdx.x % 32;
@@ -1794,6 +2111,7 @@ __global__ void rpn_eval_fused_kernel(
         if (lane_id == 0) {
             shared_sq_err[warp_id] = sq_err;
             shared_invalid[warp_id] = any_invalid_u;
+            shared_metric_overflow[warp_id] = any_metric_overflow_u;
         }
         __syncthreads();
 
@@ -1802,16 +2120,20 @@ __global__ void rpn_eval_fused_kernel(
             int num_warps = blockDim.x / 32;
             scalar_t block_sq_err = (lane_id < num_warps) ? shared_sq_err[lane_id] : (scalar_t)0.0;
             uint32_t block_invalid = (lane_id < num_warps) ? shared_invalid[lane_id] : 0;
+            uint32_t block_metric_overflow = (lane_id < num_warps) ? shared_metric_overflow[lane_id] : 0;
 
             for (int off = 16; off > 0; off >>= 1) {
                 block_sq_err  += __shfl_xor_sync(full_mask, block_sq_err, off);
                 block_invalid |= __shfl_xor_sync(full_mask, block_invalid, off);
+                block_metric_overflow |= __shfl_xor_sync(full_mask, block_metric_overflow, off);
             }
 
             if (lane_id == 0) {
                 scalar_t rmse;
                 if (block_invalid) {
                     rmse = (scalar_t)1e15;
+                } else if (block_metric_overflow) {
+                    rmse = sqrt((scalar_t)1e15);
                 } else {
                     scalar_t mse = block_sq_err / (scalar_t)D;
                     rmse = sqrt(mse);
