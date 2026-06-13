@@ -176,12 +176,14 @@ class LibraryLearner:
         # 1. Select only improving candidates
         better_idx = better_mask.nonzero(as_tuple=False).squeeze(1)
         
-        # 2. Sort by fitness (DESCENDING) so the BEST fitness (lowest value) is last.
-        #    When we do scatter/index_put, the last write to a slot wins.
-        #    We want the best candidate to win if multiple map to same slot.
+        # 2. Keep only the best candidate per target slot. This replaces a global
+        #    argsort over all improving windows with a tiny per-slot amin reduce.
         cand_fits = fit_expanded[better_idx]
-        sorted_indices = torch.argsort(cand_fits, descending=True)
-        better_idx = better_idx[sorted_indices]
+        cand_slots = slot_ids[better_idx]
+        best_fit_by_slot = torch.full_like(self.library_fitness, float('inf'))
+        best_fit_by_slot.scatter_reduce_(0, cand_slots, cand_fits.float(), reduce='amin', include_self=True)
+        slot_best = cand_fits.float() <= best_fit_by_slot[cand_slots]
+        better_idx = better_idx[slot_best]
         
         # 3. Gather data for update
         target_slots = slot_ids[better_idx]

@@ -33,6 +33,11 @@ class GPUOperators:
         # Pre-allocated buffers for random generation (Zero-Allocation Optimization)
         self._rand_float_buf = None
         self._rand_int_buf = None
+        self._dedup_hash_table = None
+        self._dedup_duplicate_mask = None
+        self._dedup_original_index = None
+        self._dedup_replacement_positions = None
+        self._dedup_n_replacements = None
         
         # Arity masks
         self._init_arity_masks()
@@ -254,13 +259,14 @@ class GPUOperators:
                     _gen_term_w, _gen_unary_w, _gen_bin_w
                 )
                 
-                # Quick validation
-                valid = self._validate_rpn_batch(population)
-                invalid = ~valid
-                if invalid.any():
-                    x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
-                    population[invalid, 0] = x0_id
-                    population[invalid, 1:] = PAD_ID
+                # Debug guard only: the native generator is validity-preserving in normal runs.
+                if getattr(GpuGlobals, 'VALIDATE_CUDA_RANDOM_POPULATION', False):
+                    valid = self._validate_rpn_batch(population)
+                    invalid = ~valid
+                    if invalid.any():
+                        x0_id = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
+                        population[invalid, 0] = x0_id
+                        population[invalid, 1:] = PAD_ID
                 
                 return population
             except Exception:
@@ -1095,15 +1101,27 @@ class GPUOperators:
                 # 2. Structural dedup on GPU (atomic hash table)
                 # Hash table size: 2^20 = 1M entries
                 HASH_TABLE_SIZE = 1 << 20
-                hash_table = torch.full((HASH_TABLE_SIZE,), -1, dtype=torch.long, device=self.device)
-                duplicate_mask = torch.zeros(B, dtype=torch.int32, device=self.device)
-                original_index = torch.zeros(B, dtype=torch.long, device=self.device)
+                if self._dedup_hash_table is None or self._dedup_hash_table.numel() != HASH_TABLE_SIZE:
+                    self._dedup_hash_table = torch.empty(HASH_TABLE_SIZE, dtype=torch.long, device=self.device)
+                hash_table = self._dedup_hash_table
+                hash_table.fill_(-1)
+
+                if self._dedup_duplicate_mask is None or self._dedup_duplicate_mask.numel() < B:
+                    self._dedup_duplicate_mask = torch.empty(B, dtype=torch.int32, device=self.device)
+                if self._dedup_original_index is None or self._dedup_original_index.numel() < B:
+                    self._dedup_original_index = torch.empty(B, dtype=torch.long, device=self.device)
+                duplicate_mask = self._dedup_duplicate_mask[:B]
+                original_index = self._dedup_original_index[:B]
                 
                 rpn_cuda_native.structural_dedup(hashes, hash_table, duplicate_mask, original_index)
                 
                 # 3. Get replacement positions on GPU
-                replacement_positions = torch.empty(B, dtype=torch.long, device=self.device)
-                n_replacements = torch.zeros(1, dtype=torch.long, device=self.device)
+                if self._dedup_replacement_positions is None or self._dedup_replacement_positions.numel() < B:
+                    self._dedup_replacement_positions = torch.empty(B, dtype=torch.long, device=self.device)
+                if self._dedup_n_replacements is None:
+                    self._dedup_n_replacements = torch.empty(1, dtype=torch.long, device=self.device)
+                replacement_positions = self._dedup_replacement_positions[:B]
+                n_replacements = self._dedup_n_replacements
                 
                 n_dups = rpn_cuda_native.get_replacement_positions(
                     duplicate_mask, replacement_positions, n_replacements

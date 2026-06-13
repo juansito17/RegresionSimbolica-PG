@@ -41,7 +41,7 @@
 
 template <typename scalar_t>
 __device__ __forceinline__ void eval_rpn_with_grad(
-    const int64_t* prog, int L,
+    const unsigned char* prog, int L,
     const scalar_t* x_vars, int num_vars, int d_idx, int D,
     const scalar_t* consts, int K,
     scalar_t& out_pred,
@@ -82,7 +82,7 @@ __device__ __forceinline__ void eval_rpn_with_grad(
     
     // Simple forward pass first
     for (int pc = 0; pc < L && !error; ++pc) {
-        int64_t token = prog[pc];
+        int token = (int)prog[pc];
         if (token == PAD_ID) break;
         
         scalar_t val = (scalar_t)0.0;
@@ -213,7 +213,7 @@ __device__ __forceinline__ void eval_rpn_with_grad(
 
 template <typename scalar_t>
 __global__ void lbfgs_optimize_kernel(
-    const int64_t* __restrict__ population,  // [B, L]
+    const unsigned char* __restrict__ population,  // [B, L]
     scalar_t* __restrict__ constants,        // [B, K] - modified in place
     const scalar_t* __restrict__ x,          // [Vars, D]
     const scalar_t* __restrict__ y_target,   // [D]
@@ -241,7 +241,7 @@ __global__ void lbfgs_optimize_kernel(
     // (Could parallelize gradient computation across threads, but D is small)
     
     // Load formula into shared memory
-    __shared__ int64_t s_prog[LBFGS_MAX_L];
+    __shared__ unsigned char s_prog[LBFGS_MAX_L];
     if (threadIdx.x == 0) {
         for (int i = 0; i < L && i < LBFGS_MAX_L; i++) {
             s_prog[i] = population[b * L + i];
@@ -276,9 +276,6 @@ __global__ void lbfgs_optimize_kernel(
         const scalar_t eps = (scalar_t)1e-5;
         
         // Compute predictions and MSE
-        scalar_t preds_plus[LBFGS_MAX_D];
-        scalar_t preds_minus[LBFGS_MAX_K][LBFGS_MAX_D];
-        
         // Forward pass at current position
         for (int d = 0; d < D; d++) {
             // Evaluate RPN (simplified inline version)
@@ -288,7 +285,7 @@ __global__ void lbfgs_optimize_kernel(
             bool err = false;
             
             for (int pc = 0; pc < L && !err; pc++) {
-                int64_t tok = s_prog[pc];
+                int tok = (int)s_prog[pc];
                 if (tok == PAD_ID) break;
                 
                 scalar_t val;
@@ -349,7 +346,6 @@ __global__ void lbfgs_optimize_kernel(
             
             scalar_t diff = pred - y_target[d];
             mse_sum += diff * diff;
-            preds_plus[d] = pred;
         }
         
         *rmse_out = sqrtf(mse_sum / (scalar_t)D);
@@ -380,7 +376,7 @@ __global__ void lbfgs_optimize_kernel(
                     bool err = false;
                     
                     for (int pc = 0; pc < L && !err; pc++) {
-                        int64_t tok = s_prog[pc];
+                        int tok = (int)s_prog[pc];
                         if (tok == PAD_ID) break;
                         
                         scalar_t val;
@@ -436,7 +432,7 @@ __global__ void lbfgs_optimize_kernel(
                     bool err = false;
                     
                     for (int pc = 0; pc < L && !err; pc++) {
-                        int64_t tok = s_prog[pc];
+                        int tok = (int)s_prog[pc];
                         if (tok == PAD_ID) break;
                         
                         scalar_t val;
@@ -566,7 +562,6 @@ __global__ void lbfgs_optimize_kernel(
         
         // === Strong Wolfe Line Search ===
         scalar_t step = (scalar_t)1.0;
-        scalar_t f_prev = f_curr;
         bool line_search_ok = false;
         
         for (int ls = 0; ls < LBFGS_MAX_LINE_SEARCH; ls++) {
@@ -582,8 +577,6 @@ __global__ void lbfgs_optimize_kernel(
             compute_rmse_and_grad(x_prev, &f_trial, g_prev);
             
             // Armijo condition (sufficient decrease)
-            scalar_t armijo = f_curr + (scalar_t)1e-4 * step * (-(g_norm * g_norm));  // Approximation
-            
             if (f_trial <= f_curr - (scalar_t)1e-4 * step * g_norm * g_norm || f_trial < f_curr) {
                 // Accept step
                 for (int k = 0; k < K; k++) x_curr[k] = x_prev[k];
@@ -674,7 +667,7 @@ void launch_lbfgs_optimize(
     
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "lbfgs_optimize_kernel", ([&] {
         lbfgs_optimize_kernel<scalar_t><<<blocks, threads>>>(
-            population.data_ptr<int64_t>(),
+            population.data_ptr<unsigned char>(),
             constants.data_ptr<scalar_t>(),
             x.data_ptr<scalar_t>(),
             y_target.data_ptr<scalar_t>(),

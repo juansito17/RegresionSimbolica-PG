@@ -229,7 +229,7 @@ class GPUOptimizer:
         vm = self.evaluator.vm
         
         self._rpn_cuda.lbfgs_optimize(
-            population.to(torch.int64),  # Kernel expects int64
+            population.contiguous(),
             constants,
             x_cuda,
             y_target,

@@ -115,6 +115,8 @@ void launch_compute_population_hashes(
 // 2^20 = 1M entries, good for populations up to ~500K
 #define HASH_TABLE_SIZE (1 << 20)
 #define HASH_TABLE_MASK (HASH_TABLE_SIZE - 1)
+#define FS_TABLE_SIZE (1 << 18)
+#define FS_TABLE_MASK (FS_TABLE_SIZE - 1)
 
 __global__ void structural_dedup_kernel(
     const int64_t* __restrict__ hashes,        // [B]
@@ -221,6 +223,137 @@ void launch_structural_dedup(
     
     cudaError_t err = cudaGetLastError();
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in structural_dedup: ", cudaGetErrorString(err));
+}
+
+__device__ __forceinline__ uint64_t fitness_sharing_hash8(
+    const unsigned char* __restrict__ row,
+    int L,
+    int hash_len
+) {
+    const uint64_t primes[8] = {1ULL, 31ULL, 961ULL, 29791ULL, 923521ULL, 28629151ULL, 887503681ULL, 1103515245ULL};
+    uint64_t h = 0ULL;
+    int lim = hash_len < L ? hash_len : L;
+    if (lim > 8) lim = 8;
+    for (int i = 0; i < lim; ++i) {
+        h += (uint64_t)row[i] * primes[i];
+    }
+    // Final avalanche so low-order table slots are less correlated with early tokens.
+    h ^= h >> 16;
+    h *= 0x7feb352dULL;
+    h ^= h >> 15;
+    h *= 0x846ca68bULL;
+    h ^= h >> 16;
+    return h;
+}
+
+__global__ void fitness_sharing_count_kernel(
+    const unsigned char* __restrict__ population,
+    int64_t* __restrict__ keys,
+    int32_t* __restrict__ counts,
+    int B,
+    int L,
+    int n_islands,
+    int island_size,
+    int hash_len
+) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    int island = b / island_size;
+    if (island >= n_islands) island = n_islands - 1;
+    const unsigned char* row = &population[b * L];
+    uint64_t hash = fitness_sharing_hash8(row, L, hash_len);
+    int base = island * FS_TABLE_SIZE;
+    int slot = (int)(hash & FS_TABLE_MASK);
+    int64_t hash_i64 = (int64_t)hash;
+
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        int table_idx = base + slot;
+        int64_t old = atomicCAS(
+            (unsigned long long*)&keys[table_idx],
+            (unsigned long long)-1LL,
+            (unsigned long long)hash_i64
+        );
+        if (old == -1LL || old == hash_i64) {
+            atomicAdd(&counts[table_idx], 1);
+            return;
+        }
+        slot = (slot + 1) & FS_TABLE_MASK;
+    }
+}
+
+__global__ void fitness_sharing_penalty_kernel(
+    const unsigned char* __restrict__ population,
+    const int64_t* __restrict__ keys,
+    const int32_t* __restrict__ counts,
+    float* __restrict__ out_penalty,
+    int B,
+    int L,
+    int n_islands,
+    int island_size,
+    int threshold,
+    int hash_len
+) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    int island = b / island_size;
+    if (island >= n_islands) island = n_islands - 1;
+    const unsigned char* row = &population[b * L];
+    uint64_t hash = fitness_sharing_hash8(row, L, hash_len);
+    int base = island * FS_TABLE_SIZE;
+    int slot = (int)(hash & FS_TABLE_MASK);
+    int64_t hash_i64 = (int64_t)hash;
+    int c = 1;
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        int table_idx = base + slot;
+        int64_t key = keys[table_idx];
+        if (key == hash_i64) {
+            c = counts[table_idx];
+            break;
+        }
+        if (key == -1LL) {
+            break;
+        }
+        slot = (slot + 1) & FS_TABLE_MASK;
+    }
+    out_penalty[b] = (c > threshold) ? log2f((float)c) : 0.0f;
+}
+
+torch::Tensor launch_fitness_sharing_penalty(
+    const torch::Tensor& population,
+    int n_islands,
+    int island_size,
+    int threshold,
+    int hash_len
+) {
+    CHECK_INPUT(population);
+    int B = population.size(0);
+    int L = population.size(1);
+    auto int_opt = torch::TensorOptions().dtype(torch::kInt32).device(population.device());
+    auto long_opt = torch::TensorOptions().dtype(torch::kInt64).device(population.device());
+    auto float_opt = torch::TensorOptions().dtype(torch::kFloat32).device(population.device());
+    auto keys = torch::full({n_islands, FS_TABLE_SIZE}, -1, long_opt);
+    auto counts = torch::zeros({n_islands, FS_TABLE_SIZE}, int_opt);
+    auto out = torch::empty({B}, float_opt);
+
+    int threads = 256;
+    int blocks = (B + threads - 1) / threads;
+    fitness_sharing_count_kernel<<<blocks, threads>>>(
+        population.data_ptr<unsigned char>(),
+        keys.data_ptr<int64_t>(),
+        counts.data_ptr<int32_t>(),
+        B, L, n_islands, island_size, hash_len
+    );
+    fitness_sharing_penalty_kernel<<<blocks, threads>>>(
+        population.data_ptr<unsigned char>(),
+        keys.data_ptr<int64_t>(),
+        counts.data_ptr<int32_t>(),
+        out.data_ptr<float>(),
+        B, L, n_islands, island_size, threshold, hash_len
+    );
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in fitness_sharing_penalty: ", cudaGetErrorString(err));
+    return out;
 }
 
 // ============================================================

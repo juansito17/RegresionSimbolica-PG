@@ -68,6 +68,11 @@ class PatternMemory:
         # Usage stats
         self.total_recorded = 0
         self.total_injected = 0
+        self._useful_cache_n = 0
+        self._useful_cache_patterns = None
+        self._useful_cache_dirty = True
+        self._grid_cache = {}
+        self._offsets = torch.arange(self.max_pattern_len, device=device).unsqueeze(0)
     
     def _compute_pattern_hash(self, patterns: torch.Tensor, use_cuda: bool = True) -> torch.Tensor:
         """
@@ -116,11 +121,11 @@ class PatternMemory:
         """
         # 1. Filter Good Candidates (GPU)
         good_mask = fitness < self.fitness_threshold
-        if not good_mask.any(): 
+        indices = good_mask.nonzero(as_tuple=True)[0]
+        if indices.numel() == 0:
             return
         
         # Limit processing to a batch to avoid stalling GPU
-        indices = torch.nonzero(good_mask).squeeze(1)
         if indices.numel() > 50:
             perm = torch.randperm(indices.numel(), device=self.device)
             indices = indices[perm[:50]]
@@ -133,15 +138,16 @@ class PatternMemory:
         
         # 3. Filter by Size (GPU)
         K, L = good_pop.shape
-        grid = torch.arange(L, device=self.device).unsqueeze(0).expand(K, L)
+        grid_base = self._grid_cache.get(L)
+        if grid_base is None:
+            grid_base = torch.arange(L, device=self.device).unsqueeze(0)
+            self._grid_cache[L] = grid_base
+        grid = grid_base.expand(K, L)
         sizes = grid - starts_mat + 1
         
         # Valid subtrees: correct size range and valid start
         valid_mask = (starts_mat >= 0) & (sizes >= min_size) & (sizes <= max_size)
         valid_mask = valid_mask & (sizes <= self.max_pattern_len)
-        
-        if not valid_mask.any(): 
-            return
         
         # 4. Extract patterns vectorized
         # Get coordinates of valid subtrees
@@ -163,13 +169,9 @@ class PatternMemory:
         start_indices = starts_mat[row_indices, end_indices]
         pattern_lengths = end_indices - start_indices + 1
         
-        # Create padded pattern tensor
-        extracted_patterns = torch.zeros(N_valid, self.max_pattern_len, 
-                                         dtype=torch.uint8, device=self.device)
-        
         # Fully vectorized extraction using advanced indexing (no Python loop)
         # Build a [N_valid, max_pattern_len] index matrix
-        offsets = torch.arange(self.max_pattern_len, device=self.device).unsqueeze(0)  # [1, MPL]
+        offsets = self._offsets  # [1, MPL]
         src_indices = start_indices.unsqueeze(1) + offsets  # [N_valid, MPL]
         in_range_mask = (offsets < pattern_lengths.unsqueeze(1)) & (src_indices < L)  # [N_valid, MPL]
         src_indices_clamped = src_indices.clamp(0, L - 1)
@@ -195,6 +197,7 @@ class PatternMemory:
         N = patterns.shape[0]
         if N == 0:
             return
+        self._useful_cache_dirty = True
         
         # 1. Find which hashes already exist in storage (vectorized comparison)
         if self.n_patterns > 0:
@@ -322,26 +325,42 @@ class PatternMemory:
         Returns:
             [N, max_pattern_len] tensor of patterns
         """
+        if (not self._useful_cache_dirty and
+                self._useful_cache_patterns is not None and
+                self._useful_cache_n >= n):
+            return self._useful_cache_patterns[:n]
+
         if self.n_patterns == 0:
-            return torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
+            patterns = torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
+            self._useful_cache_patterns = patterns
+            self._useful_cache_n = 0
+            self._useful_cache_dirty = False
+            return patterns
         
         # Filter by min_uses
         useful_mask = self.patterns_count[:self.n_patterns] >= self.min_uses
-        
-        if not useful_mask.any():
-            return torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
-        
-        useful_indices = useful_mask.nonzero().squeeze(1)
+        useful_indices = useful_mask.nonzero(as_tuple=True)[0]
+
+        if useful_indices.numel() == 0:
+            patterns = torch.zeros(0, self.max_pattern_len, dtype=torch.uint8, device=self.device)
+            self._useful_cache_patterns = patterns
+            self._useful_cache_n = 0
+            self._useful_cache_dirty = False
+            return patterns
         
         # Score: higher count, lower fitness = better
         scores = self.patterns_count[useful_indices].float() - self.patterns_fitness[useful_indices] / 1000.0
         
         # Get top N
         n_available = min(n, useful_indices.shape[0])
-        _, top_local_idx = torch.topk(scores, n_available)
+        _, top_local_idx = torch.topk(scores, n_available, sorted=False)
         top_indices = useful_indices[top_local_idx]
-        
-        return self.patterns_tensor[top_indices]
+        patterns = self.patterns_tensor[top_indices]
+        self._useful_cache_patterns = patterns
+        self._useful_cache_n = n_available
+        self._useful_cache_dirty = False
+
+        return patterns
     
     def inject_into_population(self, population: torch.Tensor, constants: torch.Tensor,
                                 grammar, percent: float = 0.05) -> Tuple[torch.Tensor, torch.Tensor, int]:

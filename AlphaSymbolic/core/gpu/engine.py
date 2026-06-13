@@ -1103,6 +1103,8 @@ class TensorGeneticEngine:
 
     def _post_simplify_formula(self, formula_str, x_t, y_t):
         """Simplify formula via Sniper re-detection and SymPy. Returns simplest valid version."""
+        if getattr(GpuGlobals, 'SKIP_FINAL_FORMULA_BUILD', False):
+            return formula_str
         if not formula_str or formula_str == 'None':
             return formula_str
         
@@ -2560,32 +2562,51 @@ class TensorGeneticEngine:
                 # Penalize individuals whose structural hash is shared by too many others
                 # in the same island. This prevents a single phenotype from dominating.
                 # Uses a fast polynomial hash of the first 8 tokens (O(N) GPU, no CPU sync).
-                _fs_interval = 20  # Only compute every 20 gens to minimize overhead
+                _fs_interval = max(1, int(getattr(GpuGlobals, 'FITNESS_SHARING_INTERVAL', 20)))
                 if generations % _fs_interval == 0 and global_stagnation > 5:
                     try:
                         _hash_len = min(8, population.shape[1])
-                        # Polynomial hash: h = sum(token[i] * prime^i) mod large_prime
-                        _primes = torch.tensor([1, 31, 961, 29791, 923521, 28629151, 887503681, 1103515245],
-                                              device=self.device, dtype=torch.long)[:_hash_len]
-                        _pop_long = population[:, :_hash_len].long()
-                        _hashes = (_pop_long * _primes.unsqueeze(0)).sum(dim=1)  # [pop_size]
-                        
-                        # Per-island: count how many share each hash
-                        _h_view = _hashes.view(self.n_islands, self.island_size)
-                        _sharing_pen = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
-                        
-                        for isl in range(self.n_islands):
-                            _isl_h = _h_view[isl]  # [island_size]
-                            # Count occurrences of each hash in this island
-                            _unique, _inv, _counts = torch.unique(_isl_h, return_inverse=True, return_counts=True)
-                            _cluster_sizes = _counts[_inv].float()  # [island_size]
-                            # Penalty = log2(cluster_size) for clusters > 5% of island
-                            _threshold = max(2, self.island_size // 20)
-                            _pen = torch.where(_cluster_sizes > _threshold,
-                                             torch.log2(_cluster_sizes), 
-                                             torch.zeros_like(_cluster_sizes))
-                            _start = isl * self.island_size
-                            _sharing_pen[_start:_start + self.island_size] = _pen
+                        _threshold = max(2, self.island_size // 20)
+                        if (getattr(GpuGlobals, 'USE_CUDA_FITNESS_SHARING', False)
+                                and RPN_CUDA_AVAILABLE
+                                and hasattr(rpn_cuda_native, 'fitness_sharing_penalty')
+                                and population.is_cuda):
+                            _sharing_pen = rpn_cuda_native.fitness_sharing_penalty(
+                                population.contiguous(), self.n_islands, self.island_size, _threshold, _hash_len
+                            ).to(dtype=self.dtype)
+                        else:
+                            # Polynomial hash fallback: h = sum(token[i] * prime^i) mod large_prime
+                            _primes_cache = getattr(self, '_fitness_sharing_primes', None)
+                            if _primes_cache is None or _primes_cache.device != self.device:
+                                _primes_cache = torch.tensor(
+                                    [1, 31, 961, 29791, 923521, 28629151, 887503681, 1103515245],
+                                    device=self.device, dtype=torch.long
+                                )
+                                self._fitness_sharing_primes = _primes_cache
+                            _primes = _primes_cache[:_hash_len]
+                            _pop_long = population[:, :_hash_len].long()
+                            _hashes = (_pop_long * _primes.unsqueeze(0)).sum(dim=1)  # [pop_size]
+                            
+                            # Per-island: count how many share each hash
+                            _h_view = _hashes.view(self.n_islands, self.island_size)
+                            _sharing_pen = getattr(self, '_fitness_sharing_pen_buf', None)
+                            if (_sharing_pen is None or _sharing_pen.numel() != self.pop_size
+                                    or _sharing_pen.device != self.device or _sharing_pen.dtype != self.dtype):
+                                _sharing_pen = torch.empty(self.pop_size, device=self.device, dtype=self.dtype)
+                                self._fitness_sharing_pen_buf = _sharing_pen
+                            _sharing_pen.zero_()
+                            
+                            for isl in range(self.n_islands):
+                                _isl_h = _h_view[isl]  # [island_size]
+                                # Count occurrences of each hash in this island
+                                _unique, _inv, _counts = torch.unique(_isl_h, return_inverse=True, return_counts=True)
+                                _cluster_sizes = _counts[_inv].float()  # [island_size]
+                                # Penalty = log2(cluster_size) for clusters > 5% of island
+                                _pen = torch.where(_cluster_sizes > _threshold,
+                                                 torch.log2(_cluster_sizes),
+                                                 torch.zeros_like(_cluster_sizes))
+                                _start = isl * self.island_size
+                                _sharing_pen[_start:_start + self.island_size] = _pen
                         
                         # Cache for reuse until next computation
                         self._cached_sharing_pen = _sharing_pen
@@ -2594,7 +2615,7 @@ class TensorGeneticEngine:
                 
                 # Apply cached sharing penalty
                 if hasattr(self, '_cached_sharing_pen') and self._cached_sharing_pen is not None:
-                    _fs_weight = 0.05  # Light touch — just enough to break ties
+                    _fs_weight = float(getattr(GpuGlobals, 'FITNESS_SHARING_WEIGHT', 0.05))
                     selection_metric.add_(self._cached_sharing_pen, alpha=_fs_weight)
 
                 # --- [END of Penalty Calculation Block] ---

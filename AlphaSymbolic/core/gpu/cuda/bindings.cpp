@@ -343,6 +343,14 @@ int64_t launch_get_replacement_positions(
     torch::Tensor& n_replacements
 );
 
+torch::Tensor launch_fitness_sharing_penalty(
+    const torch::Tensor& population,
+    int n_islands,
+    int island_size,
+    int threshold,
+    int hash_len
+);
+
 void launch_compute_var_presence(
     const torch::Tensor& population,
     torch::Tensor& var_presence,
@@ -512,6 +520,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("get_replacement_positions", &launch_get_replacement_positions,
         "Get positions of duplicates for replacement (CUDA)",
         py::arg("duplicate_mask"), py::arg("replacement_positions"), py::arg("n_replacements"));
+
+    m.def("fitness_sharing_penalty", &launch_fitness_sharing_penalty,
+        "Approximate per-island structural sharing penalty (CUDA)",
+        py::arg("population"), py::arg("n_islands"), py::arg("island_size"),
+        py::arg("threshold"), py::arg("hash_len") = 8);
     
     m.def("compute_var_presence", &launch_compute_var_presence,
         "Compute variable presence bitmask for population (CUDA)",

@@ -62,6 +62,7 @@ outputs/
 results/
 cache/
 .gradio/
+benchmarks/
 *.pkl
 *.bak
 *.temp

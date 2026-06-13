@@ -286,6 +286,10 @@ class GpuGlobals:
     # El best tracking ahora usa raw RMSE → acepta cualquier mejora estructural.
     VAR_DIVERSITY_PENALTY = 0.0
     VAR_FORCE_SEED_PERCENT = 0.0    # FIX Bug4: con VAR_DIVERSITY_PENALTY=0 este forced seeding es innecesario y sesga la búsqueda (era 0.25)
+    FITNESS_SHARING_INTERVAL = 20   # Balance anti-monoculture pressure with GPU throughput.
+    FITNESS_SHARING_WEIGHT = 0.05   # Light touch — just enough to break ties
+    USE_CUDA_FITNESS_SHARING = False # Experimental fast path; disabled until long-run RMSE matches unique() path.
+    VALIDATE_CUDA_RANDOM_POPULATION = False  # Debug guard; native generator produced 0 invalids in 3x1M smoke.
     
     # Weighted Fitness
     USE_WEIGHTED_FITNESS = False
@@ -310,7 +314,7 @@ class GpuGlobals:
 
     # L-BFGS-B Constant Optimizer
     USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
-    BFGS_INTERVAL = 15             # SPEED: Run L-BFGS-B every 15 gens (era 10)
+    BFGS_INTERVAL = 20             # SPEED: run L-BFGS-B less often; benchmark-validated vs 15/25
     BFGS_TOP_K = 50                # Refine top 50 elites island-wide
     BFGS_MAX_ITER = 20             # OPTIMIZED: 20 iterations (Cheaper with native gradients)
     
