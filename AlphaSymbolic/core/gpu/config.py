@@ -102,6 +102,14 @@ class GpuGlobals:
 
     USE_STRUCTURAL_SEEDS = False       # PURE GP: Disabled (considered "cheating")
     USE_PATTERN_SEEDS = False          # SPEED/PURE GP: skip startup allclose pattern probes unless explicitly enabled
+    USE_LOGSPACE_ALGEBRAIC_SAMPLING = True   # CONVERGENCE: random algebraic subpopulation when target is log-transformed
+    LOGSPACE_ALGEBRAIC_MUTATION_PROFILE = True # Keep mutations algebraic in log-space; evaluator still supports full grammar
+    LOGSPACE_ALGEBRAIC_SINGLE_VAR_ONLY = True  # Preserve full grammar for multi-var combinatorial searches
+    LOGSPACE_ALGEBRAIC_MIN_POSITIVE_FRACTION = 0.95 # Only treat mostly-positive targets as exponential/log-space
+    LOGSPACE_VARIABLE_TERMINAL_WEIGHT = 4      # Weighted random terminal pool; not a formula template
+    LOGSPACE_FREE_CONST_TERMINAL_WEIGHT = 4    # Balanced C weight; benchmarked exact on log-quadratic exponential
+    LOGSPACE_BINARY_OPERATOR_WEIGHTS = (('+', 4), ('-', 4), ('*', 8))
+    LOGSPACE_TERMINAL_PROB = 0.40       # Keep default tree density; lower values were worse on log-cubic
 
     # Tree Constraints
     MAX_FORMULA_LENGTH = 48            # CONVERGENCE FIX: 16 was too short for competitive formulas (seed is 128 tokens, random needs ≥30)

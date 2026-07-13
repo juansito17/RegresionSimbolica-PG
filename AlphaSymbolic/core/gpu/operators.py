@@ -76,9 +76,81 @@ class GPUOperators:
         self.arity_0_ids = torch.tensor(self.arity_0_ids, device=self.device, dtype=self.pop_dtype)
         self.arity_1_ids = torch.tensor(self.arity_1_ids, device=self.device, dtype=self.pop_dtype)
         self.arity_2_ids = torch.tensor(self.arity_2_ids, device=self.device, dtype=self.pop_dtype)
+        self._full_terminal_ids = self.terminal_ids.clone()
+        self._full_arity_0_ids = self.arity_0_ids.clone()
+        self._full_arity_1_ids = self.arity_1_ids.clone()
+        self._full_arity_2_ids = self.arity_2_ids.clone()
         
         # Cache int32 arities for CUDA
         self.token_arity_int = self.token_arity.to(dtype=torch.int32)
+
+    def set_sampling_profile(self, profile: str = "full") -> None:
+        """
+        Change only the operator IDs used for random generation/mutation.
+        Evaluation still supports the full grammar; this is a sampling prior, not a template.
+        """
+        if profile in ("log_algebraic", "log_algebraic_rich"):
+            self._sampling_profile = profile
+            var_weight = max(1, int(getattr(GpuGlobals, 'LOGSPACE_VARIABLE_TERMINAL_WEIGHT', 4)))
+            const_weight = max(1, int(getattr(GpuGlobals, 'LOGSPACE_FREE_CONST_TERMINAL_WEIGHT', 4)))
+            terminal_names = []
+            for v in self.grammar.active_variables:
+                terminal_names.extend([v] * var_weight)
+            if 'C' in self.grammar.token_to_id:
+                terminal_names.extend(['C'] * const_weight)
+            for t in ['0', '1', '2', '3', '4', '5', '6', '10', 'pi', 'e']:
+                if t in self.grammar.token_to_id:
+                    terminal_names.append(t)
+            terminal_ids = [self.grammar.token_to_id[t] for t in terminal_names]
+            self.terminal_ids = torch.tensor(terminal_ids, device=self.device, dtype=self.pop_dtype) if terminal_ids else self._full_terminal_ids
+            self.arity_0_ids = self.terminal_ids
+            unary_keep = {"neg"}
+            unary_ids = [
+                self.grammar.token_to_id[t]
+                for t in unary_keep
+                if t in self.grammar.token_to_id
+            ]
+            self.arity_1_ids = torch.tensor(unary_ids, device=self.device, dtype=self.pop_dtype) if unary_ids else self._empty_token_ids
+            binary_names = []
+            if profile == "log_algebraic_rich":
+                binary_weights = (('+', 4), ('-', 4), ('*', 6), ('/', 2), ('pow', 1))
+            else:
+                binary_weights = getattr(
+                    GpuGlobals,
+                    'LOGSPACE_BINARY_OPERATOR_WEIGHTS',
+                    (('+', 4), ('-', 4), ('*', 8)),
+                )
+            for op, weight in binary_weights:
+                if op in self.grammar.token_to_id and op in self.grammar.operators:
+                    binary_names.extend([op] * max(0, int(weight)))
+            binary_ids = [self.grammar.token_to_id[op] for op in binary_names]
+            self.arity_2_ids = torch.tensor(binary_ids, device=self.device, dtype=self.pop_dtype) if binary_ids else self._full_arity_2_ids
+        else:
+            self._sampling_profile = "full"
+            self.terminal_ids = self._full_terminal_ids
+            self.arity_0_ids = self._full_arity_0_ids
+            self.arity_1_ids = self._full_arity_1_ids
+            self.arity_2_ids = self._full_arity_2_ids
+        self._sampling_profile_version = getattr(self, '_sampling_profile_version', 0) + 1
+
+    def _sampling_category_weights(self):
+        _op_w = GpuGlobals.OPERATOR_WEIGHTS
+        if getattr(self, '_sampling_profile', 'full') in ("log_algebraic", "log_algebraic_rich"):
+            _bin_sum = 1.0
+            _una_sum = 0.05
+            _t_frac = float(getattr(GpuGlobals, 'LOGSPACE_TERMINAL_PROB', GpuGlobals.TERMINAL_VS_VARIABLE_PROB))
+        else:
+            _bin_sum = sum(_op_w[:6])           # +,-,*,/,**,%
+            _una_sum = sum(_op_w[6:])           # sin,cos,tan,log,exp,fact,...,sqrt,abs
+            _t_frac = float(GpuGlobals.TERMINAL_VS_VARIABLE_PROB)
+        _op_sum = max(_bin_sum + _una_sum, 1e-6)
+        _t_frac = max(0.05, min(0.95, _t_frac))
+        _o_frac = 1.0 - _t_frac
+        return (
+            _t_frac,
+            float(_o_frac * _una_sum / _op_sum),
+            float(_o_frac * _bin_sum / _op_sum),
+        )
 
     def _force_multi_variable(self, population: torch.Tensor) -> torch.Tensor:
         """
@@ -243,16 +315,7 @@ class GPUOperators:
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else self._empty_token_ids
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
                 
-                # OPTIMIZED: calcular pesos de categoría desde OPERATOR_WEIGHTS (bug fix: antes 1.0 fijo)
-                _op_w = GpuGlobals.OPERATOR_WEIGHTS
-                _bin_sum = sum(_op_w[:6])           # +,-,*,/,**,%
-                _una_sum = sum(_op_w[6:])           # sin,cos,tan,log,exp,fact,...,sqrt,abs
-                _op_sum = max(_bin_sum + _una_sum, 1e-6)
-                _t_frac = float(GpuGlobals.TERMINAL_VS_VARIABLE_PROB)
-                _o_frac = 1.0 - _t_frac
-                _gen_term_w  = _t_frac
-                _gen_unary_w = float(_o_frac * _una_sum / _op_sum)
-                _gen_bin_w   = float(_o_frac * _bin_sum / _op_sum)
+                _gen_term_w, _gen_unary_w, _gen_bin_w = self._sampling_category_weights()
 
                 rpn_cuda_native.generate_random_rpn(
                     population, t_ids, u_ids, b_ids, seed,
@@ -332,10 +395,10 @@ class GPUOperators:
             
             # Convert to float weights for normalized sampling
             # TERMINAL_VS_VARIABLE_PROB controla sesgo hacia terminales (mayor = más terminales)
-            terminal_bias = GpuGlobals.TERMINAL_VS_VARIABLE_PROB
-            w_t = can_terminal.float() * terminal_bias
-            w_u = (can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
-            w_b = (can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
+            _term_w, _unary_w, _binary_w = self._sampling_category_weights()
+            w_t = can_terminal.float() * _term_w
+            w_u = (can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)) * _unary_w
+            w_b = (can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)) * _binary_w
             
             # Ensure at least terminal is valid (fallback)
             total_w = w_t + w_u + w_b
@@ -438,18 +501,10 @@ class GPUOperators:
                 t_ids = self.terminal_ids.contiguous()
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else self._empty_token_ids
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
-                # OPTIMIZED: mismos pesos de categoría que generate_random_population_gpu
-                _op_w = GpuGlobals.OPERATOR_WEIGHTS
-                _bin_sum = sum(_op_w[:6])
-                _una_sum = sum(_op_w[6:])
-                _op_sum = max(_bin_sum + _una_sum, 1e-6)
-                _t_frac = float(GpuGlobals.TERMINAL_VS_VARIABLE_PROB)
-                _o_frac = 1.0 - _t_frac
+                _gen_term_w, _gen_unary_w, _gen_bin_w = self._sampling_category_weights()
                 rpn_cuda_native.generate_random_rpn(
                     population, t_ids, u_ids, b_ids, seed,
-                    _t_frac,
-                    float(_o_frac * _una_sum / _op_sum),
-                    float(_o_frac * _bin_sum / _op_sum)
+                    _gen_term_w, _gen_unary_w, _gen_bin_w
                 )
                 valid = self._validate_rpn_batch_custom(population, max_len)
                 invalid = ~valid
@@ -471,7 +526,7 @@ class GPUOperators:
         rand_terminal_idx = torch.randint(0, max(1, n_terminals), (size, max_len), device=device)
         rand_arity1_idx = torch.randint(0, max(1, n_arity1), (size, max_len), device=device) if n_arity1 > 0 else None
         rand_arity2_idx = torch.randint(0, max(1, n_arity2), (size, max_len), device=device) if n_arity2 > 0 else None
-        terminal_bias = GpuGlobals.TERMINAL_VS_VARIABLE_PROB
+        _term_w, _unary_w, _binary_w = self._sampling_category_weights()
         
         for j in range(max_len):
             remaining = max_len - j - 1
@@ -483,9 +538,9 @@ class GPUOperators:
                 can_terminal = can_terminal & ((s + 1) == 1)
                 can_unary = can_unary & (s == 1) if n_arity1 > 0 else can_unary
                 can_binary = can_binary & ((s - 1) == 1) if n_arity2 > 0 else can_binary
-            w_t = can_terminal.float() * terminal_bias
-            w_u = (can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
-            w_b = (can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)) * (1.0 - terminal_bias) * 0.5
+            w_t = can_terminal.float() * _term_w
+            w_u = (can_unary.float() if isinstance(can_unary, torch.Tensor) else torch.zeros(size, device=device)) * _unary_w
+            w_b = (can_binary.float() if isinstance(can_binary, torch.Tensor) else torch.zeros(size, device=device)) * _binary_w
             total_w = w_t + w_u + w_b
             no_valid = (total_w == 0)
             w_t = w_t + no_valid.float()

@@ -164,6 +164,34 @@ class TensorGeneticEngine:
 
     def optimize_constants(self, population, constants, x, y, steps=10, lr=0.1):
         return self.optimizer.optimize_constants(population, constants, x, y, steps, lr)
+
+    def _one_dim_poly_r2(self, x_t, y_t, degree: int = 3) -> float:
+        try:
+            if x_t.ndim == 1:
+                x1 = x_t.reshape(-1)
+            elif x_t.ndim == 2 and x_t.shape[1] == 1:
+                x1 = x_t[:, 0].reshape(-1)
+            elif x_t.ndim == 2 and x_t.shape[0] == 1:
+                x1 = x_t[0].reshape(-1)
+            else:
+                return float("-inf")
+            y1 = y_t.reshape(-1)
+            if x1.numel() != y1.numel() or x1.numel() <= degree + 2:
+                return float("-inf")
+            x64 = x1.to(dtype=torch.float64)
+            y64 = y1.to(dtype=torch.float64)
+            powers = [torch.ones_like(x64)]
+            for _ in range(degree):
+                powers.append(powers[-1] * x64)
+            design = torch.stack(powers, dim=1)
+            coef = torch.linalg.lstsq(design, y64.unsqueeze(1)).solution
+            pred = (design @ coef).squeeze(1)
+            resid = torch.sum((y64 - pred) ** 2)
+            centered = y64 - torch.mean(y64)
+            total = torch.sum(centered ** 2).clamp_min(1e-30)
+            return 1.0 - float((resid / total).item())
+        except Exception:
+            return float("-inf")
         
     def simplify_population(self, population, constants, top_k=None):
         # GPU-native symbolic simplifier (vectorized, no CPU roundtrip)
@@ -502,7 +530,39 @@ class TensorGeneticEngine:
             poly_pop, poly_c = torch.empty(0, self.max_len, device=self.device, dtype=self.pop_dtype), torch.empty(0, self.max_constants, device=self.device, dtype=self.dtype)
             print(f"[Engine] Population Initialized: {n_rand} Random (Pure GP).")
         
-        rand_pop = self.operators.generate_random_population(n_rand)
+        use_log_algebraic = bool(
+            getattr(self, '_use_logspace_algebraic_sampling', False) and
+            getattr(GpuGlobals, 'USE_LOGSPACE_ALGEBRAIC_SAMPLING', False)
+        )
+        if use_log_algebraic and n_rand > 1:
+            # Fixed search portfolio for the selected representation.
+            n_alg = n_rand
+            n_full = n_rand - n_alg
+            n_rich = min(n_alg, max(0, int(n_alg * 0.25)))
+            n_pure_alg = n_alg - n_rich
+            final_profile = getattr(self.operators, '_sampling_profile', 'full')
+            try:
+                alg_parts = []
+                if n_pure_alg > 0:
+                    self.operators.set_sampling_profile("log_algebraic")
+                    alg_parts.append(self.operators.generate_random_population(n_pure_alg))
+                if n_rich > 0:
+                    self.operators.set_sampling_profile("log_algebraic_rich")
+                    alg_parts.append(self.operators.generate_random_population(n_rich))
+                alg_pop = torch.cat(alg_parts, dim=0) if len(alg_parts) > 1 else alg_parts[0]
+            finally:
+                self.operators.set_sampling_profile(final_profile)
+            if n_full > 0:
+                try:
+                    self.operators.set_sampling_profile("full")
+                    full_pop = self.operators.generate_random_population(n_full)
+                finally:
+                    self.operators.set_sampling_profile(final_profile)
+                rand_pop = torch.cat([alg_pop, full_pop], dim=0)
+            else:
+                rand_pop = alg_pop
+        else:
+            rand_pop = self.operators.generate_random_population(n_rand)
         rand_c = torch.empty(n_rand, self.max_constants, device=self.device, dtype=self.dtype).uniform_(-5.0, 5.0)
         
         if n_poly > 0:
@@ -755,12 +815,21 @@ class TensorGeneticEngine:
         if self._cached_vm is None:
             self._cached_vm = CudaRPNVM(self.grammar, self.device)
             self._cached_token_arities = self.grammar.get_arity_tensor(self.device).to(torch.int32)
-            self._cached_arity_0_ids = self.grammar.get_arity_ids(0, self.device).to(torch.uint8)
-            self._cached_arity_1_ids = self.grammar.get_arity_ids(1, self.device).to(torch.uint8)
-            self._cached_arity_2_ids = self.grammar.get_arity_ids(2, self.device).to(torch.uint8)
         
         vm = self._cached_vm
         token_arities = self._cached_token_arities
+        sampling_key = (
+            getattr(self.operators, '_sampling_profile', 'full'),
+            int(getattr(self.operators, '_sampling_profile_version', 0)),
+            int(self.operators.arity_0_ids.numel()),
+            int(self.operators.arity_1_ids.numel()),
+            int(self.operators.arity_2_ids.numel()),
+        )
+        if getattr(self, '_cached_sampling_arity_key', None) != sampling_key:
+            self._cached_arity_0_ids = self.operators.arity_0_ids.contiguous().to(torch.uint8)
+            self._cached_arity_1_ids = self.operators.arity_1_ids.contiguous().to(torch.uint8)
+            self._cached_arity_2_ids = self.operators.arity_2_ids.contiguous().to(torch.uint8)
+            self._cached_sampling_arity_key = sampling_key
         arity_0_ids = self._cached_arity_0_ids
         arity_1_ids = self._cached_arity_1_ids
         arity_2_ids = self._cached_arity_2_ids
@@ -1299,15 +1368,38 @@ class TensorGeneticEngine:
         # Log transform if needed (Use arg if provided, else Global)
         # FIX: Move logic outside so it applies to Tensors too!
         use_log_local = use_log if use_log is not None else GpuGlobals.USE_LOG_TRANSFORMATION
+        log_positive_fraction = 1.0
+        if use_log_local and self.num_variables == 1:
+            _pos_mask = y_t > 1e-9
+            if bool(_pos_mask.all().item()):
+                raw_r2 = self._one_dim_poly_r2(x_t, y_t, degree=3)
+                log_r2 = self._one_dim_poly_r2(x_t, torch.log(y_t), degree=3)
+                if raw_r2 >= 0.999999 and raw_r2 > log_r2 + 1e-4:
+                    use_log_local = False
         if use_log_local:
              # Masking to avoid log(0)
              mask = y_t > 1e-9
+             log_positive_fraction = float(mask.float().mean().item()) if mask.numel() > 0 else 0.0
              y_t = torch.log(y_t[mask])
              x_t = x_t[mask] 
 
             
         if x_t.ndim == 1: x_t = x_t.unsqueeze(1)
         if y_t.ndim == 1: y_t = y_t.unsqueeze(0) 
+        _log_alg_single_only = bool(getattr(GpuGlobals, 'LOGSPACE_ALGEBRAIC_SINGLE_VAR_ONLY', True))
+        _log_alg_min_pos = float(getattr(GpuGlobals, 'LOGSPACE_ALGEBRAIC_MIN_POSITIVE_FRACTION', 0.95))
+        self._use_logspace_algebraic_sampling = bool(
+            use_log_local and
+            log_positive_fraction >= _log_alg_min_pos and
+            (self.num_variables == 1 or not _log_alg_single_only)
+        )
+        if (use_log_local and
+                self._use_logspace_algebraic_sampling and
+                getattr(GpuGlobals, 'USE_LOGSPACE_ALGEBRAIC_SAMPLING', False) and
+                getattr(GpuGlobals, 'LOGSPACE_ALGEBRAIC_MUTATION_PROFILE', False)):
+            self.operators.set_sampling_profile("log_algebraic")
+        else:
+            self.operators.set_sampling_profile("full")
 
         # Line 1314: `target_matrix = y_target.unsqueeze(0).expand(B, -1)`
         # This implies y_target should be [D].
@@ -1324,7 +1416,7 @@ class TensorGeneticEngine:
                 print(f"[Engine] The Sniper found a candidate solution: {sniper_formula}")
                 if seeds is None: seeds = []
                 seeds.append(sniper_formula)
-        
+
         # --- Structural Seed Templates ---
         # Inject structural priors (Factorials, Gamma, Poly) to help search
         if GpuGlobals.USE_STRUCTURAL_SEEDS:
@@ -1349,7 +1441,8 @@ class TensorGeneticEngine:
         ops_sig = "_".join(sorted(self.grammar.operators))
         ops_hash = hashlib.md5(ops_sig.encode()).hexdigest()[:8]
         
-        cache_file = os.path.join(cache_dir, f"initial_pop_v3_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}_{ops_hash}.pt")
+        sampling_sig = "logalg" if getattr(self, '_use_logspace_algebraic_sampling', False) else "full"
+        cache_file = os.path.join(cache_dir, f"initial_pop_v3_{self.pop_size}_{self.max_len}_{self.num_variables}_{prec_str}_{ops_hash}_{sampling_sig}.pt")
 
         
         loaded_from_cache = False

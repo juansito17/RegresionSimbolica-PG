@@ -398,7 +398,8 @@ if __name__ == "__main__":
     demo = create_app(verbose=args.verbose)
     demo.queue(default_concurrency_limit=1)
     logger.info("Abriendo navegador...")
-    demo.launch(share=args.share, inbrowser=True, theme=get_theme(), css=CUSTOM_CSS)
+    open_browser = os.environ.get("ALPHASYMBOLIC_NO_BROWSER", "0") != "1"
+    demo.launch(share=args.share, inbrowser=open_browser, theme=get_theme(), css=CUSTOM_CSS)
 else:
     # If imported by 'gradio app.py' or multiprocessing workers
     # We only want to load the model if it's the Main Process (Gradio Server)

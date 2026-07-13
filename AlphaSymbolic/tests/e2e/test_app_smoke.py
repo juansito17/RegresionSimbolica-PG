@@ -22,6 +22,7 @@ def test_gradio_app_opens_in_browser_if_playwright_available():
 
     env = os.environ.copy()
     env["ALPHASYMBOLIC_VERBOSE"] = "0"
+    env["ALPHASYMBOLIC_NO_BROWSER"] = "1"
     proc = subprocess.Popen(
         [sys.executable, "AlphaSymbolic/app.py"],
         stdout=subprocess.PIPE,
