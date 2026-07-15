@@ -45,7 +45,7 @@ class GPUEvaluator:
     def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
         """
         Evaluates the RPN population on the GPU over multiple samples.
-        Fast path: fused kernel (block-per-individual, 0 warp divergence, RMSE computed inside kernel).
+        Fast path: fused kernel (warp/block per individual, RMSE computed inside kernel).
         Fallback: original chunked path (RMSLE or fused kernel unavailable).
         """
         B_pop, L = population.shape

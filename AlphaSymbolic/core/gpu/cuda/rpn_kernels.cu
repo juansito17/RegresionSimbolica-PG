@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <math.h>
 #include <cstdint>
+#include <type_traits>
 
 // Helper to check CUDA errors
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
@@ -590,6 +591,47 @@ void launch_select_subtree_points(
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in select_subtree_points: ", cudaGetErrorString(err));
 }
 
+__global__ void validate_crossover_lengths_kernel(
+    const int64_t* __restrict__ lengths1,
+    const int64_t* __restrict__ lengths2,
+    const int64_t* __restrict__ starts1,
+    const int64_t* __restrict__ ends1,
+    const int64_t* __restrict__ starts2,
+    const int64_t* __restrict__ ends2,
+    bool* __restrict__ valid,
+    int N, int max_length
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    int64_t new_len1 = starts1[idx] + (ends2[idx] - starts2[idx] + 1)
+                     + (lengths1[idx] - (ends1[idx] + 1));
+    int64_t new_len2 = starts2[idx] + (ends1[idx] - starts1[idx] + 1)
+                     + (lengths2[idx] - (ends2[idx] + 1));
+    valid[idx] = (new_len1 <= max_length) && (new_len2 <= max_length);
+}
+
+void launch_validate_crossover_lengths(
+    const torch::Tensor& lengths1,
+    const torch::Tensor& lengths2,
+    const torch::Tensor& starts1,
+    const torch::Tensor& ends1,
+    const torch::Tensor& starts2,
+    const torch::Tensor& ends2,
+    torch::Tensor& valid,
+    int max_length
+) {
+    int N = lengths1.size(0);
+    int threads = 256;
+    int blocks = (N + threads - 1) / threads;
+    validate_crossover_lengths_kernel<<<blocks, threads>>>(
+        lengths1.data_ptr<int64_t>(), lengths2.data_ptr<int64_t>(),
+        starts1.data_ptr<int64_t>(), ends1.data_ptr<int64_t>(),
+        starts2.data_ptr<int64_t>(), ends2.data_ptr<int64_t>(),
+        valid.data_ptr<bool>(), N, max_length
+    );
+}
+
 __global__ void mutation_kernel(
     unsigned char* __restrict__ population,        // [B, L] (uint8)
     const float* __restrict__ rand_floats,   // [B, L] (0..1)
@@ -953,6 +995,12 @@ __global__ void sbx_constants_kernel(
 
     float c1 = consts1_orig[idx];
     float c2 = consts2_orig[idx];
+    if (mask_rand[idx] >= 0.5f) {
+        consts1_out[idx] = c1;
+        consts2_out[idx] = c2;
+        return;
+    }
+
     float u = u_sbx[idx];
     float inv = 1.0f / (eta + 1.0f);
     float beta;
@@ -963,13 +1011,8 @@ __global__ void sbx_constants_kernel(
         beta = powf(1.0f / (2.0f * denom), inv);
     }
 
-    if (mask_rand[idx] < 0.5f) {
-        consts1_out[idx] = 0.5f * ((1.0f + beta) * c1 + (1.0f - beta) * c2);
-        consts2_out[idx] = 0.5f * ((1.0f - beta) * c1 + (1.0f + beta) * c2);
-    } else {
-        consts1_out[idx] = c1;
-        consts2_out[idx] = c2;
-    }
+    consts1_out[idx] = 0.5f * ((1.0f + beta) * c1 + (1.0f - beta) * c2);
+    consts2_out[idx] = 0.5f * ((1.0f - beta) * c1 + (1.0f + beta) * c2);
 }
 
 void launch_crossover_splicing(
@@ -1637,19 +1680,8 @@ std::vector<torch::Tensor> evolve_generation(
         launch_select_subtree_points(rand_e1, lengths1, all_starts1, s1, e1);
         launch_select_subtree_points(rand_e2, lengths2, all_starts2, s2, e2);
         
-        // --- Length Safety Check ---
-        auto len_pre1 = s1;
-        auto len_sub2 = e2 - s2 + 1;
-        auto len_post1 = lengths1 - (e1 + 1);
-        auto new_len1 = len_pre1 + len_sub2 + len_post1;
-        
-        auto len_pre2 = s2;
-        auto len_sub1 = e1 - s1 + 1;
-        auto len_post2 = lengths2 - (e2 + 1);
-        auto new_len2 = len_pre2 + len_sub1 + len_post2;
-        
-        // Mask of valid crossovers (outcome <= L)
-        cx_mask_flat = ((new_len1 <= L) & (new_len2 <= L)).contiguous();
+        cx_mask_flat = torch::empty({n_active_pairs}, torch::TensorOptions().dtype(torch::kBool).device(device));
+        launch_validate_crossover_lengths(lengths1, lengths2, s1, e1, s2, e2, cx_mask_flat, L);
 
         auto active_child1 = torch::empty_like(active_parents1);
         auto active_child2 = torch::empty_like(active_parents2);
@@ -1695,9 +1727,6 @@ std::vector<torch::Tensor> evolve_generation(
         sbx_eta
     );
     
-    auto child1_consts = consts1.clone();
-    auto child2_consts = consts2.clone();
-
     if (n_active_pairs > 0) {
         auto active_consts1 = consts1.index_select(0, cx_active_idx).contiguous();
         auto active_consts2 = consts2.index_select(0, cx_active_idx).contiguous();
@@ -1720,16 +1749,13 @@ std::vector<torch::Tensor> evolve_generation(
             active_child2_consts.data_ptr<float>(),
             n_active_pairs, L, K, id_C
         );
-        child1_consts.index_copy_(0, cx_active_idx, active_child1_consts);
-        child2_consts.index_copy_(0, cx_active_idx, active_child2_consts);
+        consts1.index_copy_(0, cx_active_idx, active_child1_consts);
+        consts2.index_copy_(0, cx_active_idx, active_child2_consts);
     }
     
-    auto final_c1_consts = child1_consts;
-    auto final_c2_consts = child2_consts;
-    
     auto offspring_consts = torch::empty_like(constants);
-    offspring_consts.index_copy_(0, c1_dest_t, final_c1_consts);
-    offspring_consts.index_copy_(0, c2_dest_t, final_c2_consts);
+    offspring_consts.index_copy_(0, c1_dest_t, consts1);
+    offspring_consts.index_copy_(0, c2_dest_t, consts2);
     offspring_consts.index_copy_(0, copy_dest_t, constants.index_select(0, copy_winner_idx));
     
     // 3. Mutation 
@@ -1915,15 +1941,14 @@ std::vector<torch::Tensor> evolve_generation(
 }
 
 // ============================================================
-//  FUSED EVAL KERNEL — Block-per-individual + RMSE in one pass
+//  FUSED EVAL KERNEL — Warp/block-per-individual + RMSE in one pass
 // ============================================================
 //
-//  Layout: blockIdx.x = individual index (b_idx)
-//          threadIdx.x = data point index (d_idx)
-//          blockDim.x = WARP_DIM (≥ D, padded to next 32 multiple)
+//  Layout: D <= 32 uses one individual per warp (8 warps per block).
+//          D > 32 uses one individual per block.
 //
 //  Key properties:
-//  1. All threads in a block execute the SAME program → 0 warp divergence
+//  1. All threads in a warp execute the SAME program → 0 warp divergence
 //  2. Program loaded into __shared__ memory → 17× less global reads
 //  3. RMSE computed via warp shuffle reduction → outputs only [B] floats
 //     instead of [B×D] predictions (saves ~153 MB of bandwidth per call)
@@ -1934,7 +1959,7 @@ std::vector<torch::Tensor> evolve_generation(
 #define FUSED_MAX_L   256    // Max formula length (matches MAX_FORMULA_LENGTH)
 #define FUSED_MAX_VARS  4    // Max variables (x0, x1, x2, x3)
 
-template <typename scalar_t>
+template <typename scalar_t, bool WARP_MODE>
 __global__ void rpn_eval_fused_kernel(
     const unsigned char* __restrict__ population,  // [B, L]
     const scalar_t* __restrict__ x,               // [Vars, D]
@@ -1955,20 +1980,30 @@ __global__ void rpn_eval_fused_kernel(
     double pi_val, double e_val,
     int strict_mode
 ) {
-    const int b_idx = blockIdx.x;
-    const int d_idx = threadIdx.x;
+    constexpr int WARPS_PER_SMALL_BLOCK = 8;
+    const int lane_id = threadIdx.x & 31;
+    const int warp_id = threadIdx.x >> 5;
+    const int b_idx = WARP_MODE ? (blockIdx.x * WARPS_PER_SMALL_BLOCK + warp_id) : blockIdx.x;
+    const int d_idx = WARP_MODE ? lane_id : threadIdx.x;
 
     if (b_idx >= B) return;
 
     // ── 1. Load program into shared memory (strided: each thread loads multiple bytes) ──
     // BUG FIX: With blockDim=32 and L=112, a single `if (d_idx < L)` only loads bytes 0..31!
     // Use a strided loop so all L bytes are covered, regardless of blockDim.
-    __shared__ unsigned char prog[FUSED_MAX_L];
+    __shared__ unsigned char shared_prog[FUSED_MAX_L * (WARP_MODE ? WARPS_PER_SMALL_BLOCK : 1)];
+    unsigned char* prog = shared_prog + (WARP_MODE ? warp_id * FUSED_MAX_L : 0);
+    const int load_stride = WARP_MODE ? 32 : blockDim.x;
+    const int load_start = WARP_MODE ? lane_id : threadIdx.x;
     #pragma unroll 4
-    for (int i = d_idx; i < L && i < FUSED_MAX_L; i += blockDim.x) {
+    for (int i = load_start; i < L && i < FUSED_MAX_L; i += load_stride) {
         prog[i] = population[b_idx * L + i];
     }
-    __syncthreads();
+    if constexpr (WARP_MODE) {
+        __syncwarp();
+    } else {
+        __syncthreads();
+    }
 
     // ── 2. Preload x values for this thread's data point ──
     const bool active = (d_idx < D);
@@ -2107,7 +2142,7 @@ __global__ void rpn_eval_fused_kernel(
     }
 
     // ── 6. Block-level reduction (for multi-warp blocks) ──
-    if (blockDim.x <= 32) {
+    if constexpr (WARP_MODE) {
         // Single warp: Lane 0 of Warp 0 writes output directly
         if (d_idx == 0) {
             scalar_t rmse;
@@ -2127,9 +2162,6 @@ __global__ void rpn_eval_fused_kernel(
         __shared__ scalar_t shared_sq_err[32];
         __shared__ uint32_t shared_invalid[32];
         __shared__ uint32_t shared_metric_overflow[32];
-
-        const int warp_id = threadIdx.x / 32;
-        const int lane_id = threadIdx.x % 32;
 
         if (lane_id == 0) {
             shared_sq_err[warp_id] = sq_err;
@@ -2198,30 +2230,35 @@ void launch_rpn_eval_fused(
     int D = x.size(1);
     int K = (constants.dim() > 1) ? constants.size(1) : 0;
 
-    // blockDim = next multiple of 32 >= D, capped at 32 (D is always small for this problem)
-    // With D=17 → 32 threads per block (17 active, 15 idle but no divergence since same program)
-    const int block_dim = ((D + 31) / 32) * 32;  // Round up to warp size
-    const int grid_dim  = B;
+    // Eight independent warps improve occupancy for small datasets. Larger
+    // datasets use the original block-per-individual reduction.
+    const int block_dim = (D <= 32) ? 256 : ((D + 31) / 32) * 32;
+    const int grid_dim = (D <= 32) ? ((B + 7) / 8) : B;
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_fused_kernel", ([&] {
-        rpn_eval_fused_kernel<scalar_t><<<grid_dim, block_dim>>>(
-            population.data_ptr<unsigned char>(),
-            x.data_ptr<scalar_t>(),
-            (constants.numel() > 0) ? constants.data_ptr<scalar_t>() : nullptr,
-            y_target.data_ptr<scalar_t>(),
-            out_rmse.data_ptr<scalar_t>(),
-            B, D, L, K, num_vars,
-            PAD_ID, id_x_start,
-            id_C, id_pi, id_e,
-            id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
-            op_add, op_sub, op_mul, op_div, op_pow, op_mod,
-            op_sin, op_cos, op_tan, op_log, op_exp,
-            op_sqrt, op_abs, op_neg,
-            op_fact, op_floor, op_ceil, op_sign,
-            op_gamma, op_lgamma, op_asin, op_acos, op_atan,
-            pi_val, e_val,
-            strict_mode
-        );
+        auto launch = [&](auto warp_mode_tag) {
+            constexpr bool warp_mode = decltype(warp_mode_tag)::value;
+            rpn_eval_fused_kernel<scalar_t, warp_mode><<<grid_dim, block_dim>>>(
+                population.data_ptr<unsigned char>(),
+                x.data_ptr<scalar_t>(),
+                (constants.numel() > 0) ? constants.data_ptr<scalar_t>() : nullptr,
+                y_target.data_ptr<scalar_t>(),
+                out_rmse.data_ptr<scalar_t>(),
+                B, D, L, K, num_vars,
+                PAD_ID, id_x_start,
+                id_C, id_pi, id_e,
+                id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
+                op_add, op_sub, op_mul, op_div, op_pow, op_mod,
+                op_sin, op_cos, op_tan, op_log, op_exp,
+                op_sqrt, op_abs, op_neg,
+                op_fact, op_floor, op_ceil, op_sign,
+                op_gamma, op_lgamma, op_asin, op_acos, op_atan,
+                pi_val, e_val,
+                strict_mode
+            );
+        };
+        if (D <= 32) launch(std::true_type{});
+        else launch(std::false_type{});
     }));
 
     cudaError_t err = cudaGetLastError();
