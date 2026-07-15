@@ -265,12 +265,12 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     # --- IMPORTANT: Configure GpuGlobals BEFORE creating Engine ---
     # (Engine's Grammar reads these at construction time)
     
-    # Log Transform -> Loss Function & Explicit Data Transform flag
+    # Log Transform -> Explicit Data Transform flag. The engine already applies
+    # log(Y), so its loss must remain RMSE; selecting RMSLE here would apply a
+    # second logarithm and report a misleading metric.
     GpuGlobals.USE_LOG_TRANSFORMATION = use_log_transform
-    if use_log_transform:
-        GpuGlobals.LOSS_FUNCTION = 'RMSLE'
-    else:
-        GpuGlobals.LOSS_FUNCTION = 'RMSE'
+    GpuGlobals.LOSS_FUNCTION = 'RMSE'
+    rmse_label = "RMSE log" if use_log_transform else "RMSE"
         
     # Disable Neural features for this tab (Pure GPU mode)
     GpuGlobals.USE_NEURAL_FLASH = False
@@ -305,7 +305,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
     GpuGlobals.USE_SNIPER = False
     
     # 3. Initialize Engine (NOW it will read the correct operator flags)
-    yield status_panel(f"Inicializando motor GPU ({int(pop_size):,} individuos)...", "info"), formula_card("", "Mejor fórmula actual"), metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "0.0s"), ("Islas", int(n_islands))]), None
+    yield status_panel(f"Inicializando motor GPU ({int(pop_size):,} individuos)...", "info"), formula_card("", "Mejor fórmula actual"), metric_grid([(rmse_label, "—"), ("Generación", "—"), ("Tiempo", "0.0s"), ("Islas", int(n_islands))]), None
     
     try:
         run_state.engine = ENGINE_CLS(
@@ -320,7 +320,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
         for name, value in previous_config.items():
             setattr(GpuGlobals, name, value)
         logger.error("No se pudo inicializar el motor GPU: %s", format_exception(e))
-        yield status_panel(f"No se pudo inicializar el motor GPU: {e}", "error"), formula_card("", "Mejor fórmula actual"), metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", "—"), ("Islas", int(n_islands))]), None
+        yield status_panel(f"No se pudo inicializar el motor GPU: {e}", "error"), formula_card("", "Mejor fórmula actual"), metric_grid([(rmse_label, "—"), ("Generación", "—"), ("Tiempo", "—"), ("Islas", int(n_islands))]), None
         return
     
     LIVE_ENGINE = run_state.engine
@@ -381,6 +381,12 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
                         logger.debug("Tokens originales inválidos: %s", toks_orig)
                     except Exception:
                         logger.debug("No se pudieron decodificar tokens originales.", exc_info=True)
+
+            # During a log(Y) search the RPN models log(Y). Show the equivalent
+            # formula in the original Y scale while keeping the raw RPN for GPU
+            # evaluation below.
+            if use_log_transform and formula != "Invalid":
+                formula = f"exp({formula})"
             
             run_state.updates.put({
                 "gen": gen,
@@ -437,7 +443,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
             data = run_state.updates.get(timeout=0.1)
             if "error" in data:
                 last_best_html = last_best_html or formula_card("", "Mejor fórmula actual")
-                last_stats_html = last_stats_html or metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", f"{time.time() - start_time:.1f}s"), ("Islas", int(n_islands))])
+                last_stats_html = last_stats_html or metric_grid([(rmse_label, "—"), ("Generación", "—"), ("Tiempo", f"{time.time() - start_time:.1f}s"), ("Islas", int(n_islands))])
                 yield status_panel(f"Error durante evolución GPU: {data['error']}", "error"), last_best_html, last_stats_html, last_fig
                 break
 
@@ -447,7 +453,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
                 final_gen = data.get("gen")
                 if final_rmse is not None and final_gen is not None:
                     last_stats_html = metric_grid([
-                        ("RMSE", f"{final_rmse:.6e}"),
+                        (rmse_label, f"{final_rmse:.6e}"),
                         ("Generación", f"{final_gen:,}"),
                         ("Tiempo", f"{time.time() - start_time:.1f}s"),
                         ("Islas", int(n_islands)),
@@ -469,7 +475,7 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
                 else (last_best_html or formula_card("", "Mejor fórmula actual"))
             )
             stats_html = metric_grid([
-                ("RMSE", f"{rmse:.6e}"),
+                (rmse_label, f"{rmse:.6e}"),
                 ("Generación", f"{gen:,}"),
                 ("Tiempo", f"{elapsed:.1f}s"),
                 ("Islas", int(n_islands)),

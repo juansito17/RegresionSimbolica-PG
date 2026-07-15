@@ -43,6 +43,20 @@ def test_generate_example_trig_matches_displayed_x_values():
     assert np.allclose(parsed.y, np.sin(parsed.x), atol=1e-6)
 
 
+def test_generate_example_exp_matches_displayed_x_values():
+    x_str, y_str = generate_example("exp")
+    parsed = parse_input_data(x_str, y_str)
+
+    assert parsed.error is None
+    expected = 2 * np.exp(0.5 * parsed.x)
+    assert np.sqrt(np.mean((parsed.y - expected) ** 2)) < 1e-8
+
+    x32 = parsed.x.astype(np.float32)
+    y32 = parsed.y.astype(np.float32)
+    pred32 = np.float32(2.0) * np.exp(np.float32(0.5) * x32)
+    assert np.sqrt(np.mean((y32 - pred32) ** 2)) < 1e-6
+
+
 def test_load_csv_without_header_keeps_first_row(tmp_path):
     csv_path = tmp_path / "linear.csv"
     csv_path.write_text("1,5\n2,7\n3,9\n", encoding="utf-8")

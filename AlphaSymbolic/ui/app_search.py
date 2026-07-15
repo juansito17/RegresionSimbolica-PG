@@ -300,10 +300,14 @@ def generate_example(tipo):
         x_fmt = "{:.6f}"
         y_fmt = "{:.6f}"
     elif tipo == "exp":
-        x = np.linspace(0, 5, 15)
+        # Keep the serialized X values and the values used to calculate Y
+        # identical. Previously Y was calculated from the full-precision
+        # linspace and X was then rounded to two decimals, so the displayed
+        # dataset did not exactly follow its own generating formula.
+        x = np.round(np.linspace(0, 5, 15), 2)
         y = 2 * np.exp(0.5 * x)
         x_fmt = "{:.2f}"
-        y_fmt = "{:.4f}"
+        y_fmt = "{:.8f}"
     elif tipo == "mv_lineal":
         x0, x1 = np.meshgrid(np.linspace(1, 5, 4), np.linspace(1, 5, 4))
         x = np.column_stack((x0.flatten(), x1.flatten()))

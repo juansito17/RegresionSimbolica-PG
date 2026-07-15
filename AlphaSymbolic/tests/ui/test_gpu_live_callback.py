@@ -4,6 +4,7 @@ import torch
 from AlphaSymbolic.ui.live_state import LiveRunState
 from AlphaSymbolic.ui import app_gpu_live
 from AlphaSymbolic.ui.app_gpu_live import _fill_live_plot_predictions_with_formula
+from AlphaSymbolic.core.gpu.config import GpuGlobals
 
 
 class FakeSimplifier:
@@ -26,7 +27,10 @@ class FakeEvaluator:
 
 
 class FakeEngine:
+    observed_loss_function = None
+
     def __init__(self, **kwargs):
+        type(self).observed_loss_function = GpuGlobals.LOSS_FUNCTION
         self.device = torch.device("cpu")
         self.dtype = torch.float32
         self.pop_size = kwargs["pop_size"]
@@ -42,7 +46,7 @@ class FakeEngine:
         rpn = torch.tensor([1, 2, 3], dtype=torch.uint8)
         consts = torch.zeros(4)
         callback(10, 0.0, rpn, consts, True, 0)
-        return "x0 + 1"
+        return "exp(x0 + 1)" if GpuGlobals.USE_LOG_TRANSFORMATION else "x0 + 1"
 
 
 class FakeInvalidCallbackEngine(FakeEngine):
@@ -148,3 +152,44 @@ def test_final_engine_formula_replaces_invalid_progress_callback(monkeypatch):
     assert "x0 + 1" in outputs[-1][1]
     assert "Invalid" not in outputs[-1][1]
     assert "Finalizado" in outputs[-1][0]
+
+
+def test_log_transform_uses_rmse_without_double_log(monkeypatch):
+    monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeEngine)
+    state = LiveRunState()
+
+    outputs = list(
+        app_gpu_live.run_live_gpu_evolution(
+            "1,2,3",
+            "2,3,4",
+            10000,
+            2,
+            4,
+            1,
+            True,
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            run_state=state,
+            verbose=True,
+        )
+    )
+
+    assert FakeEngine.observed_loss_function == "RMSE"
+    assert "RMSE log" in outputs[-1][2]
+    assert "exp(x0 + 1)" in outputs[-1][1]
