@@ -45,6 +45,19 @@ class FakeEngine:
         return "x0 + 1"
 
 
+class FakeInvalidCallbackEngine(FakeEngine):
+    def rpn_to_infix(self, _rpn, _consts):
+        return "Invalid"
+
+    def run(self, _x, _y, _seeds, _timeout_sec, callback):
+        self.last_run_best_rmse = 0.0
+        self.last_run_generations = 10
+        rpn = torch.tensor([1, 2, 3], dtype=torch.uint8)
+        consts = torch.zeros(4)
+        callback(10, 0.0, rpn, consts, True, 0)
+        return "x0 + 1"
+
+
 def test_run_live_gpu_evolution_streams_with_fake_engine(monkeypatch):
     monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeEngine)
     state = LiveRunState()
@@ -94,3 +107,44 @@ def test_live_plot_prediction_fallback_fills_nan_points_from_formula():
 
     assert np.all(np.isfinite(filled))
     assert np.allclose(filled, 1 + x**2)
+
+
+def test_final_engine_formula_replaces_invalid_progress_callback(monkeypatch):
+    monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeInvalidCallbackEngine)
+    state = LiveRunState()
+
+    outputs = list(
+        app_gpu_live.run_live_gpu_evolution(
+            "1,2,3",
+            "2,3,4",
+            10000,
+            2,
+            4,
+            1,
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            run_state=state,
+            verbose=True,
+        )
+    )
+
+    assert "x0 + 1" in outputs[-1][1]
+    assert "Invalid" not in outputs[-1][1]
+    assert "Finalizado" in outputs[-1][0]

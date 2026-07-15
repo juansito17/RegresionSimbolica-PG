@@ -3295,6 +3295,7 @@ class TensorGeneticEngine:
                      sim_rmse_val = sim_rmse.item() if sim_rmse.numel() == 1 else sim_rmse[0].item()
                      if sim_rmse_val <= best_rmse * 1.2 + 1e-9:
                          best_rpn = sim_pop[0]
+                         best_consts_vec = c_use[0]
              except Exception:
                  pass  # Non-fatal
              

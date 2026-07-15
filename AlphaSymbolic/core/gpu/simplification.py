@@ -279,8 +279,10 @@ class GPUSimplifier:
                  # PAD_ID is global
                  try:
                      result = rpn_cuda_native.decode_rpn(pop, consts, vocab_list, arities, PAD_ID, GpuGlobals.CONSTANT_PRECISION)
-                     if result and len(result) > 0:
+                     if result and len(result) > 0 and result[0] != "Invalid":
                          return result[0]
+                     # The native decoder is an optimization, not the source of
+                     # truth. Fall through when it cannot render the candidate.
                  except Exception as e:
                      print(f"[GPUSimplifier] C++ Decode Error: {e}")
                      # Fallback to python

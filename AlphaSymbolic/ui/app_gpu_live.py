@@ -401,7 +401,21 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
         
     def engine_target():
         try:
-            run_state.engine.run(x_input_tensor, y, None, timeout_sec if timeout_sec > 0 else None, wrapped_callback)
+            final_formula = run_state.engine.run(
+                x_input_tensor,
+                y,
+                None,
+                timeout_sec if timeout_sec > 0 else None,
+                wrapped_callback,
+            )
+            # The engine may perform one last validated simplification after its
+            # final progress callback. Publish that authoritative result too.
+            if final_formula and final_formula != "Invalid":
+                run_state.updates.put({
+                    "final_formula": final_formula,
+                    "rmse": getattr(run_state.engine, "last_run_best_rmse", None),
+                    "gen": getattr(run_state.engine, "last_run_generations", None),
+                })
         except Exception as e:
             logger.error("Error durante evolución GPU: %s", format_exception(e))
             run_state.updates.put({"error": str(e)})
@@ -426,16 +440,34 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
                 last_stats_html = last_stats_html or metric_grid([("RMSE", "—"), ("Generación", "—"), ("Tiempo", f"{time.time() - start_time:.1f}s"), ("Islas", int(n_islands))])
                 yield status_panel(f"Error durante evolución GPU: {data['error']}", "error"), last_best_html, last_stats_html, last_fig
                 break
+
+            if "final_formula" in data:
+                last_best_html = formula_card(data["final_formula"], "Mejor fórmula actual")
+                final_rmse = data.get("rmse")
+                final_gen = data.get("gen")
+                if final_rmse is not None and final_gen is not None:
+                    last_stats_html = metric_grid([
+                        ("RMSE", f"{final_rmse:.6e}"),
+                        ("Generación", f"{final_gen:,}"),
+                        ("Tiempo", f"{time.time() - start_time:.1f}s"),
+                        ("Islas", int(n_islands)),
+                    ])
+                continue
             
             gen = data["gen"]
             rmse = data["rmse"]
-            formula = data["formula"]
+            formula = data.get("formula")
             
             elapsed = time.time() - start_time
             speed = (gen * pop_size) / elapsed if elapsed > 0 else 0
             
             status = status_panel(f"Ejecutando · Gen {gen:,} · {speed:,.0f} evals/s", "info")
-            best_html = formula_card(formula, "Mejor fórmula actual")
+            formula_is_valid = bool(formula and formula != "Invalid")
+            best_html = (
+                formula_card(formula, "Mejor fórmula actual")
+                if formula_is_valid
+                else (last_best_html or formula_card("", "Mejor fórmula actual"))
+            )
             stats_html = metric_grid([
                 ("RMSE", f"{rmse:.6e}"),
                 ("Generación", f"{gen:,}"),
@@ -468,8 +500,9 @@ def run_live_gpu_evolution(x_str, y_str, pop_size, n_islands, max_constants, tim
                     if use_log_transform: 
                         y_pred = np.exp(y_pred)
 
-                    y_pred = _fill_live_plot_predictions_with_formula(x, y_pred, formula)
-                    fig = create_fit_plot(x, y, y_pred, formula)
+                    if formula_is_valid:
+                        y_pred = _fill_live_plot_predictions_with_formula(x, y_pred, formula)
+                    fig = create_fit_plot(x, y, y_pred, formula if formula_is_valid else "")
                     last_fig = fig
                 except Exception as e:
                     logger.debug("No se pudo refrescar el plot live: %s", format_exception(e), exc_info=True)
