@@ -432,6 +432,7 @@ void launch_rpn_kernel(
 
 __global__ void find_subtree_ranges_kernel(
     const unsigned char* __restrict__ population, // [B, L] (uint8)
+    const int64_t* __restrict__ row_indices,      // [B] or nullptr
     const int* __restrict__ token_arities,  // [VocabSize]
     int64_t* __restrict__ out_starts,       // [B, L]
     int64_t* __restrict__ out_lengths,      // [B] or nullptr
@@ -444,7 +445,8 @@ __global__ void find_subtree_ranges_kernel(
     int b = idx / L; // Batch index
     int tid = idx % L; // Token index in sequence (0..L-1)
     
-    const unsigned char* my_pop = &population[b * L];
+    int64_t source_row = row_indices != nullptr ? row_indices[b] : b;
+    const unsigned char* my_pop = &population[source_row * L];
     int64_t* my_starts = &out_starts[b * L];
     
     int64_t token = (int64_t)my_pop[tid];
@@ -523,6 +525,7 @@ void launch_find_subtree_ranges(
     
     find_subtree_ranges_kernel<<<blocks, threads>>>(
         population.data_ptr<unsigned char>(),
+        nullptr,
         token_arities.data_ptr<int32_t>(),
         out_starts.data_ptr<int64_t>(),
         out_lengths_ptr,
@@ -591,6 +594,49 @@ void launch_select_subtree_points(
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in select_subtree_points: ", cudaGetErrorString(err));
 }
 
+__global__ void select_subtree_range_indirect_kernel(
+    const unsigned char* __restrict__ population,
+    const int64_t* __restrict__ row_indices,
+    const int* __restrict__ token_arities,
+    const float* __restrict__ rand_vals,
+    int64_t* __restrict__ out_lengths,
+    int64_t* __restrict__ out_start,
+    int64_t* __restrict__ out_end,
+    int N, int L, int vocab_size, int PAD_ID
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    int64_t source_row = row_indices != nullptr ? row_indices[n] : n;
+    const unsigned char* row = population + source_row * (int64_t)L;
+
+    int len = 0;
+    while (len < L && row[len] != PAD_ID) ++len;
+    if (len < 1) len = 1;
+    out_lengths[n] = len;
+
+    int end = (int)(rand_vals[n] * (float)len);
+    if (end < 0) end = 0;
+    if (end >= len) end = len - 1;
+    int start = end;
+    int token = (int)row[end];
+    int arity = (token >= 0 && token < vocab_size) ? token_arities[token] : 0;
+    if (arity > 0) {
+        int needed = arity;
+        for (int j = end - 1; j >= 0; --j) {
+            int t = (int)row[j];
+            if (t == PAD_ID) break;
+            int a = (t >= 0 && t < vocab_size) ? token_arities[t] : 0;
+            needed += a - 1;
+            if (needed == 0) {
+                start = j;
+                break;
+            }
+        }
+    }
+    out_start[n] = start;
+    out_end[n] = end;
+}
+
 __global__ void validate_crossover_lengths_kernel(
     const int64_t* __restrict__ lengths1,
     const int64_t* __restrict__ lengths2,
@@ -651,6 +697,32 @@ __device__ __forceinline__ uint4 philox4x32_10(uint4 counter, uint2 key) {
     return counter;
 }
 
+__device__ __forceinline__ unsigned char mutate_token_philox(
+    unsigned char token, uint64_t individual, int token_pos,
+    const int* __restrict__ token_arities,
+    const unsigned char* __restrict__ arity_0_ids, int n_0,
+    const unsigned char* __restrict__ arity_1_ids, int n_1,
+    const unsigned char* __restrict__ arity_2_ids, int n_2,
+    float mutation_rate, int L, int vocab_size, int PAD_ID,
+    uint64_t rng_seed, uint64_t generation
+) {
+    if ((int)token == PAD_ID) return token;
+    uint4 counter = make_uint4(
+        (uint32_t)(individual * (uint64_t)L + (uint64_t)token_pos),
+        (uint32_t)generation, (uint32_t)(generation >> 32), (uint32_t)individual);
+    uint2 key = make_uint2((uint32_t)rng_seed, (uint32_t)(rng_seed >> 32));
+    uint4 random = philox4x32_10(counter, key);
+    float probability = ((float)random.x + 0.5f) * 2.3283064365386963e-10f;
+    if (probability >= mutation_rate) return token;
+
+    int arity = ((int)token < vocab_size) ? token_arities[(int)token] : 0;
+    uint32_t selector = random.y;
+    if (arity == 0 && n_0 > 0) return arity_0_ids[selector % n_0];
+    if (arity == 1 && n_1 > 0) return arity_1_ids[selector % n_1];
+    if (arity == 2 && n_2 > 0) return arity_2_ids[selector % n_2];
+    return token;
+}
+
 __global__ void mutation_philox_kernel(
     unsigned char* __restrict__ population,
     const int64_t* __restrict__ individual_ids,
@@ -665,27 +737,36 @@ __global__ void mutation_philox_kernel(
     if (idx >= B * L) return;
     int row = idx / L;
     int token_pos = idx - row * L;
-    int token = (int)population[idx];
-    if (token == PAD_ID) return;
-
     uint64_t individual = (uint64_t)individual_ids[row];
-    uint4 counter = make_uint4(
-        (uint32_t)(individual * (uint64_t)L + (uint64_t)token_pos),
-        (uint32_t)generation, (uint32_t)(generation >> 32), (uint32_t)individual);
-    uint2 key = make_uint2((uint32_t)rng_seed, (uint32_t)(rng_seed >> 32));
-    uint4 random = philox4x32_10(counter, key);
-    float probability = ((float)random.x + 0.5f) * 2.3283064365386963e-10f;
-    if (probability >= mutation_rate) return;
+    population[idx] = mutate_token_philox(
+        population[idx], individual, token_pos, token_arities,
+        arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
+        mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
+}
 
-    int arity = (token >= 0 && token < vocab_size) ? token_arities[token] : 0;
-    uint32_t selector = random.y;
-    if (arity == 0 && n_0 > 0) {
-        population[idx] = arity_0_ids[selector % n_0];
-    } else if (arity == 1 && n_1 > 0) {
-        population[idx] = arity_1_ids[selector % n_1];
-    } else if (arity == 2 && n_2 > 0) {
-        population[idx] = arity_2_ids[selector % n_2];
-    }
+__global__ void mutation_philox_indirect_kernel(
+    unsigned char* __restrict__ population,
+    const int64_t* __restrict__ row_indices,
+    const float* __restrict__ individual_rand,
+    float individual_cut,
+    const int* __restrict__ token_arities,
+    const unsigned char* __restrict__ arity_0_ids, int n_0,
+    const unsigned char* __restrict__ arity_1_ids, int n_1,
+    const unsigned char* __restrict__ arity_2_ids, int n_2,
+    float mutation_rate, int N, int L, int vocab_size, int PAD_ID,
+    uint64_t rng_seed, uint64_t generation
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N * L) return;
+    int n = idx / L;
+    int token_pos = idx - n * L;
+    int64_t row = row_indices[n];
+    if (row == 0 || individual_rand[row] >= individual_cut) return;
+    int64_t out_idx = row * (int64_t)L + token_pos;
+    population[out_idx] = mutate_token_philox(
+        population[out_idx], (uint64_t)row, token_pos, token_arities,
+        arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
+        mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
 }
 
 __global__ void mutation_kernel(
@@ -846,6 +927,10 @@ void launch_validate_rpn_batch(
 __global__ void crossover_splicing_kernel(
     const unsigned char* __restrict__ parent1, // [N, L] (uint8)
     const unsigned char* __restrict__ parent2, // [N, L] (uint8)
+    const int64_t* __restrict__ parent1_indices, // [N] or nullptr
+    const int64_t* __restrict__ parent2_indices, // [N] or nullptr
+    const int64_t* __restrict__ child1_indices,  // [N] or nullptr
+    const int64_t* __restrict__ child2_indices,  // [N] or nullptr
     const int64_t* __restrict__ starts1, // [N]
     const int64_t* __restrict__ ends1,   // [N]
     const int64_t* __restrict__ starts2, // [N]
@@ -861,10 +946,14 @@ __global__ void crossover_splicing_kernel(
     
     int n = idx / L; // Pair index
     int t = idx % L; // Token index in child
+    int64_t p1_base = (parent1_indices != nullptr ? parent1_indices[n] : n) * (int64_t)L;
+    int64_t p2_base = (parent2_indices != nullptr ? parent2_indices[n] : n) * (int64_t)L;
+    int64_t c1_base = (child1_indices != nullptr ? child1_indices[n] : n) * (int64_t)L;
+    int64_t c2_base = (child2_indices != nullptr ? child2_indices[n] : n) * (int64_t)L;
 
     if (cx_mask != nullptr && !cx_mask[n]) {
-        child1[n * L + t] = parent1[n * L + t];
-        child2[n * L + t] = parent2[n * L + t];
+        child1[c1_base + t] = parent1[p1_base + t];
+        child2[c2_base + t] = parent2[p2_base + t];
         return;
     }
     
@@ -882,23 +971,23 @@ __global__ void crossover_splicing_kernel(
     int64_t val_c1 = (int64_t)PAD_ID;
     
     if (t < len_pre1) {
-        if (t >= 0 && t < L) val_c1 = (int64_t)parent1[n * L + t];
+        if (t >= 0 && t < L) val_c1 = (int64_t)parent1[p1_base + t];
     } else if (t < cut1) {
         // From Sub2
         int64_t src_idx = s2 + t - len_pre1;
         if (src_idx >= 0 && src_idx < L) {
-            val_c1 = (int64_t)parent2[n * L + src_idx];
+            val_c1 = (int64_t)parent2[p2_base + src_idx];
         }
     } else {
         // From Post1
         int64_t src_idx = e1 + 1 + t - cut1;
         if (src_idx >= 0 && src_idx < L) {
-            val_c1 = (int64_t)parent1[n * L + src_idx];
+            val_c1 = (int64_t)parent1[p1_base + src_idx];
         } else {
             val_c1 = (int64_t)PAD_ID;
         }
     }
-    child1[n * L + t] = (unsigned char)val_c1;
+    child1[c1_base + t] = (unsigned char)val_c1;
     
     // --- Child 2 Construction ---
     // Child 2 = P2_Pre + P1_Sub + P2_Post
@@ -909,26 +998,117 @@ __global__ void crossover_splicing_kernel(
     int64_t val_c2 = (int64_t)PAD_ID;
     
     if (t < len_pre2) {
-        if (t >= 0 && t < L) val_c2 = (int64_t)parent2[n * L + t];
+        if (t >= 0 && t < L) val_c2 = (int64_t)parent2[p2_base + t];
     } else if (t < cut2) {
         int64_t src_idx = s1 + t - len_pre2;
         if (src_idx >= 0 && src_idx < L) {
-            val_c2 = (int64_t)parent1[n * L + src_idx];
+            val_c2 = (int64_t)parent1[p1_base + src_idx];
         }
     } else {
         int64_t src_idx = e2 + 1 + t - cut2;
         if (src_idx >= 0 && src_idx < L) {
-            val_c2 = (int64_t)parent2[n * L + src_idx];
+            val_c2 = (int64_t)parent2[p2_base + src_idx];
         } else {
             val_c2 = (int64_t)PAD_ID;
         }
     }
-    child2[n * L + t] = (unsigned char)val_c2;
+    child2[c2_base + t] = (unsigned char)val_c2;
+}
+
+// Main-generation fast path: splice and point-mutate while each output token
+// is still in a register. This removes the compact/index-copy mutation pass.
+__global__ void crossover_splicing_mutation_kernel(
+    const unsigned char* __restrict__ parent1,
+    const unsigned char* __restrict__ parent2,
+    const int64_t* __restrict__ parent1_indices,
+    const int64_t* __restrict__ parent2_indices,
+    const int64_t* __restrict__ child1_indices,
+    const int64_t* __restrict__ child2_indices,
+    const int64_t* __restrict__ starts1,
+    const int64_t* __restrict__ ends1,
+    const int64_t* __restrict__ starts2,
+    const int64_t* __restrict__ ends2,
+    const bool* __restrict__ cx_mask,
+    unsigned char* __restrict__ child1,
+    unsigned char* __restrict__ child2,
+    const float* __restrict__ individual_rand,
+    float individual_cut,
+    const int* __restrict__ token_arities,
+    const unsigned char* __restrict__ arity_0_ids, int n_0,
+    const unsigned char* __restrict__ arity_1_ids, int n_1,
+    const unsigned char* __restrict__ arity_2_ids, int n_2,
+    float mutation_rate, int vocab_size,
+    uint64_t rng_seed, uint64_t generation,
+    int N_pairs, int L, int PAD_ID
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N_pairs * L) return;
+    int n = idx / L;
+    int t = idx - n * L;
+    int64_t p1_row = parent1_indices != nullptr ? parent1_indices[n] : n;
+    int64_t p2_row = parent2_indices != nullptr ? parent2_indices[n] : n;
+    int64_t c1_row = child1_indices != nullptr ? child1_indices[n] : n;
+    int64_t c2_row = child2_indices != nullptr ? child2_indices[n] : n;
+    int64_t p1_base = p1_row * (int64_t)L;
+    int64_t p2_base = p2_row * (int64_t)L;
+    int64_t c1_base = c1_row * (int64_t)L;
+    int64_t c2_base = c2_row * (int64_t)L;
+
+    unsigned char val_c1;
+    unsigned char val_c2;
+    if (cx_mask != nullptr && !cx_mask[n]) {
+        val_c1 = parent1[p1_base + t];
+        val_c2 = parent2[p2_base + t];
+    } else {
+        int64_t s1 = starts1[n], e1 = ends1[n];
+        int64_t s2 = starts2[n], e2 = ends2[n];
+        int64_t cut1 = s1 + (e2 - s2 + 1);
+        int64_t cut2 = s2 + (e1 - s1 + 1);
+
+        int64_t src1;
+        const unsigned char* src_parent1;
+        if (t < s1) {
+            src1 = t; src_parent1 = parent1 + p1_base;
+        } else if (t < cut1) {
+            src1 = s2 + t - s1; src_parent1 = parent2 + p2_base;
+        } else {
+            src1 = e1 + 1 + t - cut1; src_parent1 = parent1 + p1_base;
+        }
+        val_c1 = (src1 >= 0 && src1 < L) ? src_parent1[src1] : (unsigned char)PAD_ID;
+
+        int64_t src2;
+        const unsigned char* src_parent2;
+        if (t < s2) {
+            src2 = t; src_parent2 = parent2 + p2_base;
+        } else if (t < cut2) {
+            src2 = s1 + t - s2; src_parent2 = parent1 + p1_base;
+        } else {
+            src2 = e2 + 1 + t - cut2; src_parent2 = parent2 + p2_base;
+        }
+        val_c2 = (src2 >= 0 && src2 < L) ? src_parent2[src2] : (unsigned char)PAD_ID;
+    }
+
+    if (c1_row != 0 && individual_rand[c1_row] < individual_cut) {
+        val_c1 = mutate_token_philox(
+            val_c1, (uint64_t)c1_row, t, token_arities,
+            arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
+            mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
+    }
+    if (c2_row != 0 && individual_rand[c2_row] < individual_cut) {
+        val_c2 = mutate_token_philox(
+            val_c2, (uint64_t)c2_row, t, token_arities,
+            arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
+            mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
+    }
+    child1[c1_base + t] = val_c1;
+    child2[c2_base + t] = val_c2;
 }
 
 __global__ void crossover_constants_kernel(
     const unsigned char* __restrict__ p1,     // [N, L]
     const unsigned char* __restrict__ p2,     // [N, L]
+    const int64_t* __restrict__ p1_indices,   // [N] or nullptr
+    const int64_t* __restrict__ p2_indices,   // [N] or nullptr
     const float* __restrict__ consts1,        // [N, K]
     const float* __restrict__ consts2,        // [N, K]
     const int64_t* __restrict__ starts1,      // [N]
@@ -938,15 +1118,21 @@ __global__ void crossover_constants_kernel(
     const bool* __restrict__ cx_mask,         // [N]
     float* __restrict__ child1_consts,        // [N, K]
     float* __restrict__ child2_consts,        // [N, K]
+    const int64_t* __restrict__ child1_indices, // [N] or nullptr
+    const int64_t* __restrict__ child2_indices, // [N] or nullptr
     int N_pairs, int L, int K, int id_C
 ) {
     int n = blockIdx.x * blockDim.x + threadIdx.x;
     if (n >= N_pairs) return;
+    int64_t p1_base = (p1_indices != nullptr ? p1_indices[n] : n) * (int64_t)L;
+    int64_t p2_base = (p2_indices != nullptr ? p2_indices[n] : n) * (int64_t)L;
+    int64_t c1_base = (child1_indices != nullptr ? child1_indices[n] : n) * (int64_t)K;
+    int64_t c2_base = (child2_indices != nullptr ? child2_indices[n] : n) * (int64_t)K;
 
     if (cx_mask != nullptr && !cx_mask[n]) {
         for (int j = 0; j < K; ++j) {
-            child1_consts[n * K + j] = consts1[n * K + j];
-            child2_consts[n * K + j] = consts2[n * K + j];
+            child1_consts[c1_base + j] = consts1[n * K + j];
+            child2_consts[c2_base + j] = consts2[n * K + j];
         }
         return;
     }
@@ -962,8 +1148,8 @@ __global__ void crossover_constants_kernel(
     // P1_pre [0, s1-1]
     int p1_c = 0;
     for (int i = 0; i < s1; ++i) {
-        if (p1[n * L + i] == id_C) {
-            if (c1_idx < K && p1_c < K) child1_consts[n * K + c1_idx++] = consts1[n * K + p1_c];
+        if (p1[p1_base + i] == id_C) {
+            if (c1_idx < K && p1_c < K) child1_consts[c1_base + c1_idx++] = consts1[n * K + p1_c];
             p1_c++;
         }
     }
@@ -971,29 +1157,29 @@ __global__ void crossover_constants_kernel(
     // P2_sub [s2, e2]
     int p2_c = 0;
     for (int i = 0; i < s2; ++i) {
-        if (p2[n * L + i] == id_C) p2_c++;
+        if (p2[p2_base + i] == id_C) p2_c++;
     }
     for (int i = s2; i <= e2; ++i) {
-        if (p2[n * L + i] == id_C) {
-            if (c1_idx < K && p2_c < K) child1_consts[n * K + c1_idx++] = consts2[n * K + p2_c];
+        if (p2[p2_base + i] == id_C) {
+            if (c1_idx < K && p2_c < K) child1_consts[c1_base + c1_idx++] = consts2[n * K + p2_c];
             p2_c++;
         }
     }
     
     // P1_post [e1+1, L-1]
     for (int i = s1; i <= e1; ++i) {
-        if (p1[n * L + i] == id_C) p1_c++;
+        if (p1[p1_base + i] == id_C) p1_c++;
     }
     for (int i = e1 + 1; i < L; ++i) {
-        if (p1[n * L + i] == id_C) {
-            if (c1_idx < K && p1_c < K) child1_consts[n * K + c1_idx++] = consts1[n * K + p1_c];
+        if (p1[p1_base + i] == id_C) {
+            if (c1_idx < K && p1_c < K) child1_consts[c1_base + c1_idx++] = consts1[n * K + p1_c];
             p1_c++;
         }
     }
     
     while (c1_idx < K) {
         int fill_idx = c1_idx;
-        child1_consts[n * K + c1_idx] = consts1[n * K + (fill_idx % K)];
+        child1_consts[c1_base + c1_idx] = consts1[n * K + (fill_idx % K)];
         c1_idx++;
     }
     
@@ -1002,36 +1188,36 @@ __global__ void crossover_constants_kernel(
     
     p2_c = 0;
     for (int i = 0; i < s2; ++i) {
-        if (p2[n * L + i] == id_C) {
-            if (c2_idx < K && p2_c < K) child2_consts[n * K + c2_idx++] = consts2[n * K + p2_c];
+        if (p2[p2_base + i] == id_C) {
+            if (c2_idx < K && p2_c < K) child2_consts[c2_base + c2_idx++] = consts2[n * K + p2_c];
             p2_c++;
         }
     }
     
     p1_c = 0;
     for (int i = 0; i < s1; ++i) {
-        if (p1[n * L + i] == id_C) p1_c++;
+        if (p1[p1_base + i] == id_C) p1_c++;
     }
     for (int i = s1; i <= e1; ++i) {
-        if (p1[n * L + i] == id_C) {
-            if (c2_idx < K && p1_c < K) child2_consts[n * K + c2_idx++] = consts1[n * K + p1_c];
+        if (p1[p1_base + i] == id_C) {
+            if (c2_idx < K && p1_c < K) child2_consts[c2_base + c2_idx++] = consts1[n * K + p1_c];
             p1_c++;
         }
     }
     
     for (int i = s2; i <= e2; ++i) {
-        if (p2[n * L + i] == id_C) p2_c++;
+        if (p2[p2_base + i] == id_C) p2_c++;
     }
     for (int i = e2 + 1; i < L; ++i) {
-        if (p2[n * L + i] == id_C) {
-            if (c2_idx < K && p2_c < K) child2_consts[n * K + c2_idx++] = consts2[n * K + p2_c];
+        if (p2[p2_base + i] == id_C) {
+            if (c2_idx < K && p2_c < K) child2_consts[c2_base + c2_idx++] = consts2[n * K + p2_c];
             p2_c++;
         }
     }
     
     while (c2_idx < K) {
         int fill_idx = c2_idx;
-        child2_consts[n * K + c2_idx] = consts2[n * K + (fill_idx % K)];
+        child2_consts[c2_base + c2_idx] = consts2[n * K + (fill_idx % K)];
         c2_idx++;
     }
 }
@@ -1039,18 +1225,24 @@ __global__ void crossover_constants_kernel(
 __global__ void sbx_constants_kernel(
     const float* __restrict__ consts1_orig,
     const float* __restrict__ consts2_orig,
+    const int64_t* __restrict__ p1_indices,
+    const int64_t* __restrict__ p2_indices,
     const float* __restrict__ u_sbx,
     const float* __restrict__ mask_rand,
     float* __restrict__ consts1_out,
     float* __restrict__ consts2_out,
-    int total,
+    int total, int K,
     float eta
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total) return;
 
-    float c1 = consts1_orig[idx];
-    float c2 = consts2_orig[idx];
+    int pair = idx / K;
+    int constant_idx = idx - pair * K;
+    int64_t p1_row = p1_indices != nullptr ? p1_indices[pair] : pair;
+    int64_t p2_row = p2_indices != nullptr ? p2_indices[pair] : pair;
+    float c1 = consts1_orig[p1_row * K + constant_idx];
+    float c2 = consts2_orig[p2_row * K + constant_idx];
     if (mask_rand[idx] >= 0.5f) {
         consts1_out[idx] = c1;
         consts2_out[idx] = c2;
@@ -1093,6 +1285,10 @@ void launch_crossover_splicing(
     crossover_splicing_kernel<<<blocks, threads>>>(
         parent1.data_ptr<unsigned char>(),
         parent2.data_ptr<unsigned char>(),
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
         starts1.data_ptr<int64_t>(),
         ends1.data_ptr<int64_t>(),
         starts2.data_ptr<int64_t>(),
@@ -1156,6 +1352,68 @@ __global__ void hoist_mutation_kernel(
     }
     
     // 4. Pad Remainder
+    for (int i = subtree_len; i < L; ++i) {
+        row[i] = (unsigned char)PAD_ID;
+    }
+}
+
+// Hoist directly on selected rows. Computing valid subtree bounds in the same
+// thread avoids materializing a [selected, L] int64 range matrix and the
+// index_select/index_copy round trip used by the generic launcher.
+__global__ void hoist_mutation_indirect_kernel(
+    unsigned char* __restrict__ population,
+    const int64_t* __restrict__ row_indices,
+    const int* __restrict__ token_arities,
+    const int64_t* __restrict__ rand_ints,
+    int N, int L, int vocab_size, int PAD_ID
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+
+    int64_t row_idx = row_indices[n];
+    unsigned char* row = population + row_idx * (int64_t)L;
+    uint64_t rng = (uint64_t)rand_ints[n];
+    int selected_start = -1;
+    int selected_end = -1;
+    int count = 0;
+
+    // Match find_subtree_ranges_kernel + hoist_mutation_kernel exactly:
+    // visit every valid end in sequence order and use the same reservoir LCG.
+    for (int end = 0; end < L; ++end) {
+        int token = (int)row[end];
+        if (token == PAD_ID) break;
+        int arity = (token >= 0 && token < vocab_size) ? token_arities[token] : 0;
+        int start = end;
+        bool valid = (arity == 0);
+        if (arity > 0) {
+            int needed = arity;
+            for (int j = end - 1; j >= 0; --j) {
+                int t = (int)row[j];
+                if (t == PAD_ID) break;
+                int a = (t >= 0 && t < vocab_size) ? token_arities[t] : 0;
+                needed += a - 1;
+                if (needed == 0) {
+                    start = j;
+                    valid = true;
+                    break;
+                }
+            }
+        }
+        if (valid) {
+            ++count;
+            rng = rng * 6364136223846793005ULL + 1;
+            if ((rng % count) == 0) {
+                selected_start = start;
+                selected_end = end;
+            }
+        }
+    }
+
+    if (selected_end < 0) return;
+    int subtree_len = selected_end - selected_start + 1;
+    for (int i = 0; i < subtree_len; ++i) {
+        row[i] = row[selected_start + i];
+    }
     for (int i = subtree_len; i < L; ++i) {
         row[i] = (unsigned char)PAD_ID;
     }
@@ -1701,77 +1959,102 @@ std::vector<torch::Tensor> evolve_generation(
     auto p2_winner_idx = winner_idx.index_select(0, p2_src_t);
     auto copy_winner_idx = winner_idx.index_select(0, copy_src_t);
     
-    auto parents1 = population.index_select(0, p1_winner_idx).contiguous();
-    auto parents2 = population.index_select(0, p2_winner_idx).contiguous();
-
     // Keep crossover selection as a device mask. Compacting with nonzero followed
     // by index_select/index_copy added allocator traffic and synchronization to
     // every generation; the splice kernels can cheaply copy masked-out parents.
     auto cx_prob = torch::rand({n_pairs}, float_opt);
     auto cx_candidate_mask = (cx_prob < crossover_rate);
-    auto all_starts1 = torch::empty({n_pairs, L}, long_opt);
-    auto all_starts2 = torch::empty({n_pairs, L}, long_opt);
     auto lengths1 = torch::empty({n_pairs}, long_opt);
     auto lengths2 = torch::empty({n_pairs}, long_opt);
-    launch_find_subtree_ranges(parents1, token_arities, all_starts1, PAD_ID, lengths1);
-    launch_find_subtree_ranges(parents2, token_arities, all_starts2, PAD_ID, lengths2);
-
     auto rand_e1 = torch::rand({n_pairs}, float_opt);
     auto rand_e2 = torch::rand({n_pairs}, float_opt);
     auto s1 = torch::empty({n_pairs}, long_opt);
     auto e1 = torch::empty({n_pairs}, long_opt);
     auto s2 = torch::empty({n_pairs}, long_opt);
     auto e2 = torch::empty({n_pairs}, long_opt);
-    launch_select_subtree_points(rand_e1, lengths1, all_starts1, s1, e1);
-    launch_select_subtree_points(rand_e2, lengths2, all_starts2, s2, e2);
+    int threads_ranges = 256;
+    int blocks_ranges = (n_pairs + threads_ranges - 1) / threads_ranges;
+    select_subtree_range_indirect_kernel<<<blocks_ranges, threads_ranges>>>(
+        population.data_ptr<unsigned char>(), p1_winner_idx.data_ptr<int64_t>(),
+        token_arities.data_ptr<int32_t>(), rand_e1.data_ptr<float>(),
+        lengths1.data_ptr<int64_t>(), s1.data_ptr<int64_t>(), e1.data_ptr<int64_t>(),
+        n_pairs, L, token_arities.size(0), PAD_ID);
+    select_subtree_range_indirect_kernel<<<blocks_ranges, threads_ranges>>>(
+        population.data_ptr<unsigned char>(), p2_winner_idx.data_ptr<int64_t>(),
+        token_arities.data_ptr<int32_t>(), rand_e2.data_ptr<float>(),
+        lengths2.data_ptr<int64_t>(), s2.data_ptr<int64_t>(), e2.data_ptr<int64_t>(),
+        n_pairs, L, token_arities.size(0), PAD_ID);
 
     auto cx_mask_flat = torch::empty({n_pairs}, torch::TensorOptions().dtype(torch::kBool).device(device));
     launch_validate_crossover_lengths(lengths1, lengths2, s1, e1, s2, e2, cx_mask_flat, L);
     cx_mask_flat.logical_and_(cx_candidate_mask);
 
-    auto child1 = torch::empty_like(parents1);
-    auto child2 = torch::empty_like(parents2);
-    launch_crossover_splicing(parents1, parents2, s1, e1, s2, e2,
-                              child1, child2, PAD_ID, cx_mask_flat);
-    
-    auto final_c1 = child1;
-    auto final_c2 = child2;
-    
+    // Preserve the historical RNG stream while making point-mutation inputs
+    // available to the fused splice writer.
+    auto u_sbx = torch::rand({n_pairs, K}, float_opt);
+    auto mask_sbx_rand = torch::rand({n_pairs, K}, float_opt);
+    auto mut_rand = torch::rand({B}, float_opt);
+    bool has_bank = (mutation_bank.numel() > 0);
+    float point_cut = has_bank ? 0.5f : 0.8f;
+
     auto offspring = torch::empty_like(population);
-    offspring.index_copy_(0, c1_dest_t, final_c1);
-    offspring.index_copy_(0, c2_dest_t, final_c2);
+    int threads_splice = 256;
+    int blocks_splice = (n_pairs * L + threads_splice - 1) / threads_splice;
+    crossover_splicing_mutation_kernel<<<blocks_splice, threads_splice>>>(
+        population.data_ptr<unsigned char>(), population.data_ptr<unsigned char>(),
+        p1_winner_idx.data_ptr<int64_t>(), p2_winner_idx.data_ptr<int64_t>(),
+        c1_dest_t.data_ptr<int64_t>(), c2_dest_t.data_ptr<int64_t>(),
+        s1.data_ptr<int64_t>(), e1.data_ptr<int64_t>(),
+        s2.data_ptr<int64_t>(), e2.data_ptr<int64_t>(),
+        cx_mask_flat.data_ptr<bool>(), offspring.data_ptr<unsigned char>(),
+        offspring.data_ptr<unsigned char>(), mut_rand.data_ptr<float>(), point_cut,
+        token_arities.data_ptr<int32_t>(),
+        arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
+        arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
+        arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
+        mutation_rate, token_arities.size(0), rng_seed, generation,
+        n_pairs, L, PAD_ID);
+
     offspring.index_copy_(0, copy_dest_t, population.index_select(0, copy_winner_idx));
-    
-    auto consts1_orig = constants.index_select(0, p1_winner_idx).contiguous();
-    auto consts2_orig = constants.index_select(0, p2_winner_idx).contiguous();
+    int copy_mut_total = copy_dest_t.size(0) * L;
+    int copy_mut_blocks = (copy_mut_total + threads_splice - 1) / threads_splice;
+    mutation_philox_indirect_kernel<<<copy_mut_blocks, threads_splice>>>(
+        offspring.data_ptr<unsigned char>(), copy_dest_t.data_ptr<int64_t>(),
+        mut_rand.data_ptr<float>(), point_cut, token_arities.data_ptr<int32_t>(),
+        arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
+        arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
+        arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
+        mutation_rate, copy_dest_t.size(0), L, token_arities.size(0), PAD_ID,
+        rng_seed, generation);
     
     // --- SOTA I1: Simulated Binary Crossover (SBX) for Constants ---
     float sbx_eta = 2.0;
-    auto u_sbx = torch::rand({n_pairs, K}, float_opt);
-    auto mask_sbx_rand = torch::rand({n_pairs, K}, float_opt); // 50% probability to blend each constant
-    auto consts1 = torch::empty_like(consts1_orig);
-    auto consts2 = torch::empty_like(consts2_orig);
+    auto consts1 = torch::empty({n_pairs, K}, float_opt);
+    auto consts2 = torch::empty({n_pairs, K}, float_opt);
     int sbx_total = n_pairs * K;
     int threads_sbx = 256;
     int blocks_sbx = (sbx_total + threads_sbx - 1) / threads_sbx;
     sbx_constants_kernel<<<blocks_sbx, threads_sbx>>>(
-        consts1_orig.data_ptr<float>(),
-        consts2_orig.data_ptr<float>(),
+        constants.data_ptr<float>(),
+        constants.data_ptr<float>(),
+        p1_winner_idx.data_ptr<int64_t>(),
+        p2_winner_idx.data_ptr<int64_t>(),
         u_sbx.data_ptr<float>(),
         mask_sbx_rand.data_ptr<float>(),
         consts1.data_ptr<float>(),
         consts2.data_ptr<float>(),
-        sbx_total,
+        sbx_total, K,
         sbx_eta
     );
     
-    auto child1_consts = torch::empty_like(consts1);
-    auto child2_consts = torch::empty_like(consts2);
+    auto offspring_consts = torch::empty_like(constants);
     int threads_consts = 256;
     int blocks_consts = (n_pairs + threads_consts - 1) / threads_consts;
     crossover_constants_kernel<<<blocks_consts, threads_consts>>>(
-        parents1.data_ptr<unsigned char>(),
-        parents2.data_ptr<unsigned char>(),
+        population.data_ptr<unsigned char>(),
+        population.data_ptr<unsigned char>(),
+        p1_winner_idx.data_ptr<int64_t>(),
+        p2_winner_idx.data_ptr<int64_t>(),
         consts1.data_ptr<float>(),
         consts2.data_ptr<float>(),
         s1.data_ptr<int64_t>(),
@@ -1779,16 +2062,13 @@ std::vector<torch::Tensor> evolve_generation(
         s2.data_ptr<int64_t>(),
         e2.data_ptr<int64_t>(),
         cx_mask_flat.data_ptr<bool>(),
-        child1_consts.data_ptr<float>(),
-        child2_consts.data_ptr<float>(),
+        offspring_consts.data_ptr<float>(),
+        offspring_consts.data_ptr<float>(),
+        c1_dest_t.data_ptr<int64_t>(),
+        c2_dest_t.data_ptr<int64_t>(),
         n_pairs, L, K, id_C
     );
-    consts1 = child1_consts;
-    consts2 = child2_consts;
-    
-    auto offspring_consts = torch::empty_like(constants);
-    offspring_consts.index_copy_(0, c1_dest_t, consts1);
-    offspring_consts.index_copy_(0, c2_dest_t, consts2);
+
     offspring_consts.index_copy_(0, copy_dest_t, constants.index_select(0, copy_winner_idx));
     
     // 3. Mutation 
@@ -1797,56 +2077,28 @@ std::vector<torch::Tensor> evolve_generation(
     // If Bank > 0: 50% Point, 30% Structural, 20% Hoist
     // Else:        80% Point,                20% Hoist
     
-    auto mut_rand = torch::rand({B}, float_opt);
-    bool has_bank = (mutation_bank.numel() > 0);
-    torch::Tensor point_mask, struct_mask, hoist_mask;
+    torch::Tensor struct_mask, hoist_mask;
     
     if (has_bank) {
-        point_mask = (mut_rand < 0.5);
         float struct_cut = 0.5f + 0.3f * mutation_rate;
         float hoist_cut = 0.8f + 0.2f * mutation_rate;
         struct_mask = (mut_rand >= 0.5) & (mut_rand < struct_cut);
         hoist_mask = (mut_rand >= 0.8) & (mut_rand < hoist_cut);
     } else {
-        point_mask = (mut_rand < 0.8);
         float hoist_cut = 0.8f + 0.2f * mutation_rate;
         hoist_mask = (mut_rand >= 0.8) & (mut_rand < hoist_cut);
     }
 
     // BUG-ELT-1 Fix: Exclude elite (index 0) from all mutations to preserve pure best.
-    point_mask.index_put_({0}, false);
     if (has_bank) {
         struct_mask.index_put_({0}, false);
     }
     hoist_mask.index_put_({0}, false);
     
-    // Point mutation is per-token, so it still receives mutation_rate inside the kernel.
-    // Structural and hoist mutation are per-individual; prefiltering here avoids
-    // expensive subtree range kernels for candidates that would become no-ops.
-    
-    // A. Point Mutation Path
+    // Point mutation is fused into the crossover writer. Structural and hoist
+    // mutation remain per-individual operations.
     // OPTIMIZED: eliminado .any().item<bool>() — cada llamada forzaba sync GPU→CPU.
     // nonzero() devuelve tensor vacío si mask=False, y index_select sobre tensor vacío es no-op.
-    {
-        auto point_idx = torch::nonzero(point_mask).squeeze(1);
-        auto point_pop = offspring.index_select(0, point_idx);
-        int point_B = point_pop.size(0);
-        if (point_B > 0) {
-            int threads = 256;
-            int blocks = (point_B * L + threads - 1) / threads;
-            mutation_philox_kernel<<<blocks, threads>>>(
-                point_pop.data_ptr<unsigned char>(), point_idx.data_ptr<int64_t>(),
-                token_arities.data_ptr<int32_t>(),
-                arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
-                arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
-                arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
-                mutation_rate, point_B, L, token_arities.size(0), PAD_ID,
-                rng_seed, generation
-            );
-        }
-
-        offspring.index_copy_(0, point_idx, point_pop);
-    }
     
     // B. Structural Mutation Path (Grafting from Bank)
     // OPTIMIZED: eliminado .any().item<bool>() y .sum().item<int>() — ambos forzaban sync GPU→CPU.
@@ -1855,32 +2107,39 @@ std::vector<torch::Tensor> evolve_generation(
         auto struct_idx = torch::nonzero(struct_mask).squeeze(1);
         int n_struct = (int)struct_idx.size(0);
         if (n_struct > 0) {
-        auto struct_pop = offspring.index_select(0, struct_idx);
-        
         int bank_size = mutation_bank.size(0);
         auto bank_indices = torch::randint(0, bank_size, {n_struct}, long_opt);
-        auto bank_trees = mutation_bank.index_select(0, bank_indices);
-        
-        auto starts_pop = torch::empty({n_struct, L}, long_opt);
-        auto starts_bank = torch::empty({n_struct, L}, long_opt);
         auto len_pop = torch::empty({n_struct}, long_opt);
         auto len_bank = torch::empty({n_struct}, long_opt);
-        launch_find_subtree_ranges(struct_pop, token_arities, starts_pop, PAD_ID, len_pop);
-        launch_find_subtree_ranges(bank_trees, token_arities, starts_bank, PAD_ID, len_bank);
-        
         auto rand_e_pop = torch::rand({n_struct}, float_opt);
         auto rand_e_bank = torch::rand({n_struct}, float_opt);
         auto s_pop = torch::empty({n_struct}, long_opt);
         auto e_pop = torch::empty({n_struct}, long_opt);
         auto s_bank = torch::empty({n_struct}, long_opt);
         auto e_bank = torch::empty({n_struct}, long_opt);
-        launch_select_subtree_points(rand_e_pop, len_pop, starts_pop, s_pop, e_pop);
-        launch_select_subtree_points(rand_e_bank, len_bank, starts_bank, s_bank, e_bank);
-        
-        auto child = torch::empty_like(struct_pop);
-        auto dummy_child = torch::empty_like(struct_pop);
-        
-        launch_crossover_splicing(struct_pop, bank_trees, s_pop, e_pop, s_bank, e_bank, child, dummy_child, PAD_ID);
+        int struct_range_blocks = (n_struct + threads_ranges - 1) / threads_ranges;
+        select_subtree_range_indirect_kernel<<<struct_range_blocks, threads_ranges>>>(
+            offspring.data_ptr<unsigned char>(), struct_idx.data_ptr<int64_t>(),
+            token_arities.data_ptr<int32_t>(), rand_e_pop.data_ptr<float>(),
+            len_pop.data_ptr<int64_t>(), s_pop.data_ptr<int64_t>(), e_pop.data_ptr<int64_t>(),
+            n_struct, L, token_arities.size(0), PAD_ID);
+        select_subtree_range_indirect_kernel<<<struct_range_blocks, threads_ranges>>>(
+            mutation_bank.data_ptr<unsigned char>(), bank_indices.data_ptr<int64_t>(),
+            token_arities.data_ptr<int32_t>(), rand_e_bank.data_ptr<float>(),
+            len_bank.data_ptr<int64_t>(), s_bank.data_ptr<int64_t>(), e_bank.data_ptr<int64_t>(),
+            n_struct, L, token_arities.size(0), PAD_ID);
+
+        auto child = torch::empty({n_struct, L}, byte_opt);
+        auto dummy_child = torch::empty({n_struct, L}, byte_opt);
+        int struct_splice_blocks = (n_struct * L + threads_splice - 1) / threads_splice;
+        crossover_splicing_kernel<<<struct_splice_blocks, threads_splice>>>(
+            offspring.data_ptr<unsigned char>(), mutation_bank.data_ptr<unsigned char>(),
+            struct_idx.data_ptr<int64_t>(), bank_indices.data_ptr<int64_t>(),
+            nullptr, nullptr,
+            s_pop.data_ptr<int64_t>(), e_pop.data_ptr<int64_t>(),
+            s_bank.data_ptr<int64_t>(), e_bank.data_ptr<int64_t>(),
+            nullptr, child.data_ptr<unsigned char>(), dummy_child.data_ptr<unsigned char>(),
+            n_struct, L, PAD_ID);
         
         offspring.index_copy_(0, struct_idx, child);
         } // end if (n_struct > 0)
@@ -1891,18 +2150,14 @@ std::vector<torch::Tensor> evolve_generation(
     {
         auto hoist_idx = torch::nonzero(hoist_mask).squeeze(1);
         if (hoist_idx.size(0) > 0) {
-        auto hoist_pop = offspring.index_select(0, hoist_idx);
-        
-        // Find subtree ranges for hoist candidates
-        auto starts_hoist = torch::empty({hoist_pop.size(0), L}, long_opt);
-        launch_find_subtree_ranges(hoist_pop, token_arities, starts_hoist, PAD_ID);
-        
-        auto r_floats = torch::empty({0}, float_opt);
-        auto r_ints = torch::randint(0, 1000000, {hoist_pop.size(0)}, long_opt);
-        
-        launch_hoist_mutation(hoist_pop, starts_hoist, r_floats, r_ints, 1.0f, PAD_ID);
-        
-        offspring.index_copy_(0, hoist_idx, hoist_pop);
+        int n_hoist = (int)hoist_idx.size(0);
+        auto r_ints = torch::randint(0, 1000000, {n_hoist}, long_opt);
+        const int hoist_threads = 128;
+        const int hoist_blocks = (n_hoist + hoist_threads - 1) / hoist_threads;
+        hoist_mutation_indirect_kernel<<<hoist_blocks, hoist_threads>>>(
+            offspring.data_ptr<unsigned char>(), hoist_idx.data_ptr<int64_t>(),
+            token_arities.data_ptr<int32_t>(), r_ints.data_ptr<int64_t>(),
+            n_hoist, L, token_arities.size(0), PAD_ID);
         } // end if (hoist_idx.size(0) > 0)
     } // end hoist_mask scope
     
