@@ -30,6 +30,11 @@ KEY_CONFIG_FIELDS = (
     "pattern_inject_interval",
     "pattern_inject_percent",
     "validate_cuda_random_population",
+    "cuda_eval_mode",
+    "cuda_autotune",
+    "cuda_fused_evolve_score",
+    "pso_constants_only",
+    "pso_roi_adaptive",
 )
 
 DEFAULT_CONFIG_COMPAT = {
@@ -103,6 +108,9 @@ def main() -> int:
     parser.add_argument("--split-code", action="store_true",
                         help="Separate groups by git_sha/git_dirty/git_diff_sha when present.")
     parser.add_argument("--sort", choices=("rmse", "speed", "balanced"), default="rmse")
+    parser.add_argument("--baseline-tag", default=None,
+                        help="Compare the newest summary with this tag against --candidate-tag.")
+    parser.add_argument("--candidate-tag", default=None)
     args = parser.parse_args()
 
     rows = [
@@ -115,6 +123,29 @@ def main() -> int:
         rows = [row for row in rows if row.get("generations") == args.generations]
     if args.islands is not None:
         rows = [row for row in rows if row.get("islands") == args.islands]
+
+    if args.baseline_tag and args.candidate_tag:
+        baseline = [row for row in rows if row.get("tag") == args.baseline_tag]
+        candidate = [row for row in rows if row.get("tag") == args.candidate_tag]
+        if baseline and candidate:
+            base = max(baseline, key=lambda row: row.get("timestamp_utc", ""))
+            cand = max(candidate, key=lambda row: row.get("timestamp_utc", ""))
+            base_speed = float(base.get("hot_trimmed_mean_evals_per_sec") or 0.0)
+            cand_speed = float(cand.get("hot_trimmed_mean_evals_per_sec") or 0.0)
+            base_rmse = base.get("hot_best_rmse_median")
+            cand_rmse = cand.get("hot_best_rmse_median")
+            speedup = cand_speed / base_speed if base_speed > 0 else float("nan")
+            rmse_ratio = (float(cand_rmse) / float(base_rmse)
+                          if base_rmse not in (None, 0) and cand_rmse is not None else float("nan"))
+            print(
+                f"comparison baseline={args.baseline_tag} candidate={args.candidate_tag} "
+                f"speedup={speedup:.4f}x ({(speedup - 1.0) * 100.0:+.2f}%) "
+                f"rmse_ratio={rmse_ratio:.4f} "
+                f"success={cand.get('converged_repeats', 0)}/{cand.get('repeats', 0)} "
+                f"vs {base.get('converged_repeats', 0)}/{base.get('repeats', 0)}"
+            )
+        else:
+            print(f"comparison unavailable: baseline_rows={len(baseline)} candidate_rows={len(candidate)}")
 
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:

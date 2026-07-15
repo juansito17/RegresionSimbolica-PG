@@ -21,9 +21,9 @@
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-#define PSO_STACK_SIZE 64
+#define PSO_STACK_SIZE 32
 #define PSO_MAX_L 256
-#define PSO_MAX_K 32
+#define PSO_MAX_K 16
 #define PSO_MAX_D 1024      // max data samples
 #define PSO_MAX_PARTICLES 64
 
@@ -54,7 +54,7 @@ __device__ __forceinline__ scalar_t safe_pow_fused(scalar_t a, scalar_t b) {
 
 template <typename scalar_t>
 __device__ __forceinline__ scalar_t eval_rpn_single(
-    const int64_t* prog, int L,
+    const unsigned char* prog, int L,
     const scalar_t* x_vars, int num_vars, int d_idx, int D,
     const scalar_t* consts, int K,
     int PAD_ID, int id_x_start,
@@ -75,7 +75,7 @@ __device__ __forceinline__ scalar_t eval_rpn_single(
     int c_idx = 0;
 
     for (int pc = 0; pc < L; ++pc) {
-        int64_t token = prog[pc];
+        int64_t token = (int64_t)prog[pc];
         if (token == PAD_ID) break;
 
         scalar_t val = (scalar_t)0.0;
@@ -239,7 +239,7 @@ __global__ void fused_pso_kernel(
     if (p >= num_particles) return;
 
     // === Load formula into shared memory (all threads cooperate) ===
-    __shared__ int64_t s_prog[PSO_MAX_L];
+    __shared__ unsigned char s_prog[PSO_MAX_L];
     // Cooperative load
     for (int i = p; i < L; i += num_particles) {
         s_prog[i] = population[b * L + i];
@@ -449,7 +449,8 @@ void launch_fused_pso(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    uint64_t rng_seed
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(init_consts);
@@ -469,9 +470,6 @@ void launch_fused_pso(
 
     // Shared memory: K floats (gbest_pos) + 1 float (gbest_err) + P floats (particle_errs)
     size_t smem_bytes = (K + 1 + num_particles) * sizeof(float);
-
-    // Random seed from current time
-    uint64_t rng_seed = (uint64_t)clock() ^ ((uint64_t)B << 32);
 
     // Grid: B blocks, each with num_particles threads
     int threads = num_particles;

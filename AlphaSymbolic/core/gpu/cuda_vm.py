@@ -21,6 +21,8 @@ class CudaRPNVM:
         self._cache_ids()
         self._output_cache = {}  # P1-2: Pre-allocated output buffers keyed by (B, D, dtype)
         self._empty_constants_cache = {}
+        self._eval_mode_cache = {}
+        self.last_eval_mode = "block"
         
     def _cache_ids(self):
         # Cache IDs standard
@@ -142,6 +144,77 @@ class CudaRPNVM:
         
         return out_preds, out_sp, out_error
 
+    def _launch_fused(self, population, x, constants, y_target, out_rmse, strict_mode, launch_mode):
+        """Launch one native evaluator variant. launch_mode: 0=block, 1=warp."""
+        rpn_cuda.eval_rpn_fused(
+            population, x, constants, y_target, out_rmse,
+            self.PAD_ID, self.id_x_start,
+            self.id_C, self.id_pi, self.id_e,
+            self.id_0, self.id_1, self.id_2, self.id_3, self.id_4, self.id_5, self.id_6, self.id_10,
+            self.op_add, self.op_sub, self.op_mul, self.op_div, self.op_pow, self.op_mod,
+            self.op_sin, self.op_cos, self.op_tan, self.op_log, self.op_exp,
+            self.op_sqrt, self.op_abs, self.op_neg,
+            self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
+            self.op_gamma, self.op_lgamma,
+            self.op_asin, self.op_acos, self.op_atan,
+            3.14159265359, 2.718281828,
+            strict_mode, launch_mode
+        )
+
+    def _select_eval_mode(self, population, x, constants, y_target, out_rmse, strict_mode):
+        """Autotune once per representative workload and cache the fastest safe variant."""
+        from .config import GpuGlobals
+
+        requested = str(getattr(GpuGlobals, 'CUDA_EVAL_MODE', 'auto')).lower()
+        D = int(x.shape[1])
+        if requested == 'block' or D > 32:
+            return 0
+        if requested == 'warp':
+            return 1
+        if not bool(getattr(GpuGlobals, 'CUDA_AUTOTUNE', True)):
+            return 0
+
+        B, L = population.shape
+        K = constants.shape[1] if constants.dim() > 1 else 0
+        # Launch behavior changes at broad population scales, but exact B values
+        # should not create an unbounded cache during partial evaluations.
+        b_bucket = 1 << max(0, int(B - 1).bit_length())
+        key = (population.device.index, str(x.dtype), b_bucket, int(D), int(L), int(K), int(strict_mode))
+        cached = self._eval_mode_cache.get(key)
+        if cached is not None:
+            return cached
+
+        # Tiny batches are latency-bound and not worth a synchronous tuning pass.
+        if B < 4096:
+            self._eval_mode_cache[key] = 0
+            return 0
+
+        timings = {}
+        reference = None
+        candidate = None
+        for mode in (0, 1):
+            self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, mode)
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            for _ in range(3):
+                self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, mode)
+            end.record()
+            end.synchronize()
+            timings[mode] = start.elapsed_time(end)
+            if mode == 0:
+                reference = out_rmse.clone()
+            else:
+                candidate = out_rmse.clone()
+
+        # A launch variant must preserve both numeric results and invalid/overflow
+        # classification. Any disagreement selects the conservative block path.
+        same_class = torch.equal(reference >= 1e14, candidate >= 1e14)
+        numerically_equal = torch.allclose(reference, candidate, rtol=2e-5, atol=2e-5)
+        selected = 1 if same_class and numerically_equal and timings[1] < timings[0] else 0
+        self._eval_mode_cache[key] = selected
+        return selected
+
     def eval_fused(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor,
                    y_target: torch.Tensor, strict_mode: int = 0) -> torch.Tensor:
         """
@@ -182,18 +255,8 @@ class CudaRPNVM:
             self._output_cache[rmse_key] = torch.empty(B, dtype=dtype, device=self.device)
         out_rmse = self._output_cache[rmse_key]
 
-        rpn_cuda.eval_rpn_fused(
-            population, x, constants, y_target, out_rmse,
-            self.PAD_ID, self.id_x_start,
-            self.id_C, self.id_pi, self.id_e,
-            self.id_0, self.id_1, self.id_2, self.id_3, self.id_4, self.id_5, self.id_6, self.id_10,
-            self.op_add, self.op_sub, self.op_mul, self.op_div, self.op_pow, self.op_mod,
-            self.op_sin, self.op_cos, self.op_tan, self.op_log, self.op_exp,
-            self.op_sqrt, self.op_abs, self.op_neg,
-            self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
-            self.op_gamma, self.op_lgamma,
-            self.op_asin, self.op_acos, self.op_atan,
-            3.14159265359, 2.718281828,
-            strict_mode
-        )
+        launch_mode = self._select_eval_mode(
+            population, x, constants, y_target, out_rmse, strict_mode)
+        self.last_eval_mode = 'warp' if launch_mode == 1 else 'block'
+        self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, launch_mode)
         return out_rmse

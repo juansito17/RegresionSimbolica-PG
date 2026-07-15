@@ -1,8 +1,6 @@
 
 import torch
-import random
 import numpy as np
-import time
 from typing import List, Tuple
 from AlphaSymbolic.core.grammar import OPERATORS, ExpressionTree
 from .grammar import PAD_ID, GPUGrammar
@@ -25,6 +23,8 @@ class GPUOperators:
         self.max_len = max_len
         self.num_variables = num_variables
         self.pop_size = pop_size
+        self._rng_seed = int(torch.initial_seed()) & 0x7FFFFFFFFFFFFFFF
+        self._rng_counter = 0
         
         # Pre-allocate memory for random generation
         self.terminal_ids = torch.tensor([self.grammar.token_to_id[t] for t in self.grammar.terminals], device=self.device, dtype=self.pop_dtype)
@@ -42,6 +42,11 @@ class GPUOperators:
         # Arity masks
         self._init_arity_masks()
         self._empty_token_ids = torch.empty(0, device=self.device, dtype=self.pop_dtype)
+
+    def _next_native_seed(self, salt: int = 0) -> int:
+        seed = (self._rng_seed + self._rng_counter * 0x9E3779B97F4A7C15 + int(salt)) & 0x7FFFFFFFFFFFFFFF
+        self._rng_counter += 1
+        return seed
 
     def _get_rand_floats(self, shape) -> torch.Tensor:
         numel = shape[0] * shape[1] if len(shape) == 2 else (shape[0] if len(shape) == 1 else np.prod(shape))
@@ -308,7 +313,7 @@ class GPUOperators:
         if RPN_CUDA_AVAILABLE:
             try:
                 population = torch.empty(size, max_len, dtype=self.pop_dtype, device=device)
-                seed = random.getrandbits(62)
+                seed = self._next_native_seed(0xA341316C)
                 
                 # Ensure contiguous int64 tensors
                 t_ids = self.terminal_ids.contiguous()
@@ -497,7 +502,7 @@ class GPUOperators:
         if RPN_CUDA_AVAILABLE:
             try:
                 population = torch.empty(size, max_len, dtype=self.pop_dtype, device=device)
-                seed = random.getrandbits(62)
+                seed = self._next_native_seed(0xC8013EA4)
                 t_ids = self.terminal_ids.contiguous()
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else self._empty_token_ids
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
@@ -1473,7 +1478,7 @@ class GPUOperators:
             try:
                 c_min = float(getattr(GpuGlobals, 'CONSTANT_MIN_VALUE', -10.0))
                 c_max = float(getattr(GpuGlobals, 'CONSTANT_MAX_VALUE', 10.0))
-                seed = time.time_ns() & 0xFFFFFFFF
+                seed = self._next_native_seed(0xAD90777D) & 0xFFFFFFFF
                 rpn_cuda_native.constant_perturbation(constants, float(rate), float(sigma), c_min, c_max, int(seed))
                 return constants
             except Exception:

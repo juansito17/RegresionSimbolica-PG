@@ -88,6 +88,7 @@ def _configure(args) -> None:
     GpuGlobals.PROGRESS_REPORT_INTERVAL = max(1_000_000, int(args.generations) + 1)
     GpuGlobals.CONSOLE_SHOW_PREDICTION_TABLE = False
     GpuGlobals.SKIP_FINAL_FORMULA_BUILD = True
+    GpuGlobals.CUDA_STAGE_TIMING = bool(args.profile_stages)
     if hasattr(GpuGlobals, "USE_PATTERN_SEEDS"):
         GpuGlobals.USE_PATTERN_SEEDS = False
 
@@ -150,6 +151,8 @@ def _run_once(args, repeat_idx: int, run_meta: dict) -> dict:
         "converged": bool(getattr(engine, "last_run_converged", result is not None)),
         "best_formula": getattr(engine, "last_run_best_formula", result),
         "result": result,
+        "tag": args.tag,
+        "telemetry": getattr(engine, "last_run_metrics", {}),
     }
 
 
@@ -166,7 +169,11 @@ def main() -> int:
                         help="Pausa entre repeats para reducir thermal throttling en portátiles.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout-sec", type=float, default=120.0)
-    parser.add_argument("--output", default=os.path.join("benchmarks", "gpu_console_metrics.jsonl"))
+    parser.add_argument("--output", "--metrics-output", dest="output",
+                        default=os.path.join("benchmarks", "gpu_console_metrics.jsonl"))
+    parser.add_argument("--profile-stages", action="store_true",
+                        help="Measure CUDA stage timings (disabled by default to avoid perturbing runs).")
+    parser.add_argument("--tag", default=None, help="Free-form experiment tag stored in every JSONL row.")
     args = parser.parse_args()
 
     _configure(args)
@@ -179,6 +186,7 @@ def main() -> int:
         "git_dirty": _git_dirty(),
         "git_diff_sha": _git_diff_sha(),
         "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+        "tag": args.tag,
         "config": {
             "max_formula_length": int(getattr(GpuGlobals, "MAX_FORMULA_LENGTH", 0)),
             "max_constants": int(getattr(GpuGlobals, "MAX_CONSTANTS", 0)),
@@ -206,6 +214,12 @@ def main() -> int:
             "fitness_sharing_weight": float(getattr(GpuGlobals, "FITNESS_SHARING_WEIGHT", 0.0)),
             "use_cuda_fitness_sharing": bool(getattr(GpuGlobals, "USE_CUDA_FITNESS_SHARING", False)),
             "validate_cuda_random_population": bool(getattr(GpuGlobals, "VALIDATE_CUDA_RANDOM_POPULATION", False)),
+            "cuda_eval_mode": str(getattr(GpuGlobals, "CUDA_EVAL_MODE", "auto")),
+            "cuda_autotune": bool(getattr(GpuGlobals, "CUDA_AUTOTUNE", True)),
+            "cuda_fused_evolve_score": bool(getattr(GpuGlobals, "CUDA_FUSED_EVOLVE_SCORE", True)),
+            "cuda_stage_timing": bool(getattr(GpuGlobals, "CUDA_STAGE_TIMING", False)),
+            "pso_constants_only": bool(getattr(GpuGlobals, "PSO_CONSTANTS_ONLY", False)),
+            "pso_roi_adaptive": bool(getattr(GpuGlobals, "PSO_ROI_ADAPTIVE", False)),
         },
         "cooldown_sec": float(args.cooldown_sec),
     }
@@ -237,6 +251,7 @@ def main() -> int:
         "git_dirty": run_meta["git_dirty"],
         "git_diff_sha": run_meta["git_diff_sha"],
         "device": run_meta["device"],
+        "tag": args.tag,
         "pop_size": int(args.pop_size),
         "islands": int(args.islands),
         "generations": int(args.generations),

@@ -43,7 +43,8 @@ void launch_rpn_eval_fused(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    int strict_mode = 0
+    int strict_mode = 0,
+    int launch_mode = 0
 );
 
 void run_rpn_cuda(
@@ -256,7 +257,9 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor cached_p1_src,
     torch::Tensor cached_p2_src,
     torch::Tensor cached_copy_src,
-    torch::Tensor cached_island_base
+    torch::Tensor cached_island_base,
+    uint64_t rng_seed,
+    uint64_t generation
 );
 
 // --- Phase 6 Forward Declaration: Fused PSO ---
@@ -280,7 +283,8 @@ void launch_fused_pso(
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val
+    double pi_val, double e_val,
+    uint64_t rng_seed
 );
 
 // --- Phase 5 Forward Declarations (Simplifier + Generator Kernels) ---
@@ -441,7 +445,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("op_gamma"), py::arg("op_lgamma"),
         py::arg("op_asin"), py::arg("op_acos"), py::arg("op_atan"),
         py::arg("pi_val"), py::arg("e_val"),
-        py::arg("strict_mode") = 0);
+        py::arg("strict_mode") = 0,
+        py::arg("launch_mode") = 0);
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)",
         py::arg("population"), py::arg("constants"), py::arg("vocab"), py::arg("arities"), py::arg("PAD_ID"), py::arg("precision") = 4);
     
@@ -453,7 +458,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("crossover_splicing", &launch_crossover_splicing, "Crossover Splicing Kernel (CUDA)",
         py::arg("parent1"), py::arg("parent2"), py::arg("starts1"), py::arg("ends1"),
         py::arg("starts2"), py::arg("ends2"), py::arg("child1"), py::arg("child2"),
-        py::arg("PAD_ID"), py::arg("cx_mask") = torch::Tensor());
+        py::arg("PAD_ID"), py::arg("cx_mask") = torch::empty({0}, torch::kBool));
     m.def("validate_rpn_batch", &launch_validate_rpn_batch, "Validate RPN Batch Kernel (CUDA)");
     m.def("constant_perturbation", &launch_constant_perturbation, "In-place constant perturbation (CUDA)",
         py::arg("constants"), py::arg("rate"), py::arg("sigma"),
@@ -491,7 +496,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("cached_p1_src") = torch::empty({0}, torch::kInt64),
         py::arg("cached_p2_src") = torch::empty({0}, torch::kInt64),
         py::arg("cached_copy_src") = torch::empty({0}, torch::kInt64),
-        py::arg("cached_island_base") = torch::empty({0}, torch::kInt64)
+        py::arg("cached_island_base") = torch::empty({0}, torch::kInt64),
+        py::arg("rng_seed") = 0,
+        py::arg("generation") = 0
     );
 
     // Phase 5: Simplifier + Generator Kernels

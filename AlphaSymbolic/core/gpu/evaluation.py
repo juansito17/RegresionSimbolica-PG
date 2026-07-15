@@ -102,6 +102,7 @@ class GPUEvaluator:
         # ── Fast path: fused kernel ──
         # Returns [B] RMSE directly from GPU — no B×D intermediate buffers.
         can_try_fused = (
+            bool(getattr(GpuGlobals, 'CUDA_FUSED_EVOLVE_SCORE', True)) and
             GpuGlobals.LOSS_FUNCTION == 'RMSE' and
             hasattr(self.vm, 'eval_fused') and
             not self._disable_fused_eval and

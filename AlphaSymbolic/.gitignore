@@ -58,6 +58,9 @@ cache/
 !tests/
 tests/*
 !tests/conftest.py
+!tests/gpu/
+tests/gpu/*
+!tests/gpu/test_cuda_eval_modes.py
 !tests/ui/
 !tests/ui/**
 !tests/e2e/

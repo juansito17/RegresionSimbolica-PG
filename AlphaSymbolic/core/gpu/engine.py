@@ -2,6 +2,9 @@
 import torch
 import time
 import re
+import hashlib
+import os
+import subprocess
 from typing import List, Tuple, Optional
 from AlphaSymbolic.core.grammar import ExpressionTree
 
@@ -20,8 +23,34 @@ from .optimization import GPUOptimizer
 from .simplification import GPUSimplifier
 from .gpu_simplifier import GPUSymbolicSimplifier
 from .cuda_loader import load_rpn_cuda_native
+from .workspace import CUDAEvolutionWorkspace
 
 class TensorGeneticEngine:
+    _cached_code_metadata = None
+
+    @classmethod
+    def _code_metadata(cls):
+        if cls._cached_code_metadata is not None:
+            return dict(cls._cached_code_metadata)
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        data = {'git_sha': 'unknown', 'git_dirty': None, 'git_diff_sha': None}
+        try:
+            data['git_sha'] = subprocess.check_output(
+                ['git', 'rev-parse', '--short', 'HEAD'], cwd=root, text=True,
+                stderr=subprocess.DEVNULL).strip()
+            status = subprocess.check_output(
+                ['git', 'status', '--porcelain'], cwd=root, text=True,
+                stderr=subprocess.DEVNULL)
+            data['git_dirty'] = bool(status.strip())
+            diff = subprocess.check_output(
+                ['git', 'diff', '--no-ext-diff', 'HEAD', '--', '.'], cwd=root,
+                stderr=subprocess.DEVNULL)
+            data['git_diff_sha'] = hashlib.sha256(diff).hexdigest()[:16]
+        except Exception:
+            pass
+        cls._cached_code_metadata = data
+        return dict(data)
+
     def __init__(self, device=None, pop_size=None, max_len=None, num_variables=1, max_constants=5, n_islands=None, model=None):
         # Device selection respects FORCE_CPU_MODE
         if device:
@@ -31,6 +60,7 @@ class TensorGeneticEngine:
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model # Neural Model (AlphaSymbolicModel)
+        self._run_code_metadata = self._code_metadata()
         
         # Defaults from Globals
         if pop_size is None: pop_size = GpuGlobals.POP_SIZE
@@ -119,6 +149,7 @@ class TensorGeneticEngine:
         self._cached_arity_1_ids = None
         self._cached_arity_2_ids = None
         self._cached_orchestrator_io = None
+        self._cuda_evolution_workspace = None
 
         # --- Pre-cached tensors for hot loop ---
         self._island_offsets = torch.arange(0, self.pop_size, self.island_size, device=self.device).view(self.n_islands, 1)
@@ -156,8 +187,131 @@ class TensorGeneticEngine:
 
         # Adaptive Evolution State
         self.current_aggression_factor = 1.0
+        self.last_run_metrics = {}
+        self._run_metric_started = None
+        self._run_best_curve = []
+        self._stage_events = []
+        self._stage_timing_installed = False
+        if bool(getattr(GpuGlobals, 'CUDA_STAGE_TIMING', False)) and self.device.type == 'cuda':
+            self._install_stage_timing()
 
     # --- Wrappers for backward compatibility and convenience ---
+
+    def _install_stage_timing(self):
+        """Attach low-overhead CUDA-event timers to the major engine stages."""
+        if self._stage_timing_installed or self.device.type != 'cuda':
+            return
+        specs = (
+            (self.evaluator, 'evaluate_batch', 'evaluate_batch'),
+            (self, 'evolve_generation_cuda', 'evolve_generation_cuda'),
+            (self.optimizer, 'nano_pso', 'nano_pso'),
+            (self.optimizer, 'lbfgs_optimize_top_k', 'lbfgs'),
+            (self.operators, 'repair_invalid_population', 'repair_invalid'),
+            (self.gpu_simplifier, 'simplify_batch', 'simplify'),
+            (self.operators, 'constant_perturbation', 'constant_perturbation'),
+        )
+        for obj, name, stage in specs:
+            original = getattr(obj, name)
+            if getattr(original, '_cuda_stage_wrapped', False):
+                continue
+
+            def timed(*args, _original=original, _stage=stage, **kwargs):
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                result = _original(*args, **kwargs)
+                end.record()
+                self._stage_events.append((_stage, start, end))
+                return result
+
+            timed._cuda_stage_wrapped = True
+            setattr(obj, name, timed)
+        self._stage_timing_installed = True
+
+    def _begin_run_metrics(self):
+        self._run_metric_started = time.perf_counter()
+        self._run_best_curve = []
+        self._stage_events = []
+        if bool(getattr(GpuGlobals, 'CUDA_STAGE_TIMING', False)) and not self._stage_timing_installed:
+            self._install_stage_timing()
+        if self.device.type == 'cuda':
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+    def _record_best_metric(self, generation: int, rmse: float):
+        if rmse == rmse and rmse < float('inf'):
+            elapsed = time.perf_counter() - self._run_metric_started if self._run_metric_started else 0.0
+            self._run_best_curve.append({
+                'generation': int(generation), 'elapsed_sec': float(elapsed), 'rmse': float(rmse)
+            })
+
+    def _complete_run_metrics(self):
+        elapsed = time.perf_counter() - self._run_metric_started if self._run_metric_started else 0.0
+        stage_ms = {}
+        if self._stage_events and self.device.type == 'cuda':
+            torch.cuda.synchronize(self.device)
+            for stage, start, end in self._stage_events:
+                stage_ms[stage] = stage_ms.get(stage, 0.0) + float(start.elapsed_time(end))
+
+        thresholds = (1e-1, 5e-2, 2e-2, 1e-2, 1e-3, 1e-6)
+        time_to_rmse = {}
+        for threshold in thresholds:
+            hit = next((p for p in self._run_best_curve if p['rmse'] <= threshold), None)
+            time_to_rmse[str(threshold)] = hit['elapsed_sec'] if hit else None
+
+        hardware = {'device': str(self.device)}
+        peak_allocated = peak_reserved = 0
+        if self.device.type == 'cuda':
+            props = torch.cuda.get_device_properties(self.device)
+            hardware.update({
+                'name': props.name,
+                'compute_capability': f'{props.major}.{props.minor}',
+                'total_memory_bytes': int(props.total_memory),
+                'torch_cuda': torch.version.cuda,
+            })
+            peak_allocated = int(torch.cuda.max_memory_allocated(self.device))
+            peak_reserved = int(torch.cuda.max_memory_reserved(self.device))
+
+        generations = int(getattr(self, 'last_run_generations', 0))
+        evals = int(self.pop_size) * generations
+        vm = getattr(self.evaluator, 'vm', None)
+        diversity = None
+        invalid_fraction = None
+        mean_formula_length = None
+        metric_population = getattr(self, '_metrics_population', None)
+        metric_fitness = getattr(self, '_metrics_fitness', None)
+        if metric_population is not None and metric_population.numel() > 0:
+            sample_size = min(4096, int(metric_population.shape[0]))
+            sample = metric_population[:sample_size]
+            diversity = float(torch.unique(sample, dim=0).shape[0]) / float(sample_size)
+            mean_formula_length = float((sample != PAD_ID).sum(dim=1).float().mean().item())
+        if metric_fitness is not None and metric_fitness.numel() > 0:
+            invalid_fraction = float((~torch.isfinite(metric_fitness) | (metric_fitness >= 1e14)).float().mean().item())
+        self.last_run_metrics = {
+            'hardware': hardware,
+            'code': dict(self._run_code_metadata),
+            'kernel_config': {
+                'eval_mode_requested': str(getattr(GpuGlobals, 'CUDA_EVAL_MODE', 'auto')),
+                'autotune': bool(getattr(GpuGlobals, 'CUDA_AUTOTUNE', True)),
+                'fused_evolve_score': bool(getattr(GpuGlobals, 'CUDA_FUSED_EVOLVE_SCORE', True)),
+                'stage_timing': bool(getattr(GpuGlobals, 'CUDA_STAGE_TIMING', False)),
+            },
+            'elapsed_sec': float(elapsed),
+            'generations': generations,
+            'population_size': int(self.pop_size),
+            'evals_per_sec': (evals / elapsed) if elapsed > 0 else 0.0,
+            'best_rmse': float(getattr(self, 'last_run_best_rmse', float('inf'))),
+            'converged': bool(getattr(self, 'last_run_converged', False)),
+            'eval_mode': getattr(vm, 'last_eval_mode', None),
+            'stage_ms': stage_ms,
+            'peak_memory_allocated_bytes': peak_allocated,
+            'peak_memory_reserved_bytes': peak_reserved,
+            'best_curve': list(self._run_best_curve),
+            'time_to_rmse_sec': time_to_rmse,
+            'sampled_structural_diversity': diversity,
+            'invalid_fraction': invalid_fraction,
+            'sampled_mean_formula_length': mean_formula_length,
+        }
+        return self.last_run_metrics
 
     def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None) -> torch.Tensor:
         return self.evaluator.evaluate_batch(population, x, y_target, constants)
@@ -797,7 +951,8 @@ class TensorGeneticEngine:
     
     def evolve_generation_cuda(self, population, constants, fitness, abs_errors, x_t, y_t, mutation_bank,
                                 mutation_rate=0.1, crossover_rate=0.5, 
-                                tournament_size=3, pso_steps=10, pso_particles=20, lengths=None, mad_eps=None):
+                                tournament_size=3, pso_steps=10, pso_particles=20, lengths=None, mad_eps=None,
+                                generation=0):
         """
         Full C++ CUDA Orchestrator: Selection + Crossover + Mutation + PSO.
         Calls the native rpn_cuda_native.evolve_generation function.
@@ -818,6 +973,10 @@ class TensorGeneticEngine:
         
         vm = self._cached_vm
         token_arities = self._cached_token_arities
+        if self._cuda_evolution_workspace is None:
+            self._cuda_evolution_workspace = CUDAEvolutionWorkspace(
+                self.device, self.pop_size, self.max_len, self.max_constants, self.n_islands)
+        workspace = self._cuda_evolution_workspace
         sampling_key = (
             getattr(self.operators, '_sampling_profile', 'full'),
             int(getattr(self.operators, '_sampling_profile_version', 0)),
@@ -868,7 +1027,7 @@ class TensorGeneticEngine:
             return t
         
         if abs_errors is None:
-            abs_errors = torch.empty(0, device=self.device)
+            abs_errors = workspace.empty_float
         if mutation_bank is None:
             mutation_bank = torch.empty(0, device=self.device)
         elif not mutation_bank.is_contiguous():
@@ -876,14 +1035,14 @@ class TensorGeneticEngine:
 
         # Ensure lengths are passed
         if lengths is None:
-            lengths = (population != vm.PAD_ID).sum(dim=1).float()
+            lengths = workspace.formula_lengths(population, vm.PAD_ID)
         else:
-            lengths = lengths.float()
+            lengths = lengths if lengths.dtype == torch.float32 else lengths.float()
             
         # Sanitize inputs to prevent NaN Takeover (Bug N10/N11)
-        fitness = torch.nan_to_num(fitness, nan=float('inf'))
+        fitness = workspace.sanitized_fitness(fitness)
         if abs_errors is not None and abs_errors.numel() > 0:
-            abs_errors = torch.nan_to_num(abs_errors, nan=float('inf'))
+            abs_errors = workspace.sanitized_errors(abs_errors)
 
         # Phase 3: MAD-based Dynamic Epsilons for Lexicase
         if mad_eps is None and abs_errors is not None and abs_errors.numel() > 0:
@@ -896,7 +1055,7 @@ class TensorGeneticEngine:
                 mad_eps *= getattr(GpuGlobals, 'LEXICASE_EPSILON_MULT', 0.1)
         
         if mad_eps is None:
-            mad_eps = torch.empty(0, device=self.device)
+            mad_eps = workspace.empty_float
 
         # Static island-pairing indices: avoid rebuilding arange/cat tensors inside C++ every generation.
         idx_key = (self.pop_size, self.n_islands, self.island_size, self.device.type, self.device.index)
@@ -921,6 +1080,7 @@ class TensorGeneticEngine:
                 'p1': torch.cat(p1_parts).contiguous() if p1_parts else torch.empty(0, device=self.device, dtype=torch.long),
                 'p2': torch.cat(p2_parts).contiguous() if p2_parts else torch.empty(0, device=self.device, dtype=torch.long),
                 'copy': torch.cat(copy_parts).contiguous(),
+                'island_base': torch.arange(self.n_islands, device=self.device, dtype=torch.long) * self.island_size,
             }
             self._cached_orchestrator_indices_key = idx_key
 
@@ -940,7 +1100,8 @@ class TensorGeneticEngine:
             vm.op_sqrt, vm.op_abs, vm.op_neg, vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
             vm.op_gamma, vm.op_lgamma, vm.op_asin, vm.op_acos, vm.op_atan,
             3.14159265359, 2.718281828, self.n_islands,
-            cached_idx['p1'], cached_idx['p2'], cached_idx['copy']
+            cached_idx['p1'], cached_idx['p2'], cached_idx['copy'], cached_idx['island_base'],
+            int(torch.initial_seed()) & 0x7FFFFFFFFFFFFFFF, int(generation)
         ]
         
         result = rpn_cuda.evolve_generation(*_args)
@@ -1351,6 +1512,7 @@ class TensorGeneticEngine:
 
     @torch.no_grad()
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
+        self._begin_run_metrics()
 
         # 1. Data Setup
         # FIX: Use self.dtype
@@ -1661,6 +1823,8 @@ class TensorGeneticEngine:
         # _pso_skip_counter: generaciones desde el último run de PSO.
         _last_pso_rpn_hash = None
         _pso_skip_counter = 0
+        _pso_interval_runtime = max(1, int(GpuGlobals.PSO_INTERVAL))
+        _pso_roi_history = []
         
         # --- P0-1 Optimization: Reuse fitness from C++ orchestrator ---
         cached_next_fit = None       # Fitness returned by evolve_generation_cuda
@@ -1897,7 +2061,7 @@ class TensorGeneticEngine:
             # saltar PSO_SKIP_GENS generaciones para liberar GPU a exploración.
             _pso_adaptive = getattr(GpuGlobals, 'PSO_ADAPTIVE', False)
             _pso_skip_gens = getattr(GpuGlobals, 'PSO_SKIP_GENS', 6)
-            if GpuGlobals.USE_NANO_PSO and generations % GpuGlobals.PSO_INTERVAL == 0:
+            if GpuGlobals.USE_NANO_PSO and generations % _pso_interval_runtime == 0:
                 # El método de hash polinomial y la comparación `torch.equal` causaban costosas sincronizaciones CPU-GPU
                 # que ralentizaban el bucle principal. Se eliminó `_struct_changed` para confiar puramente en `_in_stagnation`.
                 
@@ -1922,6 +2086,16 @@ class TensorGeneticEngine:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
                         pso_steps = GpuGlobals.PSO_STEPS_NORMAL
                     
+                    _base_pso_metric = selection_metric if _cached_var_pen is not None else fitness_rmse
+                    if getattr(GpuGlobals, 'PSO_CONSTANTS_ONLY', False):
+                        _constant_token = self.grammar.token_to_id.get('C', -1)
+                        _has_constant = (population == _constant_token).any(dim=1)
+                        _rank_pso_metric = _base_pso_metric.clone()
+                        _rank_pso_metric.masked_fill_(~_has_constant, float('inf'))
+                    else:
+                        _has_constant = None
+                        _rank_pso_metric = _base_pso_metric
+
                     # BUG-PSO-3 FIX: in stagnation mode mix top-fitness + random candidates.
                     # Previously: 100% top-K → all near-isomorphic (same lgamma family) → PSO
                     # refines constants of clones instead of exploring new structures.
@@ -1929,18 +2103,22 @@ class TensorGeneticEngine:
                     if _in_stagnation:
                         k_top = k_opt // 2
                         k_rand = k_opt - k_top
-                        _, _top_part = torch.topk(selection_metric if _cached_var_pen is not None else fitness_rmse, k_top, largest=False, sorted=False)
-                        _rand_part = torch.randperm(self.pop_size, device=self.device)[:k_rand]
+                        _, _top_part = torch.topk(_rank_pso_metric, k_top, largest=False, sorted=False)
+                        if _has_constant is not None:
+                            _random_rank = torch.rand(self.pop_size, device=self.device)
+                            _random_rank.masked_fill_(~_has_constant, 2.0)
+                            _, _rand_part = torch.topk(_random_rank, k_rand, largest=False, sorted=False)
+                        else:
+                            _rand_part = torch.randperm(self.pop_size, device=self.device)[:k_rand]
                         top_idx = torch.cat([_top_part, _rand_part])
                     elif _cached_var_pen is not None:
-                        _pso_metric = fitness_rmse.clone()
-                        _pso_metric.add_(_cached_var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
-                        _, top_idx = torch.topk(_pso_metric, k_opt, largest=False, sorted=False)
+                        _, top_idx = torch.topk(_rank_pso_metric, k_opt, largest=False, sorted=False)
                     else:
-                        _, top_idx = torch.topk(fitness_rmse, k_opt, largest=False, sorted=False)
+                        _, top_idx = torch.topk(_rank_pso_metric, k_opt, largest=False, sorted=False)
                     
                     opt_pop = population[top_idx]
                     opt_consts = pop_constants[top_idx]
+                    _pre_pso_fitness = fitness_rmse[top_idx].clone()
                     
                     refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=pso_steps)
                     # Forzar constantes enteras si está configurado
@@ -1951,8 +2129,28 @@ class TensorGeneticEngine:
                     if getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False):
                         refined_mse = self.evaluator.evaluate_batch(opt_pop, x_t, y_t, refined_consts, strict_mode=1)
 
-                    pop_constants[top_idx] = refined_consts
-                    fitness_rmse[top_idx] = refined_mse
+                    # PSO is a local polish step: never let it make an individual worse.
+                    _pso_improved = torch.isfinite(refined_mse) & (refined_mse < _pre_pso_fitness)
+                    _improved_idx = top_idx[_pso_improved]
+                    pop_constants[_improved_idx] = refined_consts[_pso_improved]
+                    fitness_rmse[_improved_idx] = refined_mse[_pso_improved]
+
+                    if getattr(GpuGlobals, 'PSO_ROI_ADAPTIVE', False):
+                        _roi = float(_pso_improved.float().mean().item())
+                        _pso_roi_history.append(_roi)
+                        _window = max(1, int(getattr(GpuGlobals, 'PSO_ROI_WINDOW', 3)))
+                        if len(_pso_roi_history) > _window:
+                            del _pso_roi_history[:-_window]
+                        if len(_pso_roi_history) == _window:
+                            _roi_mean = sum(_pso_roi_history) / _window
+                            if (_roi_mean < float(getattr(GpuGlobals, 'PSO_ROI_MIN_IMPROVEMENT', 0.01))
+                                    and not _in_stagnation):
+                                _pso_interval_runtime = min(
+                                    int(getattr(GpuGlobals, 'PSO_MAX_INTERVAL', 16)),
+                                    max(_pso_interval_runtime + 1, _pso_interval_runtime * 2),
+                                )
+                            elif _in_stagnation or _roi_mean >= 0.10:
+                                _pso_interval_runtime = max(1, int(GpuGlobals.PSO_INTERVAL))
 
             # L-BFGS-B Constant Optimization (2nd orden — complementa PSO)
             # Corre cada BFGS_INTERVAL generaciones sobre los top-K mejores individuos.
@@ -1984,6 +2182,10 @@ class TensorGeneticEngine:
             
             # Best Tracking — CUDA Kernel for zero CPU sync until improvement
             # Uses batch_update_best kernel to track best individual entirely on GPU
+            # Keep zero-copy references for end-of-run telemetry. The tensors are
+            # sampled only on completion, so generations pay no synchronization.
+            self._metrics_population = population
+            self._metrics_fitness = fitness_rmse
             
             # Lazy init of GPU-side best tracking tensors (for kernel)
             if not hasattr(self, '_gpu_best_rmse'):
@@ -2128,6 +2330,7 @@ class TensorGeneticEngine:
                     self.best_global_rmse = best_rmse
                     self.best_global_rpn = best_rpn
                     self.best_global_consts = best_consts_vec
+                    self._record_best_metric(generations, best_rmse)
 
                     # --- PHASE 8 Pre-calculation ---
                     is_first = (last_reported_fitness == float('inf'))
@@ -2182,6 +2385,7 @@ class TensorGeneticEngine:
                     self.last_run_generations = generations
                     self.last_run_best_formula = formula
                     self.last_run_converged = True
+                    self._complete_run_metrics()
                     return formula
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
 
@@ -2761,7 +2965,8 @@ class TensorGeneticEngine:
                     pso_steps=orchestrator_pso_steps, # Disable global PSO to avoid OOM
                     pso_particles=GpuGlobals.PSO_PARTICLES,
                     lengths=lengths, # Pass lengths for Parsimony Pressure
-                    mad_eps=None    # Let it calculate MAD inside or pass if available
+                    mad_eps=None,   # Let it calculate MAD inside or pass if available
+                    generation=generations
                 )
                 
                 if next_pop is not None:
@@ -3073,6 +3278,7 @@ class TensorGeneticEngine:
             self.last_run_generations = generations
             self.last_run_best_formula = None
             self.last_run_converged = best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD
+            self._complete_run_metrics()
             return None
 
         if best_rpn is not None:
@@ -3131,9 +3337,11 @@ class TensorGeneticEngine:
              self.last_run_generations = generations
              self.last_run_best_formula = formula
              self.last_run_converged = best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD
+             self._complete_run_metrics()
              return formula
         self.last_run_best_rmse = best_rmse
         self.last_run_generations = generations
         self.last_run_best_formula = None
         self.last_run_converged = False
+        self._complete_run_metrics()
         return None

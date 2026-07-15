@@ -2,9 +2,11 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 import argparse
+import json
 import torch
 import numpy as np
 import time
+from datetime import datetime, timezone
 from AlphaSymbolic.core.gpu import TensorGeneticEngine
 from AlphaSymbolic.ui.logging_utils import configure_logging
 
@@ -154,6 +156,11 @@ if __name__ == "__main__":
                         help="Limitar generaciones para benchmark/debug. Por defecto usa config.py.")
     parser.add_argument("--timeout-sec", type=float, default=None,
                         help="Limitar segundos de ejecucion. Por defecto corre hasta resolver o max-generations.")
+    parser.add_argument("--metrics-output", default=None,
+                        help="Append run telemetry as JSONL to this path.")
+    parser.add_argument("--profile-stages", action="store_true",
+                        help="Measure CUDA stage timings; adds profiling overhead.")
+    parser.add_argument("--tag", default=None, help="Experiment tag stored with telemetry.")
     args = parser.parse_args()
     configure_logging(args.verbose)
 
@@ -179,6 +186,7 @@ if __name__ == "__main__":
     
     GpuGlobals.PROGRESS_REPORT_INTERVAL = max(1, args.progress_interval)
     GpuGlobals.CONSOLE_SHOW_PREDICTION_TABLE = bool(args.prediction_table)
+    GpuGlobals.CUDA_STAGE_TIMING = bool(args.profile_stages)
     if args.max_generations is not None:
         GpuGlobals.GENERATIONS = max(1, args.max_generations)
     # GpuGlobals.USE_PARETO_SELECTION = False  # Removed override to respect config.py
@@ -218,6 +226,27 @@ if __name__ == "__main__":
         print("\nSearch Finished.")
         if final_formula:
             print(f"Final Result: {final_formula}")
+
+        if args.metrics_output:
+            row = dict(getattr(engine, "last_run_metrics", {}))
+            row.update({
+                "record_type": "console_run",
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "tag": args.tag,
+                "config": {
+                    "pop_size": int(GpuGlobals.POP_SIZE),
+                    "islands": int(GpuGlobals.NUM_ISLANDS),
+                    "generations": int(GpuGlobals.GENERATIONS),
+                    "cuda_eval_mode": str(getattr(GpuGlobals, "CUDA_EVAL_MODE", "auto")),
+                    "cuda_autotune": bool(getattr(GpuGlobals, "CUDA_AUTOTUNE", True)),
+                    "cuda_fused_evolve_score": bool(getattr(GpuGlobals, "CUDA_FUSED_EVOLVE_SCORE", True)),
+                    "profile_stages": bool(args.profile_stages),
+                },
+            })
+            os.makedirs(os.path.dirname(os.path.abspath(args.metrics_output)), exist_ok=True)
+            with open(args.metrics_output, "a", encoding="utf-8") as metrics_file:
+                metrics_file.write(json.dumps(row, sort_keys=True) + "\n")
+            print(f"Metrics written to: {os.path.abspath(args.metrics_output)}")
             
     except KeyboardInterrupt:
         print("\nSearch interrupted by user.")

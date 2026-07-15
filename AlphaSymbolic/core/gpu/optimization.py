@@ -102,6 +102,7 @@ class GPUOptimizer:
             self._has_fused_pso = False
             self._has_lbfgs = False
             self._rpn_cuda = None
+        self._pso_call_counter = 0
 
 
 
@@ -154,8 +155,8 @@ class GPUOptimizer:
         
         can_use_fused = (self._has_fused_pso and 
                         D <= 1024 and 
-                        L <= 128 and 
-                        K <= 32 and 
+                        L <= 63 and
+                        K <= 16 and
                         num_particles <= 64)
         
         if can_use_fused:
@@ -361,6 +362,10 @@ class GPUOptimizer:
         # Get opcode IDs from the evaluator's VM
         vm = self.evaluator.vm
         
+        # Derive a deterministic, non-overlapping native Philox stream from the
+        # PyTorch seed and this optimizer's invocation count.
+        rng_seed = (int(torch.initial_seed()) + self._pso_call_counter * 0x9E3779B1) & 0x7FFFFFFFFFFFFFFF
+        self._pso_call_counter += 1
         self._rpn_cuda.fused_pso(
             population.contiguous(),
             constants.contiguous(),
@@ -382,7 +387,8 @@ class GPUOptimizer:
             vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
             vm.op_gamma, vm.op_lgamma,
             vm.op_asin, vm.op_acos, vm.op_atan,
-            math.pi, math.e
+            math.pi, math.e,
+            rng_seed
         )
         
         return gbest_pos, gbest_err

@@ -29,9 +29,10 @@ setup(
                 # -O3: máxima optimización
                 # --use_fast_math: instrucciones FP rápidas (rsqrt, fma, etc.)
                 # -diag-suppress 221: silencia truncation warning (1e300 -> float32)
-                # -Xarch_device/-maxrregcount=64: limita registros para mayor ocupancia
-                'nvcc': ['-O3', '--use_fast_math', '-Xcudafe', '--diag_suppress=221',
-                         '--maxrregcount=64']
+                # Do not impose one register cap on every kernel. The RPN evaluator,
+                # PSO and L-BFGS have very different register/occupancy trade-offs;
+                # a global maxrregcount caused local-memory spills on the RTX 3050.
+                'nvcc': ['-O3', '--use_fast_math', '-Xcudafe', '--diag_suppress=221']
             }
         )
     ],

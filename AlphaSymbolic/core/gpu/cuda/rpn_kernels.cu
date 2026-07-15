@@ -632,6 +632,62 @@ void launch_validate_crossover_lengths(
     );
 }
 
+__device__ __forceinline__ uint4 philox4x32_10(uint4 counter, uint2 key) {
+    constexpr uint32_t M0 = 0xD2511F53U;
+    constexpr uint32_t M1 = 0xCD9E8D57U;
+    constexpr uint32_t W0 = 0x9E3779B9U;
+    constexpr uint32_t W1 = 0xBB67AE85U;
+#pragma unroll
+    for (int round = 0; round < 10; ++round) {
+        uint32_t hi0 = __umulhi(M0, counter.x);
+        uint32_t lo0 = M0 * counter.x;
+        uint32_t hi1 = __umulhi(M1, counter.z);
+        uint32_t lo1 = M1 * counter.z;
+        counter = make_uint4(hi1 ^ counter.y ^ key.x, lo1,
+                             hi0 ^ counter.w ^ key.y, lo0);
+        key.x += W0;
+        key.y += W1;
+    }
+    return counter;
+}
+
+__global__ void mutation_philox_kernel(
+    unsigned char* __restrict__ population,
+    const int64_t* __restrict__ individual_ids,
+    const int* __restrict__ token_arities,
+    const unsigned char* __restrict__ arity_0_ids, int n_0,
+    const unsigned char* __restrict__ arity_1_ids, int n_1,
+    const unsigned char* __restrict__ arity_2_ids, int n_2,
+    float mutation_rate, int B, int L, int vocab_size, int PAD_ID,
+    uint64_t rng_seed, uint64_t generation
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * L) return;
+    int row = idx / L;
+    int token_pos = idx - row * L;
+    int token = (int)population[idx];
+    if (token == PAD_ID) return;
+
+    uint64_t individual = (uint64_t)individual_ids[row];
+    uint4 counter = make_uint4(
+        (uint32_t)(individual * (uint64_t)L + (uint64_t)token_pos),
+        (uint32_t)generation, (uint32_t)(generation >> 32), (uint32_t)individual);
+    uint2 key = make_uint2((uint32_t)rng_seed, (uint32_t)(rng_seed >> 32));
+    uint4 random = philox4x32_10(counter, key);
+    float probability = ((float)random.x + 0.5f) * 2.3283064365386963e-10f;
+    if (probability >= mutation_rate) return;
+
+    int arity = (token >= 0 && token < vocab_size) ? token_arities[token] : 0;
+    uint32_t selector = random.y;
+    if (arity == 0 && n_0 > 0) {
+        population[idx] = arity_0_ids[selector % n_0];
+    } else if (arity == 1 && n_1 > 0) {
+        population[idx] = arity_1_ids[selector % n_1];
+    } else if (arity == 2 && n_2 > 0) {
+        population[idx] = arity_2_ids[selector % n_2];
+    }
+}
+
 __global__ void mutation_kernel(
     unsigned char* __restrict__ population,        // [B, L] (uint8)
     const float* __restrict__ rand_floats,   // [B, L] (0..1)
@@ -1530,7 +1586,9 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor cached_p1_src,
     torch::Tensor cached_p2_src,
     torch::Tensor cached_copy_src,
-    torch::Tensor cached_island_base
+    torch::Tensor cached_island_base,
+    uint64_t rng_seed,
+    uint64_t generation
 ) {
     // Full Orchestrator: Selection + Crossover + Mutation + PSO
     
@@ -1646,55 +1704,35 @@ std::vector<torch::Tensor> evolve_generation(
     auto parents1 = population.index_select(0, p1_winner_idx).contiguous();
     auto parents2 = population.index_select(0, p2_winner_idx).contiguous();
 
-    // Prefilter structural crossover candidates before subtree range kernels.
-    // Non-crossover pairs keep parent structures, while constants still go through SBX below.
+    // Keep crossover selection as a device mask. Compacting with nonzero followed
+    // by index_select/index_copy added allocator traffic and synchronization to
+    // every generation; the splice kernels can cheaply copy masked-out parents.
     auto cx_prob = torch::rand({n_pairs}, float_opt);
     auto cx_candidate_mask = (cx_prob < crossover_rate);
-    auto cx_active_idx = torch::nonzero(cx_candidate_mask).squeeze(1);
-    int n_active_pairs = (int)cx_active_idx.size(0);
-    
-    auto child1 = parents1.clone();
-    auto child2 = parents2.clone();
-    torch::Tensor active_parents1, active_parents2, s1, e1, s2, e2, cx_mask_flat;
+    auto all_starts1 = torch::empty({n_pairs, L}, long_opt);
+    auto all_starts2 = torch::empty({n_pairs, L}, long_opt);
+    auto lengths1 = torch::empty({n_pairs}, long_opt);
+    auto lengths2 = torch::empty({n_pairs}, long_opt);
+    launch_find_subtree_ranges(parents1, token_arities, all_starts1, PAD_ID, lengths1);
+    launch_find_subtree_ranges(parents2, token_arities, all_starts2, PAD_ID, lengths2);
 
-    if (n_active_pairs > 0) {
-        active_parents1 = parents1.index_select(0, cx_active_idx).contiguous();
-        active_parents2 = parents2.index_select(0, cx_active_idx).contiguous();
+    auto rand_e1 = torch::rand({n_pairs}, float_opt);
+    auto rand_e2 = torch::rand({n_pairs}, float_opt);
+    auto s1 = torch::empty({n_pairs}, long_opt);
+    auto e1 = torch::empty({n_pairs}, long_opt);
+    auto s2 = torch::empty({n_pairs}, long_opt);
+    auto e2 = torch::empty({n_pairs}, long_opt);
+    launch_select_subtree_points(rand_e1, lengths1, all_starts1, s1, e1);
+    launch_select_subtree_points(rand_e2, lengths2, all_starts2, s2, e2);
 
-        // Find Subtree Starts using kernel [N_active, L]
-        auto all_starts1 = torch::empty({n_active_pairs, L}, long_opt);
-        auto all_starts2 = torch::empty({n_active_pairs, L}, long_opt);
-        auto lengths1 = torch::empty({n_active_pairs}, long_opt);
-        auto lengths2 = torch::empty({n_active_pairs}, long_opt);
-        
-        launch_find_subtree_ranges(active_parents1, token_arities, all_starts1, PAD_ID, lengths1);
-        launch_find_subtree_ranges(active_parents2, token_arities, all_starts2, PAD_ID, lengths2);
-        
-        // Pick safe subtree endpoints and matching starts in one compact kernel.
-        auto rand_e1 = torch::rand({n_active_pairs}, float_opt);
-        auto rand_e2 = torch::rand({n_active_pairs}, float_opt);
-        s1 = torch::empty({n_active_pairs}, long_opt);
-        e1 = torch::empty({n_active_pairs}, long_opt);
-        s2 = torch::empty({n_active_pairs}, long_opt);
-        e2 = torch::empty({n_active_pairs}, long_opt);
-        launch_select_subtree_points(rand_e1, lengths1, all_starts1, s1, e1);
-        launch_select_subtree_points(rand_e2, lengths2, all_starts2, s2, e2);
-        
-        cx_mask_flat = torch::empty({n_active_pairs}, torch::TensorOptions().dtype(torch::kBool).device(device));
-        launch_validate_crossover_lengths(lengths1, lengths2, s1, e1, s2, e2, cx_mask_flat, L);
+    auto cx_mask_flat = torch::empty({n_pairs}, torch::TensorOptions().dtype(torch::kBool).device(device));
+    launch_validate_crossover_lengths(lengths1, lengths2, s1, e1, s2, e2, cx_mask_flat, L);
+    cx_mask_flat.logical_and_(cx_candidate_mask);
 
-        auto active_child1 = torch::empty_like(active_parents1);
-        auto active_child2 = torch::empty_like(active_parents2);
-        launch_crossover_splicing(active_parents1, active_parents2, s1, e1, s2, e2, active_child1, active_child2, PAD_ID, cx_mask_flat);
-        child1.index_copy_(0, cx_active_idx, active_child1);
-        child2.index_copy_(0, cx_active_idx, active_child2);
-    } else {
-        s1 = torch::empty({0}, long_opt);
-        e1 = torch::empty({0}, long_opt);
-        s2 = torch::empty({0}, long_opt);
-        e2 = torch::empty({0}, long_opt);
-        cx_mask_flat = torch::empty({0}, torch::TensorOptions().dtype(torch::kBool).device(device));
-    }
+    auto child1 = torch::empty_like(parents1);
+    auto child2 = torch::empty_like(parents2);
+    launch_crossover_splicing(parents1, parents2, s1, e1, s2, e2,
+                              child1, child2, PAD_ID, cx_mask_flat);
     
     auto final_c1 = child1;
     auto final_c2 = child2;
@@ -1727,31 +1765,26 @@ std::vector<torch::Tensor> evolve_generation(
         sbx_eta
     );
     
-    if (n_active_pairs > 0) {
-        auto active_consts1 = consts1.index_select(0, cx_active_idx).contiguous();
-        auto active_consts2 = consts2.index_select(0, cx_active_idx).contiguous();
-        auto active_child1_consts = torch::empty_like(active_consts1);
-        auto active_child2_consts = torch::empty_like(active_consts2);
-        
-        int threads_consts = 256;
-        int blocks_consts = (n_active_pairs + threads_consts - 1) / threads_consts;
-        crossover_constants_kernel<<<blocks_consts, threads_consts>>>(
-            active_parents1.data_ptr<unsigned char>(),
-            active_parents2.data_ptr<unsigned char>(),
-            active_consts1.data_ptr<float>(),
-            active_consts2.data_ptr<float>(),
-            s1.data_ptr<int64_t>(),
-            e1.data_ptr<int64_t>(),
-            s2.data_ptr<int64_t>(),
-            e2.data_ptr<int64_t>(),
-            cx_mask_flat.data_ptr<bool>(),
-            active_child1_consts.data_ptr<float>(),
-            active_child2_consts.data_ptr<float>(),
-            n_active_pairs, L, K, id_C
-        );
-        consts1.index_copy_(0, cx_active_idx, active_child1_consts);
-        consts2.index_copy_(0, cx_active_idx, active_child2_consts);
-    }
+    auto child1_consts = torch::empty_like(consts1);
+    auto child2_consts = torch::empty_like(consts2);
+    int threads_consts = 256;
+    int blocks_consts = (n_pairs + threads_consts - 1) / threads_consts;
+    crossover_constants_kernel<<<blocks_consts, threads_consts>>>(
+        parents1.data_ptr<unsigned char>(),
+        parents2.data_ptr<unsigned char>(),
+        consts1.data_ptr<float>(),
+        consts2.data_ptr<float>(),
+        s1.data_ptr<int64_t>(),
+        e1.data_ptr<int64_t>(),
+        s2.data_ptr<int64_t>(),
+        e2.data_ptr<int64_t>(),
+        cx_mask_flat.data_ptr<bool>(),
+        child1_consts.data_ptr<float>(),
+        child2_consts.data_ptr<float>(),
+        n_pairs, L, K, id_C
+    );
+    consts1 = child1_consts;
+    consts2 = child2_consts;
     
     auto offspring_consts = torch::empty_like(constants);
     offspring_consts.index_copy_(0, c1_dest_t, consts1);
@@ -1797,13 +1830,21 @@ std::vector<torch::Tensor> evolve_generation(
     {
         auto point_idx = torch::nonzero(point_mask).squeeze(1);
         auto point_pop = offspring.index_select(0, point_idx);
-        auto r_floats = torch::rand({point_pop.size(0), L}, float_opt);
-        auto r_ints = torch::randint(0, 1000000, {point_pop.size(0), L}, long_opt);
-        
-        launch_mutation_kernel(point_pop, r_floats, r_ints, token_arities,
-                        arity_0_ids, arity_1_ids, arity_2_ids,
-                        mutation_rate, PAD_ID);
-        
+        int point_B = point_pop.size(0);
+        if (point_B > 0) {
+            int threads = 256;
+            int blocks = (point_B * L + threads - 1) / threads;
+            mutation_philox_kernel<<<blocks, threads>>>(
+                point_pop.data_ptr<unsigned char>(), point_idx.data_ptr<int64_t>(),
+                token_arities.data_ptr<int32_t>(),
+                arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
+                arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
+                arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
+                mutation_rate, point_B, L, token_arities.size(0), PAD_ID,
+                rng_seed, generation
+            );
+        }
+
         offspring.index_copy_(0, point_idx, point_pop);
     }
     
@@ -2020,7 +2061,11 @@ __global__ void rpn_eval_fused_kernel(
     bool error = false;
     int c_idx = 0;
 
-    const scalar_t ERROR_VAL = (scalar_t)1e30;
+    constexpr scalar_t INVALID_RMSE = std::is_same<scalar_t, double>::value
+        ? (scalar_t)1e100 : (scalar_t)1e15;
+    constexpr scalar_t MAX_METRIC_DIFF = std::is_same<scalar_t, double>::value
+        ? (scalar_t)1e150 : (scalar_t)4e18;
+    const scalar_t ERROR_VAL = INVALID_RMSE;
 
     if (active) {
     for (int pc = 0; pc < L && pc < FUSED_MAX_L; ++pc) {
@@ -2114,7 +2159,7 @@ __global__ void rpn_eval_fused_kernel(
         if (valid) {
             scalar_t diff = pred - y_target[d_idx];
             scalar_t abs_diff = (diff < (scalar_t)0.0) ? -diff : diff;
-            metric_overflow = isnan(diff) || isinf(diff) || abs_diff > (scalar_t)4e18;
+            metric_overflow = isnan(diff) || isinf(diff) || abs_diff > MAX_METRIC_DIFF;
             sq_err = metric_overflow ? (scalar_t)0.0 : (diff * diff);
             metric_overflow = metric_overflow || isnan(sq_err) || isinf(sq_err);
             if (metric_overflow) sq_err = (scalar_t)0.0;
@@ -2147,13 +2192,13 @@ __global__ void rpn_eval_fused_kernel(
         if (d_idx == 0) {
             scalar_t rmse;
             if (any_invalid_u) {
-                rmse = (scalar_t)1e15;
+                rmse = INVALID_RMSE;
             } else if (any_metric_overflow_u) {
-                rmse = sqrt((scalar_t)1e15);
+                rmse = sqrt(INVALID_RMSE);
             } else {
                 scalar_t mse = sq_err / (scalar_t)D;
                 rmse = sqrt(mse);
-                if (isnan(rmse) || isinf(rmse)) rmse = (scalar_t)1e15;
+                if (isnan(rmse) || isinf(rmse)) rmse = INVALID_RMSE;
             }
             out_rmse[b_idx] = rmse;
         }
@@ -2186,13 +2231,13 @@ __global__ void rpn_eval_fused_kernel(
             if (lane_id == 0) {
                 scalar_t rmse;
                 if (block_invalid) {
-                    rmse = (scalar_t)1e15;
+                    rmse = INVALID_RMSE;
                 } else if (block_metric_overflow) {
-                    rmse = sqrt((scalar_t)1e15);
+                    rmse = sqrt(INVALID_RMSE);
                 } else {
                     scalar_t mse = block_sq_err / (scalar_t)D;
                     rmse = sqrt(mse);
-                    if (isnan(rmse) || isinf(rmse)) rmse = (scalar_t)1e15;
+                    if (isnan(rmse) || isinf(rmse)) rmse = INVALID_RMSE;
                 }
                 out_rmse[b_idx] = rmse;
             }
@@ -2217,7 +2262,8 @@ void launch_rpn_eval_fused(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    int strict_mode
+    int strict_mode,
+    int launch_mode
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(x);
@@ -2230,10 +2276,12 @@ void launch_rpn_eval_fused(
     int D = x.size(1);
     int K = (constants.dim() > 1) ? constants.size(1) : 0;
 
-    // Eight independent warps improve occupancy for small datasets. Larger
-    // datasets use the original block-per-individual reduction.
-    const int block_dim = (D <= 32) ? 256 : ((D + 31) / 32) * 32;
-    const int grid_dim = (D <= 32) ? ((B + 7) / 8) : B;
+    // launch_mode: 0 = block per individual, 1 = eight individuals per block.
+    // Keeping both variants lets the Python VM autotune for the actual GPU and
+    // workload instead of relying on an architecture-specific heuristic.
+    const bool use_warp_mode = (launch_mode == 1 && D <= 32);
+    const int block_dim = use_warp_mode ? 256 : ((D + 31) / 32) * 32;
+    const int grid_dim = use_warp_mode ? ((B + 7) / 8) : B;
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_fused_kernel", ([&] {
         auto launch = [&](auto warp_mode_tag) {
@@ -2257,7 +2305,7 @@ void launch_rpn_eval_fused(
                 strict_mode
             );
         };
-        if (D <= 32) launch(std::true_type{});
+        if (use_warp_mode) launch(std::true_type{});
         else launch(std::false_type{});
     }));
 

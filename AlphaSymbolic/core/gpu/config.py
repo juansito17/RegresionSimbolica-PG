@@ -10,6 +10,13 @@ class GpuGlobals:
     USE_FLOAT32 = True             # OPTIMIZED: Float32 (4-8x speedup on consumer GPUs)
     FORCE_CPU_MODE = False         # Force CPU even if CUDA is available
     USE_CUDA_ORCHESTRATOR = True   # Use C++ Orchestrator for evolution loop
+    # CUDA execution policy. ``auto`` benchmarks the block-per-individual and
+    # multi-warp evaluators once per workload shape and keeps the fastest one.
+    # Explicit ``block``/``warp`` values are useful for reproducible profiling.
+    CUDA_EVAL_MODE = "auto"
+    CUDA_AUTOTUNE = True
+    CUDA_FUSED_EVOLVE_SCORE = True  # Used when the native extension supports it.
+    CUDA_STAGE_TIMING = False       # CUDA events add overhead; benchmarks opt in.
     INF = float('inf')
 
     # ============================================================
@@ -315,6 +322,16 @@ class GpuGlobals:
     PSO_K_NORMAL = 500             # CONVERGENCE FIX: More individuals optimized in normal mode (was 200)
     PSO_K_STAGNATION = 6000        # FIX: más candidatos en plateau real (era 2500; elite fix permite refinamiento más profundo)
     PSO_STAGNATION_THRESHOLD = 10
+    # Do not spend PSO work on structures that cannot consume a constant.
+    # The ROI controller is deliberately opt-in until paired convergence runs
+    # establish that changing the cadence is neutral for a given workload.
+    # Experimental: the extra full-population scan regressed RTX 3050 throughput
+    # in the paired 1M x 120 gate, so the proven default remains disabled.
+    PSO_CONSTANTS_ONLY = False
+    PSO_ROI_ADAPTIVE = False
+    PSO_ROI_WINDOW = 3
+    PSO_ROI_MIN_IMPROVEMENT = 0.01
+    PSO_MAX_INTERVAL = 16
     # ANTI-STAG: PSO adaptativo. Si el best_rpn no cambió desde el último PSO run,
     # saltar PSO_SKIP_IF_NO_STRUCT_CHANGE generaciones para liberar GPU a exploración.
     PSO_ADAPTIVE = False            # CONVERGENCE FIX: Disabled — struct hash was removed, skip logic was always-skip (was True)
