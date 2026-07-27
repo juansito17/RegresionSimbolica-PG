@@ -1,3 +1,5 @@
+import threading
+
 from AlphaSymbolic.ui.live_state import LiveRunState
 
 
@@ -24,3 +26,17 @@ def test_live_run_state_reset_clears_last_output():
 
     assert not state.stop_event.is_set()
     assert state.last_output == ("", "", "", None)
+
+
+def test_wait_for_stop_joins_cooperative_worker():
+    state = LiveRunState(engine=DummyEngine())
+
+    def worker():
+        while not state.engine.stop_flag:
+            state.stop_event.wait(0.01)
+
+    state.thread = threading.Thread(target=worker)
+    state.thread.start()
+
+    assert state.wait_for_stop(1.0)
+    assert not state.thread.is_alive()

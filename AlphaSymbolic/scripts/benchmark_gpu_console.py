@@ -91,6 +91,14 @@ def _configure(args) -> None:
     GpuGlobals.CUDA_STAGE_TIMING = bool(args.profile_stages)
     if hasattr(GpuGlobals, "USE_PATTERN_SEEDS"):
         GpuGlobals.USE_PATTERN_SEEDS = False
+    # Explicit A000170 operator portfolio; generic engine defaults remain
+    # suitable for broad scientific regression.
+    GpuGlobals.USE_OP_SIN = False
+    GpuGlobals.USE_OP_COS = False
+    GpuGlobals.USE_OP_ABS = False
+    GpuGlobals.USE_OP_FACT = True
+    GpuGlobals.USE_OP_GAMMA = True
+    GpuGlobals.USE_OP_LGAMMA = True
 
 
 def _run_once(args, repeat_idx: int, run_meta: dict) -> dict:
@@ -111,7 +119,13 @@ def _run_once(args, repeat_idx: int, run_meta: dict) -> dict:
     if args.warmup_generations > 0:
         old_generations = GpuGlobals.GENERATIONS
         GpuGlobals.GENERATIONS = int(args.warmup_generations)
-        engine.run(x_input, TARGETS, seeds=[], timeout_sec=args.timeout_sec)
+        engine.run(
+            x_input,
+            TARGETS,
+            seeds=[],
+            timeout_sec=args.timeout_sec,
+            use_log=True,
+        )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         GpuGlobals.GENERATIONS = old_generations
@@ -119,7 +133,13 @@ def _run_once(args, repeat_idx: int, run_meta: dict) -> dict:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     start = time.perf_counter()
-    result = engine.run(x_input, TARGETS, seeds=[], timeout_sec=args.timeout_sec)
+    result = engine.run(
+        x_input,
+        TARGETS,
+        seeds=[],
+        timeout_sec=args.timeout_sec,
+        use_log=True,
+    )
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     elapsed = time.perf_counter() - start

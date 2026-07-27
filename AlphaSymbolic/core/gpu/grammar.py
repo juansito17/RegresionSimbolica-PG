@@ -65,8 +65,9 @@ class GPUGrammar:
             if GpuGlobals.USE_OP_LOG:   self.operators.append('log')
             if GpuGlobals.USE_OP_EXP:   self.operators.append('exp')
             if GpuGlobals.USE_OP_FACT:  self.operators.append('fact') 
-            if GpuGlobals.USE_OP_GAMMA: 
+            if GpuGlobals.USE_OP_GAMMA:
                 self.operators.append('gamma')
+            if getattr(GpuGlobals, 'USE_OP_LGAMMA', GpuGlobals.USE_OP_GAMMA):
                 self.operators.append('lgamma')
             if GpuGlobals.USE_OP_ASIN:  self.operators.append('asin')
             if GpuGlobals.USE_OP_ACOS:  self.operators.append('acos')  # FIX Bug 1: Usar 'acos' en lugar de 'C' para evitar colisión con constante

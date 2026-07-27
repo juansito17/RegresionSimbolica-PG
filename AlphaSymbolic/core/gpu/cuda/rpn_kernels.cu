@@ -2254,6 +2254,7 @@ std::vector<torch::Tensor> evolve_generation(
 
 #define FUSED_MAX_L   256    // Max formula length (matches MAX_FORMULA_LENGTH)
 #define FUSED_MAX_VARS  4    // Max variables (x0, x1, x2, x3)
+#define FUSED_MAX_D  1024    // Max threads in the block-per-individual path
 
 template <typename scalar_t, bool WARP_MODE>
 __global__ void rpn_eval_fused_kernel(
@@ -2522,14 +2523,38 @@ void launch_rpn_eval_fused(
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(x);
+    CHECK_INPUT(constants);
     CHECK_INPUT(y_target);
-    if (out_rmse.numel() > 0) { /* pre-allocated */ }
+    CHECK_INPUT(out_rmse);
 
     int B = population.size(0);
     int L = population.size(1);
     int num_vars = x.size(0);
     int D = x.size(1);
     int K = (constants.dim() > 1) ? constants.size(1) : 0;
+
+    TORCH_CHECK(population.dim() == 2, "population must have shape [B, L]");
+    TORCH_CHECK(population.scalar_type() == torch::kUInt8, "population must use uint8 tokens");
+    TORCH_CHECK(x.dim() == 2, "x must have shape [Vars, D]");
+    TORCH_CHECK(B > 0 && L > 0, "population must be non-empty");
+    TORCH_CHECK(num_vars > 0 && num_vars <= FUSED_MAX_VARS,
+                "fused evaluator supports 1..", FUSED_MAX_VARS, " variables");
+    TORCH_CHECK(L <= FUSED_MAX_L,
+                "fused evaluator program length exceeds ", FUSED_MAX_L);
+    TORCH_CHECK(D > 0 && D <= FUSED_MAX_D,
+                "fused evaluator supports 1..", FUSED_MAX_D, " samples");
+    TORCH_CHECK(constants.dim() == 2 && constants.size(0) == B,
+                "constants must have shape [B, K]");
+    TORCH_CHECK(y_target.dim() == 1 && y_target.numel() == D,
+                "y_target must have shape [D]");
+    TORCH_CHECK(out_rmse.dim() == 1 && out_rmse.numel() == B,
+                "out_rmse must have shape [B]");
+    TORCH_CHECK(constants.scalar_type() == x.scalar_type(),
+                "constants dtype must match x");
+    TORCH_CHECK(y_target.scalar_type() == x.scalar_type(),
+                "y_target dtype must match x");
+    TORCH_CHECK(out_rmse.scalar_type() == x.scalar_type(),
+                "out_rmse dtype must match x");
 
     // launch_mode: 0 = block per individual, 1 = eight individuals per block.
     // Keeping both variants lets the Python VM autotune for the actual GPU and

@@ -24,8 +24,6 @@ void linearize_tree(const NodePtr& node, std::vector<LinearGpuNode>& linear_tree
 // --- WEIGHTED FITNESS: Constantes para CUDA ---
 // Estas deben coincidir con los valores en Globals.h
 // CUDA device code no puede acceder a const C++, así que usamos #define
-#define GPU_USE_WEIGHTED_FITNESS true
-#define GPU_WEIGHTED_FITNESS_EXPONENT 0.25
 
 // Single Tree Evaluation Kernel (Updated for Multivariable)
 __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
@@ -34,7 +32,9 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
                                              const double* d_x_values, // Flattened [num_points * num_vars]
                                              size_t num_points,
                                              int num_vars,
-                                             double* d_raw_fitness_results) {
+                                             double* d_raw_fitness_results,
+                                             bool use_weighted_fitness,
+                                             double weighted_fitness_exponent) {
     // Shared memory optimization: Load tree into shared memory
     extern __shared__ LinearGpuNode s_linear_tree[];
 
@@ -119,8 +119,8 @@ __global__ void calculate_raw_fitness_kernel(const LinearGpuNode* d_linear_tree,
             double diff = predicted_val - d_targets[idx];
             double sq_error = diff * diff;
             // --- WEIGHTED FITNESS: Apply exponential weight ---
-            if (GPU_USE_WEIGHTED_FITNESS) {
-                double weight = exp((double)idx * GPU_WEIGHTED_FITNESS_EXPONENT);
+            if (use_weighted_fitness) {
+                double weight = exp((double)idx * weighted_fitness_exponent);
                 sq_error *= weight;
             }
             d_raw_fitness_results[idx] = sq_error;
@@ -162,7 +162,9 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
                                            const double* d_x_values,
                                            int num_points,
                                            int num_vars,
-                                           double* d_results) {
+                                           double* d_results,
+                                           bool use_weighted_fitness,
+                                           double weighted_fitness_exponent) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < pop_size) {
@@ -249,15 +251,15 @@ __global__ void evaluate_population_kernel(const LinearGpuNode* d_all_nodes,
             
             // --- WEIGHTED FITNESS: Peso exponencial ---
             double weight = 1.0;
-            if (GPU_USE_WEIGHTED_FITNESS) {
-                weight = exp((double)p * GPU_WEIGHTED_FITNESS_EXPONENT);
+            if (use_weighted_fitness) {
+                weight = exp((double)p * weighted_fitness_exponent);
             }
             total_weight += weight;
             sum_sq_error += sq_error * weight;
         }
 
         // Normalizar por suma de pesos para obtener MSE ponderado
-        if (GPU_USE_WEIGHTED_FITNESS && total_weight > 0.0) {
+        if (use_weighted_fitness && total_weight > 0.0) {
             sum_sq_error = sum_sq_error / total_weight * num_points; // Escalar de vuelta
         }
         d_results[idx] = sum_sq_error;
@@ -298,7 +300,8 @@ double evaluate_fitness_gpu(NodePtr tree,
     // Launch kernel to calculate individual squared errors
     size_t shared_mem_size = tree_size * sizeof(LinearGpuNode);
     calculate_raw_fitness_kernel<<<blocksPerGrid, threadsPerBlock, shared_mem_size>>>(
-        d_linear_tree, tree_size, d_targets, d_x_values, num_points, num_vars, d_raw_fitness_results
+        d_linear_tree, tree_size, d_targets, d_x_values, num_points, num_vars,
+        d_raw_fitness_results, USE_WEIGHTED_FITNESS, WEIGHTED_FITNESS_EXPONENT
     );
     cudaDeviceSynchronize(); // Ensure kernel completes before reduction
 
@@ -317,6 +320,16 @@ double evaluate_fitness_gpu(NodePtr tree,
     double sum_sq_error_gpu = 0.0;
     cudaMemcpy(&sum_sq_error_gpu, d_raw_fitness_results, sizeof(double), cudaMemcpyDeviceToHost);
 
+    if (USE_WEIGHTED_FITNESS) {
+        double total_weight = 0.0;
+        for (size_t i = 0; i < num_points; ++i) {
+            total_weight += exp(static_cast<double>(i) * WEIGHTED_FITNESS_EXPONENT);
+        }
+        if (total_weight > 0.0 && isfinite(total_weight)) {
+            sum_sq_error_gpu = sum_sq_error_gpu / total_weight * num_points;
+        }
+    }
+
     cudaFree(d_linear_tree);
     cudaFree(d_raw_fitness_results);
 
@@ -334,15 +347,13 @@ double evaluate_fitness_gpu(NodePtr tree,
         raw_fitness = sum_sq_error_gpu;
     }
 
-    double complexity = static_cast<double>(::tree_size(tree));
-    double penalty = complexity * COMPLEXITY_PENALTY_FACTOR;
-    double final_fitness = raw_fitness * (1.0 + penalty);
-
-    if (isnan(final_fitness) || isinf(final_fitness) || final_fitness < 0) {
+    // Complexity is applied exactly once by evaluate_fitness(), matching the
+    // CPU path. This function is the GPU implementation of raw fitness.
+    if (isnan(raw_fitness) || isinf(raw_fitness) || raw_fitness < 0) {
         return INF;
     }
 
-    return final_fitness;
+    return raw_fitness;
 }
 
 void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
@@ -396,7 +407,9 @@ void evaluate_population_gpu(const std::vector<LinearGpuNode>& all_nodes,
     int blocksPerGrid = (pop_size + threadsPerBlock - 1) / threadsPerBlock;
 
     evaluate_population_kernel<<<blocksPerGrid, threadsPerBlock>>>(
-        d_all_nodes, d_offsets, d_sizes, pop_size, d_targets, d_x_values, num_points, num_vars, d_results
+        d_all_nodes, d_offsets, d_sizes, pop_size, d_targets, d_x_values,
+        num_points, num_vars, d_results,
+        USE_WEIGHTED_FITNESS, WEIGHTED_FITNESS_EXPONENT
     );
 
     // Synchronize and copy back
@@ -452,7 +465,9 @@ __global__ void evaluate_all_populations_kernel(
     int num_vars,
     double* __restrict__ d_results,
     double complexity_penalty_factor,
-    bool use_rmse) 
+    bool use_rmse,
+    bool use_weighted_fitness,
+    double weighted_fitness_exponent)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -535,8 +550,8 @@ __global__ void evaluate_all_populations_kernel(
             
             // Weighted fitness
             double weight = 1.0;
-            if (GPU_USE_WEIGHTED_FITNESS) {
-                weight = exp((double)p * GPU_WEIGHTED_FITNESS_EXPONENT);
+            if (use_weighted_fitness) {
+                weight = exp((double)p * weighted_fitness_exponent);
             }
             total_weight += weight;
             sum_sq_error += sq_error * weight;
@@ -545,7 +560,7 @@ __global__ void evaluate_all_populations_kernel(
         // Calculate final fitness with complexity penalty ON GPU
         double raw_fitness = GPU_MAX_DOUBLE;
         if (valid && sum_sq_error < 1e300) {
-            if (GPU_USE_WEIGHTED_FITNESS && total_weight > 0.0) {
+            if (use_weighted_fitness && total_weight > 0.0) {
                 sum_sq_error = sum_sq_error / total_weight * num_points;
             }
             
@@ -628,7 +643,8 @@ void evaluate_all_populations_gpu(
     evaluate_all_populations_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
         d_all_nodes, d_offsets, d_sizes, total_trees,
         d_targets, d_x_values, num_points, num_vars, d_results,
-        COMPLEXITY_PENALTY_FACTOR, USE_RMSE_FITNESS
+        COMPLEXITY_PENALTY_FACTOR, USE_RMSE_FITNESS,
+        USE_WEIGHTED_FITNESS, WEIGHTED_FITNESS_EXPONENT
     );
 
     // Async copy results back
@@ -750,7 +766,8 @@ void launch_evaluation_async(
     evaluate_all_populations_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
         d_nodes, d_offsets, d_sizes, total_trees,
         d_targets, d_x_values, num_points, num_vars, d_results,
-        COMPLEXITY_PENALTY_FACTOR, USE_RMSE_FITNESS
+        COMPLEXITY_PENALTY_FACTOR, USE_RMSE_FITNESS,
+        USE_WEIGHTED_FITNESS, WEIGHTED_FITNESS_EXPONENT
     );
     
     // Async copy results to pinned memory

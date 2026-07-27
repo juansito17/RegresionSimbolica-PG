@@ -39,6 +39,23 @@ class LiveRunState:
             except Exception:
                 pass
 
+    def wait_for_stop(self, timeout: float = 5.0) -> bool:
+        """Request cancellation and wait a bounded time for the worker."""
+        self.request_stop()
+        thread = self.thread
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(max(0.0, float(timeout)))
+        return not thread.is_alive()
+
+    def clear_runtime(self) -> None:
+        """Release per-run objects once a worker is no longer owned by the UI."""
+        self.engine = None
+        if self.thread is None or not self.thread.is_alive():
+            self.thread = None
+
     def is_running(self) -> bool:
         return self.thread is not None and self.thread.is_alive()
 

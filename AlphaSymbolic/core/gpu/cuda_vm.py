@@ -15,6 +15,13 @@ except ImportError:
     print("[CUDA VM] Warning: 'rpn_cuda_native' extension not found. Please compile it.")
 
 class CudaRPNVM:
+    # Hard limits compiled into rpn_eval_fused_kernel. Keep these next to the
+    # Python dispatch so unsupported shapes never reach a kernel that would
+    # otherwise truncate the program or silently replace x4+ with zero.
+    FUSED_MAX_VARS = 4
+    FUSED_MAX_L = 256
+    FUSED_MAX_D = 1024
+
     def __init__(self, grammar, device):
         self.grammar = grammar
         self.device = device
@@ -146,6 +153,10 @@ class CudaRPNVM:
 
     def _launch_fused(self, population, x, constants, y_target, out_rmse, strict_mode, launch_mode):
         """Launch one native evaluator variant. launch_mode: 0=block, 1=warp."""
+        if x.ndim != 2 or int(x.shape[0]) != self.num_vars:
+            raise ValueError(
+                f"x must have shape [{self.num_vars}, D] for this grammar"
+            )
         rpn_cuda.eval_rpn_fused(
             population, x, constants, y_target, out_rmse,
             self.PAD_ID, self.id_x_start,
@@ -159,6 +170,21 @@ class CudaRPNVM:
             self.op_asin, self.op_acos, self.op_atan,
             3.14159265359, 2.718281828,
             strict_mode, launch_mode
+        )
+
+    def supports_fused_shape(self, population: torch.Tensor, x: torch.Tensor) -> bool:
+        """Return whether the compiled fused evaluator can represent the workload."""
+        if population.ndim != 2 or x.ndim != 2:
+            return False
+        return (
+            int(population.shape[0]) > 0
+            and int(population.shape[1]) > 0
+            and self.num_vars > 0
+            and self.num_vars <= self.FUSED_MAX_VARS
+            and int(x.shape[0]) == self.num_vars
+            and int(x.shape[1]) > 0
+            and int(population.shape[1]) <= self.FUSED_MAX_L
+            and int(x.shape[1]) <= self.FUSED_MAX_D
         )
 
     def _select_eval_mode(self, population, x, constants, y_target, out_rmse, strict_mode):
@@ -232,6 +258,14 @@ class CudaRPNVM:
         """
         if rpn_cuda is None or not hasattr(rpn_cuda, 'eval_rpn_fused'):
             raise RuntimeError("eval_rpn_fused not available — recompile CUDA extension.")
+
+        if not self.supports_fused_shape(population, x):
+            raise ValueError(
+                "eval_rpn_fused only supports at most "
+                f"{self.FUSED_MAX_VARS} variables, programs of length "
+                f"{self.FUSED_MAX_L}, and {self.FUSED_MAX_D} samples; "
+                "use eval() for the classic safe path."
+            )
 
         B = population.shape[0]
         dtype = x.dtype

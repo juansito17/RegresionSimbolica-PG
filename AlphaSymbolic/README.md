@@ -96,6 +96,14 @@ python AlphaSymbolic\scripts\profile_gpu_engine.py
 Perfila rutas del motor GPU.
 
 ```powershell
+python AlphaSymbolic\scripts\benchmark_scientific.py --suite all --methods alphasymbolic
+```
+
+Ejecuta Nguyen, Feynman, Friedman y N-Reinas con semillas registradas, datos
+train/test independientes y métricas estrictas fuera de muestra. PySR es un
+comparador opcional mediante `--methods alphasymbolic,pysr`.
+
+```powershell
 python AlphaSymbolic\scripts\infinite_search.py
 ```
 
@@ -118,7 +126,7 @@ Parametros frecuentes:
 | `USE_FLOAT32` | Usa `float32` para ganar velocidad en GPUs de consumo. |
 | `FORCE_CPU_MODE` | Fuerza CPU aunque CUDA este disponible. |
 | `USE_CUDA_ORCHESTRATOR` | Activa el orquestador CUDA nativo. |
-| `USE_LOG_TRANSFORMATION` | Transforma `Y` con log. Importante para N-Queens; puede ser incorrecto para datos simples. |
+| `USE_LOG_TRANSFORMATION` | Transforma `Y` con log. Su valor seguro por defecto es `False`; N-Reinas lo activa explícitamente. |
 | `POP_SIZE` | Tamano global de poblacion. |
 | `NUM_ISLANDS` | Cantidad de islas evolutivas. |
 | `MAX_FORMULA_LENGTH` | Longitud maxima de formula. |
@@ -126,7 +134,14 @@ Parametros frecuentes:
 | `USE_INITIAL_FORMULA` | Inyecta una formula inicial si esta activo. |
 | `INITIAL_FORMULA_STRING` | Formula semilla. |
 
-La configuracion actual esta optimizada para una busqueda sobre N-Queens/OEIS A000170 con variables derivadas de `n`, `n % 6` y `n % 2`.
+La configuración genérica usa operadores científicos comunes y no transforma
+el objetivo implícitamente. Los scripts de N-Reinas seleccionan de forma
+explícita su perfil combinatorio (`fact`, `gamma`, `lgamma`) y el objetivo
+logarítmico.
+
+El informe reproducible de rendimiento, convergencia, corrección CUDA y
+limitaciones está en
+[`docs/GPU_ENGINE_AUDIT_2026-07-26.md`](../docs/GPU_ENGINE_AUDIT_2026-07-26.md).
 
 ---
 

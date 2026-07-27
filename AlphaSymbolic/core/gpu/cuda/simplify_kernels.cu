@@ -153,35 +153,8 @@ __global__ void simplify_batch_kernel(
                 changed = true; continue;
             }
             
-            // --- exp(log(x)) -> x ---
-            if (tok == op_exp && prev == op_log) {
-                f[j] = PAD_ID_CONST; f[j-1] = PAD_ID_CONST;
-                changed = true; continue;
-            }
-            
-            // --- log(exp(x)) -> x ---
-            if (tok == op_log && prev == op_exp) {
-                f[j] = PAD_ID_CONST; f[j-1] = PAD_ID_CONST;
-                changed = true; continue;
-            }
-            
-            // --- acos(cos(x)) -> x ---
-            if (tok == op_acos && prev == op_cos) {
-                f[j] = PAD_ID_CONST; f[j-1] = PAD_ID_CONST;
-                changed = true; continue;
-            }
-            
-            // --- asin(sin(x)) -> x ---
-            if (tok == op_asin && prev == op_sin) {
-                f[j] = PAD_ID_CONST; f[j-1] = PAD_ID_CONST;
-                changed = true; continue;
-            }
-            
-            // --- atan(tan(x)) -> x ---
-            if (tok == op_atan && prev == op_tan) {
-                f[j] = PAD_ID_CONST; f[j-1] = PAD_ID_CONST;
-                changed = true; continue;
-            }
+            // Inverse log/exp and trigonometric chains require domain/range
+            // proofs. A data-agnostic kernel must not reduce them globally.
             
             // --- sqrt(x^2) -> abs(x) ---
             if (j >= 2 && tok == op_sqrt && prev == op_pow && f[j-2] == id_2 && op_abs != -1) {
@@ -358,13 +331,6 @@ __global__ void simplify_batch_kernel(
                 changed = true; continue;
             }
             
-            // --- 0 / x -> 0 ---
-            if (op == op_div && arg1_is_zero && id_0 != -1) {
-                for (int k = s1; k <= j; k++) f[k] = PAD_ID_CONST;
-                f[s1] = id_0;
-                changed = true; continue;
-            }
-            
             // --- 0 - x -> neg(x) ---
             if (op == op_minus && arg1_is_zero && op_neg != -1) {
                 f[s2-1] = PAD_ID_CONST;  // remove the 0
@@ -372,8 +338,9 @@ __global__ void simplify_batch_kernel(
                 changed = true; continue;
             }
             
-            // --- Self-cancellation (subtree comparison) ---
-            if ((op == op_minus || op == op_div) && len1 == len2 && len1 > 0) {
+            // Domain-sensitive self-cancellation is disabled.  In particular,
+            // x/x is not 1 at zero and f-f must remain invalid where f is.
+            if (false && (op == op_minus || op == op_div) && len1 == len2 && len1 > 0) {
                 bool match = true;
                 for (int k = 0; k < len1; k++) {
                     if (f[s1 + k] != f[s2 + k]) { match = false; break; }
@@ -393,7 +360,7 @@ __global__ void simplify_batch_kernel(
             }
             
             // --- Term consolidation: x + x -> 2*x, x * x -> x^2 (subtree comparison) ---
-            if ((op == op_plus || op == op_mult) && len1 == len2 && len1 > 0 && len1 <= 3) {
+            if (false && (op == op_plus || op == op_mult) && len1 == len2 && len1 > 0 && len1 <= 3) {
                 bool match = true;
                 for (int k = 0; k < len1; k++) {
                     if (f[s1 + k] != f[s2 + k]) { match = false; break; }
@@ -432,7 +399,7 @@ __global__ void simplify_batch_kernel(
             }
             
             // --- Modulo: x % x -> 0 (subtree comparison) ---
-            if (op == op_mod && len1 == len2 && len1 > 0) {
+            if (false && op == op_mod && len1 == len2 && len1 > 0) {
                 bool match = true;
                 for (int k = 0; k < len1; k++) {
                     if (f[s1 + k] != f[s2 + k]) { match = false; break; }

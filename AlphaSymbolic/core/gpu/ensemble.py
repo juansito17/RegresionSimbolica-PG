@@ -51,11 +51,11 @@ class EnsembleRunner:
         try:
             result = engine.run(x_values, y_targets, seeds, timeout_sec=timeout_sec)
             
-            # Get fitness from last evaluation
-            if hasattr(engine, 'best_rmse'):
-                rmse = engine.best_rmse
-            else:
-                rmse = float('inf')
+            # ``run`` publishes the fitness that belongs to the returned
+            # formula through this stable per-run attribute.  The old
+            # ``best_rmse`` lookup referenced an attribute that the engine
+            # never defines, causing every ensemble member to score as inf.
+            rmse = float(getattr(engine, 'last_run_best_rmse', float('inf')))
             
             return (result, rmse, run_id)
         except Exception as e:

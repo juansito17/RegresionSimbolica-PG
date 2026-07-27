@@ -4,6 +4,8 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 import concurrent.futures
 import os
+import gc
+from collections import OrderedDict
 
 from AlphaSymbolic.core.gp_bridge import GPEngine
 from AlphaSymbolic.search.beam_search import BeamSearch, beam_solve
@@ -42,8 +44,18 @@ def _run_gp_worker(args):
             return {'formula': result, 'rmse': 999.0, 'status': 'eval_error'}
     
     return {'formula': None, 'rmse': 1e9, 'status': 'failed'}
-# Optimized Cache for GPU Engine to avoid startup overhead
-_GPU_ENGINE_CACHE = {}
+# Bounded cache: engine buffers are large (often hundreds of MiB), so an
+# unbounded dictionary keyed by every UI population size is a VRAM leak.
+_GPU_ENGINE_CACHE = OrderedDict()
+_GPU_ENGINE_CACHE_MAX = 1
+
+
+def clear_gpu_engine_cache() -> None:
+    """Release all cached engines and their GPU buffers."""
+    _GPU_ENGINE_CACHE.clear()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def hybrid_solve(
     x_values: np.ndarray,
@@ -143,19 +155,57 @@ def hybrid_solve(
             # Default to Globals if not provided
             tgt_pop = pop_size if pop_size is not None else GpuGlobals.POP_SIZE
             
-            cache_key = (str(device), tgt_pop, num_variables) 
-            if use_engine_cache and cache_key in _GPU_ENGINE_CACHE:
-                gpu_engine = _GPU_ENGINE_CACHE[cache_key]
-            else:
-                # Initialize Engine once
-                gpu_engine = TensorGeneticEngine(pop_size=tgt_pop, n_islands=GpuGlobals.NUM_ISLANDS, device=device, num_variables=num_variables)
-                if use_engine_cache:
+            operator_names = (
+                "USE_OP_PLUS", "USE_OP_MINUS", "USE_OP_MULT", "USE_OP_DIV",
+                "USE_OP_POW", "USE_OP_MOD", "USE_OP_SIN", "USE_OP_COS",
+                "USE_OP_TAN", "USE_OP_LOG", "USE_OP_EXP", "USE_OP_FACT",
+                "USE_OP_GAMMA", "USE_OP_LGAMMA", "USE_OP_SQRT", "USE_OP_ABS",
+            )
+            operator_signature = tuple(
+                bool(getattr(GpuGlobals, name, False)) for name in operator_names
+            )
+            cache_key = (
+                str(device),
+                int(tgt_pop),
+                int(num_variables),
+                int(GpuGlobals.NUM_ISLANDS),
+                int(GpuGlobals.MAX_FORMULA_LENGTH),
+                int(GpuGlobals.MAX_CONSTANTS),
+                bool(GpuGlobals.USE_FLOAT32),
+                operator_signature,
+            )
+
+            # One scheduler per process protects global configuration, cached
+            # buffers and CUDA memory from concurrent live/search/training runs.
+            with GpuGlobals.GPU_EXECUTION_LOCK:
+                if use_engine_cache and cache_key in _GPU_ENGINE_CACHE:
+                    gpu_engine = _GPU_ENGINE_CACHE.pop(cache_key)
                     _GPU_ENGINE_CACHE[cache_key] = gpu_engine
-                
-            print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds (Pop={tgt_pop})...")
-            
-            # Run Evolution
-            best_formula_str = gpu_engine.run(x_values, y_values, seeds=seeds, timeout_sec=gp_timeout, use_log=use_log)
+                else:
+                    gpu_engine = TensorGeneticEngine(
+                        pop_size=tgt_pop,
+                        n_islands=GpuGlobals.NUM_ISLANDS,
+                        device=device,
+                        num_variables=num_variables,
+                    )
+                    if use_engine_cache:
+                        _GPU_ENGINE_CACHE[cache_key] = gpu_engine
+                        while len(_GPU_ENGINE_CACHE) > _GPU_ENGINE_CACHE_MAX:
+                            _, evicted_engine = _GPU_ENGINE_CACHE.popitem(last=False)
+                            del evicted_engine
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                print(f"[Phase 2] Launching TensorGeneticEngine (GPU) with {len(seeds)} seeds (Pop={tgt_pop})...")
+
+                best_formula_str = gpu_engine.run(
+                    x_values,
+                    y_values,
+                    seeds=seeds,
+                    timeout_sec=gp_timeout,
+                    use_log=use_log,
+                )
             
             if best_formula_str:
                 # Calculate RMSE for consistency

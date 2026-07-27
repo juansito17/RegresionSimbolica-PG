@@ -178,6 +178,11 @@ class ExpressionTree:
         # 1b. Handle 'pow' and 'mod' keywords if they leak in
         processed_str = processed_str.replace(' pow ', ' ^ ') 
         processed_str = processed_str.replace(' mod ', ' % ')
+        # Python parses ``^`` as bitwise XOR and gives it a different
+        # precedence from exponentiation.  Normalize before building the AST;
+        # converting the resulting BitXor node later is already too late
+        # (``x^2+1`` would otherwise become ``x^(2+1)``).
+        processed_str = processed_str.replace('^', '**')
         
         # 1c. Handle double negatives which might confuse some versions or edge cases
         # Replace '- -' with '+' (and '--' just in case)
@@ -186,7 +191,7 @@ class ExpressionTree:
             processed_str = processed_str.replace('- -', '+ ')
             processed_str = processed_str.replace('--', '+ ')
 
-        # 2. C++ uses ^ for power, Python uses **. AST parses ^ as BitXor.
+        # 2. Parse the normalized Python expression.
         try:
             tree = ast.parse(processed_str, mode='eval')
             tokens = cls._ast_to_prefix(tree.body)

@@ -63,6 +63,14 @@ results/
 cache/
 .gradio/
 benchmarks/
+!benchmarks/
+benchmarks/*
+!benchmarks/audit_baseline_20260726.jsonl
+!benchmarks/audit_web_blocking_baseline_20260726.jsonl
+!benchmarks/audit_web_async_baseline_20260726.jsonl
+!benchmarks/audit_post_final_20260726.jsonl
+!benchmarks/scientific_post_20260726.jsonl
+!benchmarks/scientific_pysr_20260726.jsonl
 *.pkl
 *.bak
 *.temp

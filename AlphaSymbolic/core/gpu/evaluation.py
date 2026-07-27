@@ -111,7 +111,7 @@ class GPUEvaluator:
             x.is_cuda and
             y_target.is_cuda and
             (constants is None or constants.is_cuda) and
-            N_samples <= 1024
+            self.vm.supports_fused_shape(population, x)
         )
 
         if can_try_fused:

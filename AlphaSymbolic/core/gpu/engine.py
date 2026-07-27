@@ -128,10 +128,10 @@ class TensorGeneticEngine:
         self._cached_initial_consts = None
         self.mutation_bank = None
         
-        # --- SOTA P1: Pareto Optimizer (NSGA-II) ---
+        # --- Experimental Pareto Optimizer (NSGA-II) ---
         self.pareto_optimizer = ParetoOptimizer(device=self.device, dtype=self.dtype)
         
-        # --- SOTA P2: Library Learning ---
+        # --- Experimental Library Learning ---
         self.library_learner = LibraryLearner(
             grammar=self.grammar,
             pop_size=self.pop_size,
@@ -163,7 +163,7 @@ class TensorGeneticEngine:
         self._penalize_mask_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
         self._float_mask_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
 
-        # --- SOTA P1: Pareto rank adjustment buffer (NSGA-II blending) ---
+        # --- Pareto rank adjustment buffer (NSGA-II blending) ---
         self._pareto_rank_buf = torch.zeros(self.pop_size, device=self.device, dtype=self.dtype)
         
         # --- PHASE 7: Lexicase Error Buffer (Reuse to avoid OOM fragmentation/alloc overhead) ---
@@ -187,6 +187,13 @@ class TensorGeneticEngine:
 
         # Adaptive Evolution State
         self.current_aggression_factor = 1.0
+        self.stop_flag = False
+        self.last_run_stopped = False
+        self.last_run_used_log_transform = False
+        self.last_run_best_rmse = float('inf')
+        self.last_run_generations = 0
+        self.last_run_best_formula = None
+        self.last_run_converged = False
         self.last_run_metrics = {}
         self._run_metric_started = None
         self._run_best_curve = []
@@ -196,6 +203,82 @@ class TensorGeneticEngine:
             self._install_stage_timing()
 
     # --- Wrappers for backward compatibility and convenience ---
+
+    @torch.no_grad()
+    def _reset_run_state(self):
+        """Reset every result/cache whose meaning depends on the current dataset.
+
+        Engines are intentionally reusable (for example by the hybrid search
+        facade), so a best individual or learned building block from a previous
+        target must never participate in the next run.
+        """
+        self.stop_flag = False
+        self.last_run_stopped = False
+        self.last_run_used_log_transform = False
+        self.last_run_best_rmse = float('inf')
+        self.last_run_generations = 0
+        self.last_run_best_formula = None
+        self.last_run_converged = False
+        self.last_run_metrics = {}
+
+        self.best_global_rmse = float('inf')
+        self.best_global_rpn = None
+        self.best_global_consts = None
+        self._cached_best_tree_size = None
+        self._sync_counter = 0
+        self._cached_best_rmse_cpu = float('inf')
+        self._cached_best_idx_cpu = 0
+        self._gpu_best_rmse_fallback = float('inf')
+
+        # These buffers are deliberately recreated instead of reused. Besides
+        # being tiny, fresh storage cannot be overwritten by a still-pending
+        # tracker kernel from an aborted previous run.
+        self._gpu_best_rmse = torch.full(
+            (1,), float('inf'), device=self.device, dtype=torch.float32)
+        self._gpu_best_rpn = torch.full(
+            (self.max_len,), PAD_ID, device=self.device, dtype=self.pop_dtype)
+        self._gpu_best_consts = torch.zeros(
+            self.max_constants, device=self.device, dtype=torch.float32)
+        self._gpu_best_idx = torch.zeros(
+            1, device=self.device, dtype=torch.int32)
+
+        self._metrics_population = None
+        self._metrics_fitness = None
+        self._cached_sharing_pen = None
+        self._pareto_front_global = []
+        self._pareto_rank_buf.zero_()
+        self._migration_count = 0
+        self.current_aggression_factor = 1.0
+
+        # The IO cache owns converted views of x/y. Dropping it also eliminates
+        # the (rare but real) chance of allocator pointer reuse selecting stale
+        # values from another dataset.
+        self._cached_orchestrator_io = None
+        self._abs_errors_buf = None
+
+        # Mutation/library memories are fitness-scaled and therefore
+        # dataset-specific. Keep structural caches, but clear learned contents.
+        self.mutation_bank = None
+        pattern_memory = getattr(self, 'pattern_memory', None)
+        if pattern_memory is not None:
+            pattern_memory.patterns_tensor.zero_()
+            pattern_memory.patterns_hash.zero_()
+            pattern_memory.patterns_count.zero_()
+            pattern_memory.patterns_fitness.fill_(1e30)
+            pattern_memory.patterns_len.zero_()
+            pattern_memory.n_patterns = 0
+            pattern_memory.total_recorded = 0
+            pattern_memory.total_injected = 0
+            pattern_memory._useful_cache_n = 0
+            pattern_memory._useful_cache_patterns = None
+            pattern_memory._useful_cache_dirty = True
+
+        library = getattr(self, 'library_learner', None)
+        if library is not None:
+            library.library_tokens.fill_(PAD_ID)
+            library.library_fitness.fill_(float('inf'))
+            library.library_count.zero_()
+            library.valid.zero_()
 
     def _install_stage_timing(self):
         """Attach low-overhead CUDA-event timers to the major engine stages."""
@@ -301,6 +384,9 @@ class TensorGeneticEngine:
             'evals_per_sec': (evals / elapsed) if elapsed > 0 else 0.0,
             'best_rmse': float(getattr(self, 'last_run_best_rmse', float('inf'))),
             'converged': bool(getattr(self, 'last_run_converged', False)),
+            'stopped': bool(getattr(self, 'last_run_stopped', False)),
+            'used_log_transform': bool(
+                getattr(self, 'last_run_used_log_transform', False)),
             'eval_mode': getattr(vm, 'last_eval_mode', None),
             'stage_ms': stage_ms,
             'peak_memory_allocated_bytes': peak_allocated,
@@ -1512,6 +1598,7 @@ class TensorGeneticEngine:
 
     @torch.no_grad()
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
+        self._reset_run_state()
         self._begin_run_metrics()
 
         # 1. Data Setup
@@ -1526,24 +1613,52 @@ class TensorGeneticEngine:
             y_t = torch.tensor(y_values, dtype=self.dtype, device=self.device)
         else:
             y_t = y_values.to(self.device).to(self.dtype)
-            
-        # Log transform if needed (Use arg if provided, else Global)
-        # FIX: Move logic outside so it applies to Tensors too!
-        use_log_local = use_log if use_log is not None else GpuGlobals.USE_LOG_TRANSFORMATION
+
+        # Evaluators expect one target value per sample. Flattening y here also
+        # makes log validation independent of whether callers pass [N] or [N, 1].
+        y_t = y_t.reshape(-1)
+        if x_t.ndim == 1:
+            n_x_samples = x_t.numel()
+        elif x_t.ndim == 2 and x_t.shape[0] == y_t.numel():
+            n_x_samples = x_t.shape[0]  # samples-first [N, V]
+        elif x_t.ndim == 2 and x_t.shape[1] == y_t.numel():
+            n_x_samples = x_t.shape[1]  # variables-first [V, N]
+        else:
+            raise ValueError(
+                "x_values and y_values must contain the same number of samples "
+                f"(x shape={tuple(x_t.shape)}, y size={y_t.numel()})."
+            )
+        if n_x_samples != y_t.numel():
+            raise ValueError(
+                "x_values and y_values must contain the same number of samples "
+                f"(got {n_x_samples} and {y_t.numel()})."
+            )
+
+        # Keep raw targets for validating the user-facing, inverse-transformed
+        # formula. Search fitness continues to use y_t (possibly in log space).
+        y_output_t = y_t
+
+        # An explicit argument is authoritative. The representation probe is an
+        # automatic policy only for the global/default mode.
+        use_log_local = bool(use_log if use_log is not None else GpuGlobals.USE_LOG_TRANSFORMATION)
         log_positive_fraction = 1.0
-        if use_log_local and self.num_variables == 1:
+        if use_log is None and use_log_local and self.num_variables == 1:
             _pos_mask = y_t > 1e-9
             if bool(_pos_mask.all().item()):
                 raw_r2 = self._one_dim_poly_r2(x_t, y_t, degree=3)
                 log_r2 = self._one_dim_poly_r2(x_t, torch.log(y_t), degree=3)
                 if raw_r2 >= 0.999999 and raw_r2 > log_r2 + 1e-4:
                     use_log_local = False
+        self.last_run_used_log_transform = bool(use_log_local)
         if use_log_local:
-             # Masking to avoid log(0)
-             mask = y_t > 1e-9
-             log_positive_fraction = float(mask.float().mean().item()) if mask.numel() > 0 else 0.0
-             y_t = torch.log(y_t[mask])
-             x_t = x_t[mask] 
+             invalid_log_targets = (~torch.isfinite(y_t)) | (y_t <= 0)
+             if bool(invalid_log_targets.any().item()):
+                 n_invalid = int(invalid_log_targets.sum().item())
+                 raise ValueError(
+                     "Log transformation requires every target value to be finite "
+                     f"and strictly positive; found {n_invalid} invalid target(s)."
+                 )
+             y_t = torch.log(y_t)
 
             
         if x_t.ndim == 1: x_t = x_t.unsqueeze(1)
@@ -1560,6 +1675,13 @@ class TensorGeneticEngine:
                 getattr(GpuGlobals, 'USE_LOGSPACE_ALGEBRAIC_SAMPLING', False) and
                 getattr(GpuGlobals, 'LOGSPACE_ALGEBRAIC_MUTATION_PROFILE', False)):
             self.operators.set_sampling_profile("log_algebraic")
+        elif (use_log_local and self.num_variables > 1 and
+                getattr(
+                    GpuGlobals,
+                    'LOGSPACE_MULTIVAR_UNIFORM_OPERATOR_SAMPLING',
+                    False,
+                )):
+            self.operators.set_sampling_profile("full_uniform")
         else:
             self.operators.set_sampling_profile("full")
 
@@ -1715,7 +1837,10 @@ class TensorGeneticEngine:
                                 if seed_r2 > r2_threshold and not has_long_decimal and len(sniper_formula) < 60:
                                     print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
                                     if GpuGlobals.ALLOW_WARMUP_EARLY_EXIT:
-                                        return sniper_formula
+                                        formula_early = sniper_formula
+                                        if self.last_run_used_log_transform:
+                                            formula_early = f"exp({formula_early})"
+                                        return formula_early
                                     else:
                                         print("[Engine] Warmup early exit disabled (Sniper). Continuing evolution...")
                         
@@ -1724,6 +1849,8 @@ class TensorGeneticEngine:
                             best_si = seed_fit.argmin().item()
                             formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
                             formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
+                            if self.last_run_used_log_transform:
+                                formula_early = f"exp({formula_early})"
                             print(f"\n[Engine] Exact solution found! RMSE: {best_seed_rmse:.9e}")
                             
                             # Strict Validation Check
@@ -1752,6 +1879,8 @@ class TensorGeneticEngine:
                                     best_si = seed_fit.argmin().item()
                                     formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
                                     formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
+                                    if self.last_run_used_log_transform:
+                                        formula_early = f"exp({formula_early})"
                                     print(f"\n[Engine] High-R² solution found! RMSE: {best_seed_rmse:.9e}, R²: {seed_r2:.6f}")
                                     
                                     # Strict Validation Check
@@ -1809,7 +1938,7 @@ class TensorGeneticEngine:
         # NO migrar y NO inyectar el global best → la población fresca se desarrolla sola.
         _post_restart_cooldown = 0
         
-        # --- SOTA P2: ALPS — individual age tracking ---
+        # --- Experimental ALPS — individual age tracking ---
         # individual_ages[i] = number of generations individual i has been alive.
         # Age grows each generation; crossover/mutation offspring reset to 0.
         # Age-based penalty is added to selection_metric, giving younger individuals an advantage.
@@ -1837,6 +1966,9 @@ class TensorGeneticEngine:
         start_time = time.time()
         y_var_value = torch.var(y_t).item() if y_t.numel() > 1 else 0.0
         while True:
+            if self.stop_flag:
+                self.last_run_stopped = True
+                break
             # Timeout
             elapsed = time.time() - start_time
             if timeout_sec and elapsed >= timeout_sec: break
@@ -2189,8 +2321,9 @@ class TensorGeneticEngine:
             
             # Lazy init of GPU-side best tracking tensors (for kernel)
             if not hasattr(self, '_gpu_best_rmse'):
-                self._gpu_best_rmse = torch.tensor([1e10], device=self.device, dtype=torch.float32)
-                self._gpu_best_rpn = torch.zeros(self.max_len, dtype=torch.uint8, device=self.device)
+                self._gpu_best_rmse = torch.tensor([float('inf')], device=self.device, dtype=torch.float32)
+                self._gpu_best_rpn = torch.full(
+                    (self.max_len,), PAD_ID, dtype=self.pop_dtype, device=self.device)
                 self._gpu_best_consts = torch.zeros(self.max_constants, dtype=torch.float32, device=self.device)
                 self._gpu_best_idx = torch.zeros(1, dtype=torch.int32, device=self.device)
                 self._sync_counter = 0
@@ -2279,6 +2412,15 @@ class TensorGeneticEngine:
                     if _improved_gpu:
                         min_idx_val = min_idx.item()
                         self._gpu_best_rmse_fallback = min_rmse_val
+                        self._cached_best_rmse_cpu = min_rmse_val
+                        self._cached_best_idx_cpu = min_idx_val
+                        # Keep the fallback tracker semantically identical to
+                        # the CUDA tracker: RMSE, program and constants must
+                        # always describe the same evaluated individual.
+                        self._gpu_best_rmse.fill_(min_rmse_val)
+                        self._gpu_best_idx.fill_(min_idx_val)
+                        self._gpu_best_rpn.copy_(population[min_idx_val])
+                        self._gpu_best_consts.copy_(pop_constants[min_idx_val].float())
                     else:
                         min_idx_val = getattr(self, '_cached_best_idx_cpu', 0)
                 else:
@@ -2374,13 +2516,13 @@ class TensorGeneticEngine:
                     # Convert to string to match expected return type
                     formula = self.rpn_to_infix(best_rpn, best_consts_vec)
                     # Handle Log Transform Inverse if needed
-                    if GpuGlobals.USE_LOG_TRANSFORMATION:
+                    if self.last_run_used_log_transform:
                         formula = f"exp({formula})"
                     
                     # Post-simplify for reduced complexity
                     # Optimization: Only run heavy SymPy simplification for high-quality solutions
                     if best_rmse < 0.01:
-                        formula = self._post_simplify_formula(formula, x_t, y_t)
+                        formula = self._post_simplify_formula(formula, x_t, y_output_t)
                     self.last_run_best_rmse = best_rmse
                     self.last_run_generations = generations
                     self.last_run_best_formula = formula
@@ -2704,7 +2846,7 @@ class TensorGeneticEngine:
             # Evolution Step (Vectorized Island Model + Double Buffering)
             island_offsets = self._island_offsets
 
-            # --- SOTA P2: ALPS — age tracking ---
+            # --- Experimental ALPS — age tracking ---
             # Increment every individual's age each generation.
             # Layer-0 reseed: periodically inject fresh random individuals
             # to ensure the "young" layer never becomes dominated by old elites.
@@ -2761,7 +2903,7 @@ class TensorGeneticEngine:
                 torch.mul(lengths, dynamic_complexity_penalty, out=selection_metric)
                 selection_metric.add_(1.0)
                 
-                # --- SOTA P3: Tarpeian Bloat Control ---
+                # --- Tarpeian bloat control ---
                 if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
                     avg_len = lengths.mean()
                     torch.gt(lengths, avg_len * 1.5, out=self._oversized_buf)
@@ -2813,7 +2955,7 @@ class TensorGeneticEngine:
                             var_pen.sub_((population == vid).any(dim=1).float())
                         selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
-                # --- SOTA P1: Pareto NSGA-II blending ---
+                # --- Experimental Pareto NSGA-II blending ---
                 # Every PARETO_INTERVAL gens, compute Pareto ranks on a sample of PARETO_SAMPLE_K
                 # best candidates (per island) and blend rank * PARETO_RANK_WEIGHT into selection_metric.
                 # This balances RMSE accuracy vs tree complexity (parsimony pressure) without O(N²) on 4M.
@@ -2844,7 +2986,7 @@ class TensorGeneticEngine:
                     if _pw > 0:
                         selection_metric.add_(self._pareto_rank_buf, alpha=_pw)
                 
-                # --- SOTA P2: ALPS — age penalty in selection metric ---
+                # --- Experimental ALPS — age penalty in selection metric ---
                 # Normalize ages to [0, 1] by max_age, then penalize with weight.
                 # This ensures individuals that have existed longer face slightly higher
                 # selection pressure, rewarding structural novelty.
@@ -2917,7 +3059,7 @@ class TensorGeneticEngine:
 
                 # --- [END of Penalty Calculation Block] ---
                 
-                # --- SOTA P4: Lexicase Penalty Injection ---
+                # --- Experimental lexicase penalty injection ---
                 # Fix: Lexicase C++ tournament ignores `selection_metric` and solely uses `abs_errors`.
                 # We extract the pure penalty portion and add it across all test cases.
                 if getattr(GpuGlobals, 'USE_LEXICASE_SELECTION', False) and abs_errors is not None:
@@ -2939,7 +3081,7 @@ class TensorGeneticEngine:
                 
                 # 2. Call Full C++ Orchestrator (Selection + Crossover + Mutation)
                 
-                # --- SOTA P2: Library Learning (Update & Inject) ---
+                # --- Experimental library learning (update and inject) ---
                 if getattr(GpuGlobals, 'USE_LIBRARY_LEARNING', False):
                     # 1. Update Library from current population
                     _lib_interval = int(getattr(GpuGlobals, 'LIBRARY_UPDATE_INTERVAL', 10))
@@ -3033,7 +3175,7 @@ class TensorGeneticEngine:
                 torch.mul(lengths, dynamic_complexity_penalty, out=selection_metric)
                 selection_metric.add_(1.0)
                 
-                # --- SOTA P3: Tarpeian Bloat Control ---
+                # --- Tarpeian bloat control ---
                 if getattr(GpuGlobals, 'USE_TARPEIAN_CONTROL', False):
                     avg_len = lengths.mean()
                     oversized = lengths > avg_len * 1.5
@@ -3073,7 +3215,7 @@ class TensorGeneticEngine:
                         var_pen.sub_((population == vid).any(dim=1).float())
                     selection_metric.add_(var_pen, alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
                 
-                # --- SOTA P1: Pareto blending (Python path, reuse same buffer) ---
+                # --- Experimental Pareto blending (Python path) ---
                 if getattr(GpuGlobals, 'USE_PARETO_SELECTION', False):
                     _p_interval = int(getattr(GpuGlobals, 'PARETO_INTERVAL', 5))
                     if generations % _p_interval == 0:
@@ -3095,7 +3237,7 @@ class TensorGeneticEngine:
                     if _pw2 > 0:
                         selection_metric.add_(self._pareto_rank_buf, alpha=_pw2)
                 
-                # --- SOTA P2: ALPS — age penalty (Python path) ---
+                # --- Experimental ALPS — age penalty (Python path) ---
                 if _alps_enabled:
                     _alps_pw2 = float(getattr(GpuGlobals, 'ALPS_AGE_PENALTY_WEIGHT', 0.05))
                     if _alps_pw2 > 0:
@@ -3125,7 +3267,7 @@ class TensorGeneticEngine:
                         parents = population[sub_idx]
                         parents_consts = pop_constants[sub_idx]
                         
-                        # --- SOTA P0: Headless Chicken Crossover ---
+                        # --- Headless chicken crossover ---
                         _chicken_rate = float(getattr(GpuGlobals, 'HEADLESS_CHICKEN_RATE', 0.15))
                         if _chicken_rate > 0:
                             offspring, off_consts = self.operators.headless_chicken_crossover(
@@ -3229,17 +3371,23 @@ class TensorGeneticEngine:
                      sub_pop = next_pop[top_global_idx]
                      sub_const = next_c[top_global_idx]
 
-                     # Pass to optimized symbolic simplifier (vectorized)
-                     sim_pop, _, n_s = self.gpu_simplifier.simplify_batch(sub_pop, sub_const)
-                     
-                     # Write back
-                     next_pop[top_global_idx] = sim_pop
+                     # Tokens and constants form one semantic unit. Applying
+                     # simplified tokens while discarding remapped constants can
+                     # silently change the formula, so update both or neither.
+                     sim_pop, sim_const, n_s = self.gpu_simplifier.simplify_batch(
+                         sub_pop, sub_const)
+                     if (sim_const is not None and
+                             sim_pop.shape == sub_pop.shape and
+                             sim_const.shape == sub_const.shape):
+                         next_pop[top_global_idx] = sim_pop
+                         next_c[top_global_idx] = sim_const.to(
+                             device=next_c.device, dtype=next_c.dtype)
+                         cached_next_fit = None
                  except Exception as e:
                      print(f"WARN: Simplification failed (Gen {generations}): {e}")
                      # Non-fatal, just skip simplification for this batch
-                 # next_c[top_global_idx] = ... (constants preserved if not PADed)
             
-            # --- SOTA P0: Constant Perturbation ---
+            # --- Constant perturbation ---
             # Apply multiplicative Gaussian noise to a fraction of constants before each generation.
             # Complements PSO (global search) with cheap local neighbourhood exploration.
             # Runs on next_c regardless of CUDA or Python path.
@@ -3257,16 +3405,17 @@ class TensorGeneticEngine:
             population = population[:self.pop_size]
             pop_constants = pop_constants[:self.pop_size]
                  
-        # Capture a final best candidate for telemetry and bounded benchmarks. This
-        # performs one end-of-run sync only, preserving the hot generation path.
+        # Capture the GPU tracker's final candidate. Unlike ``fitness_rmse`` plus
+        # ``population`` here, these buffers are an atomic semantic snapshot of
+        # the same evaluated individual; the population has already been swapped
+        # to unevaluated offspring at this point.
         try:
-            final_rmse_t, final_idx_t = torch.min(fitness_rmse, dim=0)
-            final_rmse = final_rmse_t.item()
-            if final_rmse == final_rmse and final_rmse < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
-                final_idx = final_idx_t.item()
-                best_rmse = final_rmse
-                best_rpn = population[final_idx].clone()
-                best_consts_vec = pop_constants[final_idx].clone()
+            tracked_rmse = self._gpu_best_rmse[0].item()
+            if (tracked_rmse == tracked_rmse and tracked_rmse < float('inf') and
+                    tracked_rmse < (best_rmse - GpuGlobals.FITNESS_EQUALITY_TOLERANCE)):
+                best_rmse = tracked_rmse
+                best_rpn = self._gpu_best_rpn.clone()
+                best_consts_vec = self._gpu_best_consts.clone().to(self.dtype)
                 self.best_global_rmse = best_rmse
                 self.best_global_rpn = best_rpn
                 self.best_global_consts = best_consts_vec
@@ -3315,22 +3464,25 @@ class TensorGeneticEngine:
 
              formula = self.rpn_to_infix(best_rpn, best_consts_vec)
              # Inverse Transform if needed
-             if GpuGlobals.USE_LOG_TRANSFORMATION:
+             if self.last_run_used_log_transform:
                  formula = f"exp({formula})"
              
              formula_pre = formula
              # Optimization: Only run heavy SymPy simplification for high-quality solutions
              if best_rmse < 0.01:
-                formula = self._post_simplify_formula(formula, x_t, y_t)
+                formula = self._post_simplify_formula(formula, x_t, y_output_t)
              # Validate: if post-simplify worsened RMSE on training data, revert
              try:
                  import numpy as np
                  x_np = x_t.cpu().numpy().flatten()
-                 y_np = y_t.cpu().numpy().flatten()
+                 y_np = y_output_t.cpu().numpy().flatten()
                  y_pred = self._eval_formula_safe(formula, x_np)
-                 if y_pred is not None and len(y_pred) == len(y_np):
+                 y_pre_pred = self._eval_formula_safe(formula_pre, x_np)
+                 if (y_pred is not None and y_pre_pred is not None and
+                         len(y_pred) == len(y_np) and len(y_pre_pred) == len(y_np)):
                      rmse_after = float(np.sqrt(np.mean((y_np - y_pred) ** 2)))
-                     if rmse_after > best_rmse * 1.5 + 1e-6:
+                     rmse_before = float(np.sqrt(np.mean((y_np - y_pre_pred) ** 2)))
+                     if rmse_after > rmse_before * 1.1 + 1e-6:
                          formula = formula_pre
              except Exception:
                  pass

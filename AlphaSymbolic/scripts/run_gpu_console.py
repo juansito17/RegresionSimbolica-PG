@@ -107,7 +107,7 @@ def console_mimic_callback(gen, best_rmse, best_rpn_tensor, best_consts_tensor, 
                 preds = preds_tensor.detach().cpu().numpy().flatten()
                 
                 display_targets = TARGETS
-                if GpuGlobals.USE_LOG_TRANSFORMATION:
+                if getattr(engine, "last_run_used_log_transform", True):
                      mask = TARGETS > 1e-9
                      display_targets = np.log(np.where(mask, TARGETS, 1.0))
                 
@@ -187,6 +187,12 @@ if __name__ == "__main__":
     GpuGlobals.PROGRESS_REPORT_INTERVAL = max(1, args.progress_interval)
     GpuGlobals.CONSOLE_SHOW_PREDICTION_TABLE = bool(args.prediction_table)
     GpuGlobals.CUDA_STAGE_TIMING = bool(args.profile_stages)
+    GpuGlobals.USE_OP_SIN = False
+    GpuGlobals.USE_OP_COS = False
+    GpuGlobals.USE_OP_ABS = False
+    GpuGlobals.USE_OP_FACT = True
+    GpuGlobals.USE_OP_GAMMA = True
+    GpuGlobals.USE_OP_LGAMMA = True
     if args.max_generations is not None:
         GpuGlobals.GENERATIONS = max(1, args.max_generations)
     # GpuGlobals.USE_PARETO_SELECTION = False  # Removed override to respect config.py
@@ -219,7 +225,11 @@ if __name__ == "__main__":
             TARGETS, 
             seeds=seeds, 
             timeout_sec=args.timeout_sec,
-            callback=console_mimic_callback
+            callback=console_mimic_callback,
+            # This runner is specifically the A000170 count-sequence
+            # experiment. Keep log fitting explicit instead of leaking it as
+            # the default for unrelated scientific datasets.
+            use_log=True,
         )
 
         

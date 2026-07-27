@@ -1,7 +1,11 @@
 import math
+import threading
 import numpy as np
 
 class GpuGlobals:
+    # Process-wide guard for code paths that still adapt these legacy globals.
+    # New engine APIs should prefer immutable per-run configuration.
+    GPU_EXECUTION_LOCK = threading.Lock()
     # ============================================================
     #                  1. SYSTEM & HARDWARE
     # ============================================================
@@ -49,7 +53,10 @@ class GpuGlobals:
     PROBLEM_Y_FULL = PROBLEM_Y_FILTERED  # Alias
 
     # Input Transformations
-    USE_LOG_TRANSFORMATION = True  # Transform Y to log(Y) for high-magnitude data
+    # Scientific-safe default: callers must explicitly opt into fitting log(y).
+    # A global implicit transform changes the target problem and is invalid for
+    # non-positive observations. N-Queens runners opt in at the call site.
+    USE_LOG_TRANSFORMATION = False
     VAR_MOD_X1 = 6                 # x1 = n % 6
     VAR_MOD_X2 = 2                 # x2 = n % 2
 
@@ -112,6 +119,10 @@ class GpuGlobals:
     USE_LOGSPACE_ALGEBRAIC_SAMPLING = True   # CONVERGENCE: random algebraic subpopulation when target is log-transformed
     LOGSPACE_ALGEBRAIC_MUTATION_PROFILE = True # Keep mutations algebraic in log-space; evaluator still supports full grammar
     LOGSPACE_ALGEBRAIC_SINGLE_VAR_ONLY = True  # Preserve full grammar for multi-var combinatorial searches
+    # Paired 1M x 120 measurements on A000170 showed the former uniform
+    # within-arity portfolio converges better than the generic operator prior
+    # for log-transformed, multi-variable sequence features.
+    LOGSPACE_MULTIVAR_UNIFORM_OPERATOR_SAMPLING = True
     LOGSPACE_ALGEBRAIC_MIN_POSITIVE_FRACTION = 0.95 # Only treat mostly-positive targets as exponential/log-space
     LOGSPACE_VARIABLE_TERMINAL_WEIGHT = 4      # Weighted random terminal pool; not a formula template
     LOGSPACE_FREE_CONST_TERMINAL_WEIGHT = 4    # Balanced C weight; benchmarked exact on log-quadratic exponential
@@ -142,23 +153,36 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    USE_OP_SIN      = False
-    USE_OP_COS      = False
+    # General scientific-regression default. Domain-specific runners (such as
+    # A000170) select a narrower portfolio explicitly.
+    USE_OP_SIN      = True
+    USE_OP_COS      = True
     USE_OP_TAN      = False
     USE_OP_LOG      = True
     USE_OP_EXP      = True
-    USE_OP_FACT     = True
+    USE_OP_FACT     = False
     USE_OP_FLOOR    = False
-    USE_OP_GAMMA    = True
+    USE_OP_GAMMA    = False
+    USE_OP_LGAMMA   = False
     USE_OP_ASIN     = False
     USE_OP_ACOS     = False
     USE_OP_ATAN     = False
     USE_OP_CEIL     = False
     USE_OP_SIGN     = False
     USE_OP_SQRT     = True
-    USE_OP_ABS      = False
+    USE_OP_ABS      = True
 
-    # Operator Weights (Probabilities)
+    # Operator Weights (relative sampling mass). The name map is authoritative
+    # at engine construction time, so web/API operator toggles made after this
+    # module is imported still receive their intended probability.
+    OPERATOR_WEIGHT_BY_NAME = {
+        '+': 0.20, '-': 0.20, '*': 0.20, '/': 0.15, 'pow': 0.10, '%': 0.02,
+        'sin': 0.10, 'cos': 0.10, 'tan': 0.05, 'log': 0.08, 'exp': 0.08,
+        'fact': 0.08, 'floor': 0.01, '__gamma_family__': 0.08,
+        'asin': 0.01, 'acos': 0.01, 'atan': 0.01, 'ceil': 0.005,
+        'sign': 0.005, 'sqrt': 0.10, 'abs': 0.05, 'neg': 0.02,
+    }
+    # Legacy positional view retained for callers that inspect or tune it.
     OPERATOR_WEIGHTS = [
         0.20 * (1.0 if USE_OP_PLUS else 0.0),
         0.20 * (1.0 if USE_OP_MINUS else 0.0),
@@ -212,24 +236,23 @@ class GpuGlobals:
     DEDUPLICATION_INTERVAL = 100   # SPEED: menos overhead de escaneo (era 50)
     REPAIR_INVALID_INTERVAL = 5    # SPEED: strict eval penalizes invalids; repair periodically to refresh diversity
     
-    # --- SOTA P0: Headless Chicken Crossover ---
+    # --- Exploratory diversity: Headless Chicken Crossover ---
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
     # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
-    # LaSR, PySR y Operon usan variantes de este mecanismo como escape de mínimos locales.
     HEADLESS_CHICKEN_RATE = 0.15       # CONVERGENCE FIX: More radical exploration to escape local minima (was 0.10)
     
-    # --- SOTA P1: Depth-Fair Crossover ---
+    # --- Bloat-aware diversity: Depth-Fair Crossover ---
     # Standard crossover picks a random NODE as swap point → large subtrees dominate selection.
     # Depth-Fair: pick a random DEPTH first, then a random node at that depth.
     # This gives small subtrees equal probability of being selected, reducing bloat.
     DEPTH_FAIR_CROSSOVER = True        # Enable depth-fair subtree crossover
 
-    # --- SOTA P2: ALPS (Age-Layered Population Structure) ---
+    # --- Experimental: ALPS (Age-Layered Population Structure) ---
     # ALPS prevents elite stagnation by tracking the age of each individual.
     # Older individuals in early layers are penalized during selection,
     # giving younger, freshly produced individuals a better chance.
     # Layer 0 is periodically reseeded with fresh random individuals.
-    # Based on: Hornby (2006) — no single algorithm dominates ALPS.
+    # Based on Hornby (2006); disabled until it wins a reproducible ablation.
     USE_ALPS = False                   # DISABLED: Destroys fast convergence (from benchmark)
     ALPS_AGE_GAP = 10                  # Gens between layer boundaries (layer_idx = age // gap)
     ALPS_MAX_LAYER = 5                 # Max layer index (beyond = capped, treated as =max)
@@ -239,7 +262,7 @@ class GpuGlobals:
 
 
     
-    # --- SOTA P0: Constant Perturbation Mutation ---
+    # --- Local constant refinement: perturbation mutation ---
     # Perturba constantes con ruido gaussiano multiplicativo. Complementa PSO:
     # PSO explora globalmente en el espacio de constantes, perturbación explora localmente.
     # Especialmente efectivo para escapar mínimos de constantes donde PSO se estancó.
@@ -251,11 +274,13 @@ class GpuGlobals:
     MUTATION_BANK_SIZE = 5000          # CONVERGENCE FIX: More genetic material for subtree mutations (was 2000)
     MUTATION_BANK_REFRESH_INTERVAL = 80   # CONVERGENCE FIX: Refresh more often for fresh material (was 100)
 
-    # --- SOTA P2: Library Learning ---
+    # --- Experimental: Library Learning ---
     # Extracts frequently-found, high-fitness subtrees and reuses them
     # as building blocks — injection of proven structural patterns.
     # Inspired by LaSR (Li et al., 2024).
-    USE_LIBRARY_LEARNING = True           # Enable library learning
+    # Disabled until extraction validates complete RPN subtrees and the hash
+    # table verifies equality on collisions.
+    USE_LIBRARY_LEARNING = False
     LIBRARY_MAX_BLOCK_LEN = 8             # Max token length of stored subtrees
     LIBRARY_TOP_K_FRACTION = 0.05        # Top-% of pop to scan for subtrees
     LIBRARY_TOP_K_MAX = 8192             # SPEED: cap library scan; top 50k was costly on 1M populations
@@ -263,9 +288,8 @@ class GpuGlobals:
     LIBRARY_INJECT_FRACTION = 0.05       # Fraction of mutation bank to fill with library blocks
     LIBRARY_CAPACITY = 512               # Number of slots in the library hash table
 
-    # --- SOTA P1: Pareto Multi-Objective Selection (NSGA-II style) ---
+    # --- Experimental: Pareto Multi-Objective Selection (NSGA-II style) ---
     # Balances RMSE (accuracy) vs tree complexity (parsimony) in selection.
-    # PySR uses this natively; AlphaSymbolic now has it too.
     # Non-dominated sort is O(N²) — we run it on a sampled subset (PARETO_SAMPLE_K)
     # and blend the resulting rank into the selection metric.
     USE_PARETO_SELECTION = False       # DISABLED: Slows down numerical convergence (from benchmark)
@@ -338,13 +362,17 @@ class GpuGlobals:
     PSO_SKIP_GENS = 6              # (Unused when PSO_ADAPTIVE=False)
 
     # L-BFGS-B Constant Optimizer
-    USE_BFGS_OPTIMIZER = True      # Re-enabled to polish constants the PSO can't refine
+    # Disabled by default: the native kernel is still experimental and has not
+    # established value/gradient parity across all protected operators.
+    USE_BFGS_OPTIMIZER = False
     BFGS_INTERVAL = 20             # SPEED: run L-BFGS-B less often; benchmark-validated vs 15/25
     BFGS_TOP_K = 50                # Refine top 50 elites island-wide
     BFGS_MAX_ITER = 20             # OPTIMIZED: 20 iterations (Cheaper with native gradients)
     
     # Simplification
-    USE_SIMPLIFICATION = True
+    # Disabled until property/parity tests cover domain-sensitive rewrites and
+    # constant-slot remapping; an invalid simplification corrupts convergence.
+    USE_SIMPLIFICATION = False
     USE_SYMPY = False             # Heavy symbolic simplification (Slow)
     USE_CONSOLE_BEST_SIMPLIFICATION = False
     # Extra cleanup passes after CUDA simplify use Python fallback and can trigger

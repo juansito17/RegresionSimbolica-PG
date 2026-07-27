@@ -149,26 +149,48 @@ class GPUOptimizer:
         """
         # Try fused kernel first (single CUDA launch, ~5-10x faster for PSO portion).
         # Fused kernel has hardcoded limits to preserve shared memory / stack space.
-        D = y.numel()
-        L = population.shape[1]
-        K = constants.shape[1]
-        
-        can_use_fused = (self._has_fused_pso and 
-                        D <= 1024 and 
-                        L <= 63 and
-                        K <= 16 and
-                        num_particles <= 64)
+        can_use_fused = self._can_use_fused_pso(
+            population, constants, x, y, num_particles)
         
         if can_use_fused:
             return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
         
         return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w, c1, c2)
 
+    def _can_use_fused_pso(
+        self,
+        population: torch.Tensor,
+        constants: torch.Tensor,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        num_particles: int,
+    ) -> bool:
+        """Gate native PSO to the shapes and dtype it implements safely."""
+        return (
+            self._has_fused_pso
+            and population.ndim == 2
+            and constants.ndim == 2
+            and y.numel() <= 1024
+            and population.shape[1] <= 63
+            and constants.shape[1] <= 16
+            and num_particles <= 64
+            and population.is_cuda
+            and constants.is_cuda
+            and x.is_cuda
+            and y.is_cuda
+            # The kernel uses float-specialized math and curand_normal. Until
+            # a true FP64 implementation is validated, double must use the
+            # multi-kernel optimizer instead of corrupting shared memory.
+            and constants.dtype == torch.float32
+            and x.dtype == torch.float32
+            and y.dtype == torch.float32
+        )
+
     def lbfgs_optimize_top_k(self, population: torch.Tensor, constants: torch.Tensor,
                               x: torch.Tensor, y_target: torch.Tensor,
                               top_k: int = 50, max_iter: int = 30) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimization SOTA of constants via L-BFGS-B.
+        Experimental constant optimization via L-BFGS-B.
         
         PRIORITY: Use native CUDA kernel if available (zero CPU-GPU sync).
         FALLBACK: PyTorch L-BFGS (CPU line search) if kernel not available.
@@ -335,7 +357,7 @@ class GPUOptimizer:
         # El fused kernel ahora aplica decay lineal interno w_max→0.4.
         # Pasamos w_max directamente — no hace falta promediar.
         # El fallback multi-kernel sigue usando w_avg para compatibilidad.
-        if self._has_fused_pso:
+        if self._can_use_fused_pso(population, constants, x, y, num_particles):
             return self._fused_nano_pso(population, constants, x, y, steps, num_particles, w_max, c1, c2)
         w_avg = (w_max + w_min) / 2.0
         return self._multi_kernel_nano_pso(population, constants, x, y, steps, num_particles, w_avg, c1, c2)
@@ -466,7 +488,7 @@ class GPUOptimizer:
         
         # Loop
         for step in range(steps):
-            # SOTA: Adaptive inertia (IPSO) w_max -> 0.4
+            # Linear adaptive inertia (IPSO-style), w_max -> 0.4.
             w_curr = w - (w - 0.4) * (step / (steps - 1 if steps > 1 else 1))
 
             # 3. Evaluate Batch

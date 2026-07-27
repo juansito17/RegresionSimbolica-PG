@@ -7,6 +7,7 @@ import numpy as np
 import time
 import sys
 import os
+from collections.abc import Mapping
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,6 +17,14 @@ from AlphaSymbolic.search.mcts import MCTS
 from AlphaSymbolic.core.grammar import VOCABULARY, ExpressionTree
 from AlphaSymbolic.utils.optimize_constants import optimize_constants
 from AlphaSymbolic.utils.simplify import simplify_tree
+
+
+def _mcts_tokens(search_result):
+    """Accept the current MCTS result contract and the legacy token-list form."""
+    if isinstance(search_result, Mapping):
+        return search_result.get("tokens")
+    return search_result
+
 
 def solve_problem(target_x, target_y, model_path="alpha_symbolic_model.pth", simulations=500):
     """
@@ -54,7 +63,14 @@ def solve_problem(target_x, target_y, model_path="alpha_symbolic_model.pth", sim
     start_time = time.time()
     
     # Run Search
-    best_sequence = mcts.search(target_x, target_y, num_simulations=simulations)
+    search_result = mcts.search(
+        target_x, target_y, num_simulations=simulations)
+    best_sequence = _mcts_tokens(search_result)
+    if not best_sequence:
+        raise RuntimeError(
+            "MCTS finished without a valid formula candidate. "
+            "Increase simulations or provide a trained model."
+        )
     
     mcts_time = time.time() - start_time
     

@@ -331,6 +331,33 @@ class GPUSymbolicSimplifier:
 
     def simplify_batch(self, population: torch.Tensor, constants: torch.Tensor = None, max_passes: int = 3) -> Tuple[torch.Tensor, torch.Tensor, int]:
         B, L = population.shape
+
+        # Constant slots are positional (first C -> constants[:, 0], etc.).
+        # Any rewrite that deletes or swaps a subtree containing C would need
+        # to remap those slots.  Until constants have explicit IDs, keep such
+        # rows byte-for-byte unchanged instead of silently changing their
+        # numerical meaning.
+        free_constant_id = self.grammar.token_to_id.get('C', -1)
+        if free_constant_id >= 0:
+            has_free_constant = (population == free_constant_id).any(dim=1)
+            if has_free_constant.any():
+                eligible = ~has_free_constant
+                if not eligible.any():
+                    return population.clone(), constants, 0
+                safe_pop, safe_constants, n_safe = self.simplify_batch(
+                    population[eligible],
+                    constants[eligible] if constants is not None else None,
+                    max_passes=max_passes,
+                )
+                result_pop = population.clone()
+                result_pop[eligible] = safe_pop
+                if constants is None:
+                    result_constants = None
+                else:
+                    result_constants = constants.clone()
+                    result_constants[eligible] = safe_constants
+                return result_pop, result_constants, n_safe
+
         pop = population.clone()
         
         # ============ CUDA FAST PATH ============
@@ -442,17 +469,16 @@ class GPUSymbolicSimplifier:
             pop, n = self._apply_zero_rules(pop, starts_cache); n_pass += n
             if n > 0:
                 starts_cache = self._precompute_all_subtree_starts(pop)
-            pop, n = self._apply_self_cancellation_rules(pop); n_pass += n
+            # Domain-sensitive cancellation (x/x, x%x, or f-f when f is
+            # undefined) is deliberately not a global algebraic identity.
             pop, n = self._apply_associative_rules(pop, starts_cache); n_pass += n
             if n > 0:
                 starts_cache = self._precompute_all_subtree_starts(pop)
             pop, n = self._apply_advanced_rules(pop, starts_cache); n_pass += n
             if n > 0:
                 starts_cache = self._precompute_all_subtree_starts(pop)
-            pop, n = self._apply_term_consolidation(pop, starts_cache); n_pass += n
-            if n > 0:
-                starts_cache = self._precompute_all_subtree_starts(pop)
-            pop, n = self._apply_modulo_rules(pop, starts_cache); n_pass += n
+            # Consolidation through protected pow and x%x cancellation can
+            # change domain validity, so they remain disabled in strict mode.
             pop, n = self._apply_constant_folding(pop, starts_cache); n_pass += n
             # Literal-to-C promotion: fold f(literal) → C[value] inside main loop
             if constants is not None:
@@ -834,35 +860,9 @@ class GPUSymbolicSimplifier:
                 pop[:, j-1] = torch.where(match_nn, PAD_ID, pop[:, j-1])
                 counts += match_nn.long()
                 
-                # exp(log(x)) -> x
-                match_el = is_op_in(tokens, self.OP_EXP_IDS) & is_op_in(pop[:, j-1], self.OP_LOG_IDS)
-                pop[:, j] = torch.where(match_el, PAD_ID, pop[:, j])
-                pop[:, j-1] = torch.where(match_el, PAD_ID, pop[:, j-1])
-                counts += match_el.long()
-
-                # log(exp(x)) -> x
-                match_le = is_op_in(tokens, self.OP_LOG_IDS) & is_op_in(pop[:, j-1], self.OP_EXP_IDS)
-                pop[:, j] = torch.where(match_le, PAD_ID, pop[:, j])
-                pop[:, j-1] = torch.where(match_le, PAD_ID, pop[:, j-1])
-                counts += match_le.long()
-                    
-                # acos(cos(x)) -> x
-                match_ac = (tokens == self.OP_ACOS) & (pop[:, j-1] == self.OP_COS)
-                pop[:, j] = torch.where(match_ac, PAD_ID, pop[:, j])
-                pop[:, j-1] = torch.where(match_ac, PAD_ID, pop[:, j-1])
-                counts += match_ac.long()
-                    
-                # asin(sin(x)) -> x
-                match_as = (tokens == self.OP_ASIN) & (pop[:, j-1] == self.OP_SIN)
-                pop[:, j] = torch.where(match_as, PAD_ID, pop[:, j])
-                pop[:, j-1] = torch.where(match_as, PAD_ID, pop[:, j-1])
-                counts += match_as.long()
-                    
-                # atan(tan(x)) -> x
-                match_at = (tokens == self.OP_ATAN) & (pop[:, j-1] == self.OP_TAN)
-                pop[:, j] = torch.where(match_at, PAD_ID, pop[:, j])
-                pop[:, j-1] = torch.where(match_at, PAD_ID, pop[:, j-1])
-                counts += match_at.long()
+                # exp(log(x)), log(exp(x)), and inverse-trigonometric chains
+                # require domain/range proofs. They are intentionally not
+                # reduced by this data-agnostic simplifier.
 
                 # abs(neg(x)) -> abs(x)
                 match_an = is_op_in(tokens, self.OP_ABS_IDS) & is_op_in(pop[:, j-1], self.OP_NEG_IDS)
@@ -874,7 +874,7 @@ class GPUSymbolicSimplifier:
                 pop[:, j-1] = torch.where(match_aa, PAD_ID, pop[:, j-1])
                 counts += match_aa.long()
 
-            # --- SOTA / Better than basic Sympy ---
+            # --- Domain-safe algebraic identity ---
             # sqrt(x^2) -> abs(x)
             if j >= 3 and abs_id != -1:
                 match_sqrt_p2 = is_op_in(tokens, self.OP_SQRT_IDS) & is_op_in(pop[:, j-1], self.OP_POW_IDS) & self._is_constant_value(pop[:, j-2], 2.0)

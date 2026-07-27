@@ -1,3 +1,6 @@
+import threading
+import time
+
 import numpy as np
 import torch
 
@@ -28,6 +31,7 @@ class FakeEvaluator:
 
 class FakeEngine:
     observed_loss_function = None
+    observed_use_log = None
 
     def __init__(self, **kwargs):
         type(self).observed_loss_function = GpuGlobals.LOSS_FUNCTION
@@ -42,18 +46,21 @@ class FakeEngine:
     def rpn_to_infix(self, _rpn, _consts):
         return "x0 + 1"
 
-    def run(self, _x, _y, _seeds, _timeout_sec, callback):
+    def run(self, _x, _y, _seeds, _timeout_sec, callback, use_log=None):
+        type(self).observed_use_log = use_log
+        self.last_run_used_log_transform = bool(use_log)
         rpn = torch.tensor([1, 2, 3], dtype=torch.uint8)
         consts = torch.zeros(4)
         callback(10, 0.0, rpn, consts, True, 0)
-        return "exp(x0 + 1)" if GpuGlobals.USE_LOG_TRANSFORMATION else "x0 + 1"
+        return "exp(x0 + 1)" if use_log else "x0 + 1"
 
 
 class FakeInvalidCallbackEngine(FakeEngine):
     def rpn_to_infix(self, _rpn, _consts):
         return "Invalid"
 
-    def run(self, _x, _y, _seeds, _timeout_sec, callback):
+    def run(self, _x, _y, _seeds, _timeout_sec, callback, use_log=None):
+        self.last_run_used_log_transform = bool(use_log)
         self.last_run_best_rmse = 0.0
         self.last_run_generations = 10
         rpn = torch.tensor([1, 2, 3], dtype=torch.uint8)
@@ -191,5 +198,172 @@ def test_log_transform_uses_rmse_without_double_log(monkeypatch):
     )
 
     assert FakeEngine.observed_loss_function == "RMSE"
+    assert FakeEngine.observed_use_log is True
     assert "RMSE log" in outputs[-1][2]
     assert "exp(x0 + 1)" in outputs[-1][1]
+
+
+class FakeStoppableEngine(FakeEngine):
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def run(self, _x, _y, _seeds, _timeout_sec, _callback, use_log=None):
+        self.last_run_used_log_transform = bool(use_log)
+        type(self).started.set()
+        while not self.stop_flag:
+            time.sleep(0.005)
+        type(self).stopped.set()
+        return None
+
+
+class FakeErrorEngine(FakeEngine):
+    def run(self, _x, _y, _seeds, _timeout_sec, _callback, use_log=None):
+        self.last_run_used_log_transform = bool(use_log)
+        raise RuntimeError("fallo controlado")
+
+
+class FakeOOMEngine:
+    def __init__(self, **_kwargs):
+        raise RuntimeError("CUDA out of memory")
+
+
+def _consume_live(state, *, use_log=False, x_str="1,2,3", y_str="2,3,4"):
+    return list(
+        app_gpu_live.run_live_gpu_evolution(
+            x_str,
+            y_str,
+            10000,
+            2,
+            4,
+            0,
+            use_log,
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            False,
+            False,
+            run_state=state,
+            verbose=True,
+        )
+    )
+
+
+def test_input_validation_error_is_terminal_for_live_controls():
+    outputs = _consume_live(LiveRunState(), x_str="", y_str="")
+
+    assert "Error: Ingresa valores para X e Y." in outputs[-1][0]
+    assert app_gpu_live._live_status_is_terminal(outputs[-1][0])
+
+
+def test_stop_waits_for_worker_and_never_reports_success(monkeypatch):
+    FakeStoppableEngine.started.clear()
+    FakeStoppableEngine.stopped.clear()
+    monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeStoppableEngine)
+    state = LiveRunState()
+    result = {}
+
+    consumer = threading.Thread(
+        target=lambda: result.setdefault("outputs", _consume_live(state)),
+        daemon=True,
+    )
+    consumer.start()
+    assert FakeStoppableEngine.started.wait(2.0)
+
+    state.request_stop()
+    consumer.join(2.0)
+
+    assert not consumer.is_alive()
+    assert FakeStoppableEngine.stopped.is_set()
+    assert "Detenido" in result["outputs"][-1][0]
+    assert all("Finalizado" not in output[0] for output in result["outputs"])
+    assert state.engine is None
+    assert state.thread is None
+    assert app_gpu_live.LIVE_ENGINE is None
+
+
+def test_engine_error_is_terminal_and_runtime_is_cleaned(monkeypatch):
+    monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeErrorEngine)
+    state = LiveRunState()
+
+    outputs = _consume_live(state)
+
+    assert "Error durante evolución GPU" in outputs[-1][0]
+    assert "fallo controlado" in outputs[-1][0]
+    assert all("Finalizado" not in output[0] for output in outputs)
+    assert state.engine is None
+    assert state.thread is None
+    assert app_gpu_live.LIVE_ENGINE is None
+
+
+def test_initialization_failure_restores_globals_and_keeps_engine_attribute(monkeypatch):
+    monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeOOMEngine)
+    previous_pop_size = GpuGlobals.POP_SIZE
+    previous_log_mode = GpuGlobals.USE_LOG_TRANSFORMATION
+    state = LiveRunState()
+
+    outputs = _consume_live(state, use_log=not previous_log_mode)
+
+    assert "No se pudo inicializar" in outputs[-1][0]
+    assert state.engine is None
+    assert hasattr(state, "engine")
+    assert app_gpu_live.LIVE_ENGINE is None
+    assert GpuGlobals.POP_SIZE == previous_pop_size
+    assert GpuGlobals.USE_LOG_TRANSFORMATION == previous_log_mode
+
+
+def test_closing_stream_early_restores_global_configuration(monkeypatch):
+    monkeypatch.setattr(app_gpu_live, "ENGINE_CLS", FakeEngine)
+    previous_pop_size = GpuGlobals.POP_SIZE
+    previous_log_mode = GpuGlobals.USE_LOG_TRANSFORMATION
+    state = LiveRunState()
+    stream = app_gpu_live.run_live_gpu_evolution(
+        "1,2,3",
+        "2,3,4",
+        10000,
+        2,
+        4,
+        0,
+        not previous_log_mode,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        run_state=state,
+        verbose=True,
+    )
+
+    next(stream)
+    assert GpuGlobals.POP_SIZE == 10000
+    stream.close()
+
+    assert GpuGlobals.POP_SIZE == previous_pop_size
+    assert GpuGlobals.USE_LOG_TRANSFORMATION == previous_log_mode
+    assert state.engine is None
+    assert app_gpu_live.LIVE_ENGINE is None

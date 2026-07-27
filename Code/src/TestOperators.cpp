@@ -9,6 +9,9 @@
 #include "AdvancedFeatures.h"
 #include "Fitness.h"
 #include "Globals.h"
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+#include <cuda_runtime.h>
+#endif
 
 // Define global variable for tests
 int NUM_VARIABLES = 1;
@@ -344,6 +347,32 @@ bool test_fitness_calc() {
     fitness = evaluate_fitness(imperfect, targets, x_values);
 #endif
     ASSERT_TRUE(fitness > 0.001);
+
+#ifdef USE_GPU_ACCELERATION_DEFINED_BY_CMAKE
+    // CPU/GPU parity for a non-perfect formula catches objective drift (for
+    // example, a hard-coded weighted loss in only the CUDA implementation).
+    const double cpu_fitness = fitness;
+    const std::vector<double> flat_x = {1.0, 2.0, 3.0};
+    double* d_targets = nullptr;
+    double* d_x_values = nullptr;
+    cudaError_t alloc_targets = cudaMalloc(
+        &d_targets, targets.size() * sizeof(double));
+    cudaError_t alloc_x = cudaMalloc(
+        &d_x_values, flat_x.size() * sizeof(double));
+    ASSERT_TRUE(alloc_targets == cudaSuccess && alloc_x == cudaSuccess);
+    ASSERT_TRUE(cudaMemcpy(
+        d_targets, targets.data(), targets.size() * sizeof(double),
+        cudaMemcpyHostToDevice) == cudaSuccess);
+    ASSERT_TRUE(cudaMemcpy(
+        d_x_values, flat_x.data(), flat_x.size() * sizeof(double),
+        cudaMemcpyHostToDevice) == cudaSuccess);
+
+    const double gpu_fitness = evaluate_fitness(
+        imperfect, targets, x_values, d_targets, d_x_values);
+    cudaFree(d_targets);
+    cudaFree(d_x_values);
+    ASSERT_NEAR(gpu_fitness, cpu_fitness, 1e-9);
+#endif
 
     // Very bad solution: constant 100
     NodePtr bad = parse_formula_string("100");

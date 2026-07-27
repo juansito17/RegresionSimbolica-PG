@@ -29,15 +29,17 @@ This repository features two complementary implementations to discover mathemati
 
 Standard symbolic regression tools (e.g., PySR, Operon, gplearn) are typically CPU-bound or have limited GPU support. High-performance evaluation is key to scaling genetic programming.
 
-This project implements a highly optimized **GPU-accelerated tensor genetic engine** directly in PyTorch and native CUDA. By evaluating expression trees in Reverse Polish Notation (RPN) directly on GPU arrays, we bypass Python overhead and achieve **over 21 million formula evaluations per second** on consumer laptop hardware (NVIDIA RTX 3050 Laptop). 
+This project implements a **GPU-accelerated tensor genetic engine** directly in PyTorch and native CUDA. By evaluating expression trees in Reverse Polish Notation (RPN) on GPU arrays, it reduces Python overhead. A controlled audit on an NVIDIA RTX 3050 Laptop measured a hot median of **26.43 million candidate-generations/s**, up from 25.76 million on the audited baseline. This internal workload metric is not directly comparable to point-wise GPops/s reported by other systems.
+
+See the [July 2026 GPU engine audit](docs/GPU_ENGINE_AUDIT_2026-07-26.md) for the protocol, raw measurements, scientific holdouts, safety fixes, and the remaining work required before making any SOTA claim.
 
 Additionally, this repo explores **neuro-symbolic search**—combining neural autoregressive transformers with traditional genetic algorithms, Monte Carlo Tree Search (MCTS), and Particle Swarm Optimization (PSO) to guide constant optimization.
 
 ---
 
-### Real-World Example: N-Queens Solver (OEIS A000170)
+### Real-World Example: N-Queens Count Sequence Modeling (OEIS A000170)
 
-The engine is pre-configured to search for formulas approximating the number of solutions to the **N-Queens problem** (OEIS sequence A000170) using $x_0 = n$, $x_1 = n \pmod 6$, and $x_2 = n \pmod 2$ as input features.
+The N-Queens console and benchmark profiles search for formulas approximating the known number of solutions to the **N-Queens problem** (OEIS sequence A000170) using $x_0 = n$, $x_1 = n \pmod 6$, and $x_2 = n \pmod 2$ as input features. Generic engine defaults remain suitable for ordinary scientific regression. This example is sequence regression: it does not construct queen placements, count them, or prove an exact counting formula.
 
 #### Input Points & Targets ($X \rightarrow Y$)
 For $n$ ranging from $8$ to $24$:
@@ -48,7 +50,7 @@ n=10 -> x=(10, 4, 0) -> Y=724
 n=11 -> x=(11, 5, 1) -> Y=2680
 n=12 -> x=(12, 0, 0) -> Y=14200
 ...
-n=24 -> x=(24, 0, 0) -> Y=2207893435808352
+n=24 -> x=(24, 0, 0) -> Y=227514171973736
 ```
 
 #### Found Formula (Log-Space Target Approximation)
@@ -128,7 +130,7 @@ We plan to implement the following milestones in upcoming releases:
 
 1. **GPU Optimization**: Fuse additional operators (power, modulus, trigonometric functions) directly into custom CUDA RPN kernels, and minimize VRAM allocations for larger populations.
 2. **Testing Suite Expansion**: Implement a Python-level testing framework (using `pytest`) covering the GPU engine wrappers, RPN tokenization, and CUDA interface boundaries.
-3. **Feynman Benchmark Integration**: Automatically evaluate search performance against standard Feynman and Keijzer benchmark datasets, providing direct R2 and runtime comparisons with PySR and Operon.
+3. **SRBench-Scale Evaluation**: Extend the reproducible Nguyen/Feynman/Friedman holdout harness to SRBench++, with matched wall-clock comparisons against PySR, Operon, EvoGP, Beagle, and PSE.
 4. **API and Mathematical Documentation**: Publish mathematical explanations for our adaptive migration frequency, Constant Perturbation Mutation, and Particle Swarm Optimization algorithms.
 5. **Examples & Tutorials**: Add Jupyter Notebooks demonstrating symbolic regression on custom tabular data (CSVs), showcasing constants optimization and custom domain constraints.
 
@@ -149,6 +151,10 @@ We plan to implement the following milestones in upcoming releases:
 3. Or run the console search script:
    ```powershell
    python scripts/run_gpu_console.py
+   ```
+4. Run the independent scientific holdout suite:
+   ```powershell
+   python scripts/benchmark_scientific.py --suite all --methods alphasymbolic
    ```
 
 #### C++ / Code Setup
@@ -184,15 +190,17 @@ Este repositorio contiene dos implementaciones complementarias para descubrir f�
 
 Las herramientas estándar de regresión simbólica (como PySR, Operon, gplearn) suelen estar limitadas a la CPU o tienen un soporte limitado para GPU. La evaluación de alto rendimiento es clave para escalar la programación genética.
 
-Este proyecto implementa un **motor genético tensorial acelerado por GPU** altamente optimizado directamente en PyTorch y CUDA nativo. Al evaluar los árboles de expresiones en notación polaca inversa (RPN) directamente sobre tensores de GPU, evitamos la sobrecarga de Python y logramos **más de 21 millones de evaluaciones de fórmulas por segundo** en hardware de consumo común (NVIDIA RTX 3050 Laptop).
+Este proyecto implementa un **motor genético tensorial acelerado por GPU** directamente en PyTorch y CUDA nativo. Al evaluar los árboles de expresiones en notación polaca inversa (RPN) sobre tensores GPU, reduce la sobrecarga de Python. Una auditoría controlada en una NVIDIA RTX 3050 Laptop midió una mediana caliente de **26,43 millones de candidatos-generación/s**, frente a 25,76 millones en la línea base auditada. Esta métrica interna no es directamente comparable con los GPops/s por punto publicados por otros sistemas.
+
+Consulta la [auditoría del motor GPU de julio de 2026](docs/GPU_ENGINE_AUDIT_2026-07-26.md) para ver el protocolo, las mediciones crudas, los holdouts científicos, las correcciones de seguridad y lo que aún falta antes de afirmar SOTA.
 
 Además, el repositorio explora la **búsqueda neuro-simbólica**, combinando transformadores neuronales autorregresivos con algoritmos genéticos tradicionales, Búsqueda de Árboles de Monte Carlo (MCTS) y Optimización por Enjambre de Partículas (PSO) para guiar la optimización de constantes.
 
 ---
 
-### Ejemplo Real: Solucionador de N-Reinas (OEIS A000170)
+### Ejemplo Real: Modelado de la Secuencia de Conteos de N-Reinas (OEIS A000170)
 
-El motor está preconfigurado para buscar fórmulas que aproximen el número de soluciones del **problema de las N-Reinas** (secuencia OEIS A000170) utilizando $x_0 = n$, $x_1 = n \pmod 6$, y $x_2 = n \pmod 2$ como variables de entrada.
+Los perfiles de consola y benchmark de N-Reinas buscan fórmulas que aproximen los conteos conocidos del **problema de las N-Reinas** (secuencia OEIS A000170) utilizando $x_0 = n$, $x_1 = n \pmod 6$, y $x_2 = n \pmod 2$ como variables de entrada. Los valores genéricos del motor siguen siendo apropiados para regresión científica ordinaria. Este ejemplo es regresión de una secuencia: no construye tableros, no cuenta soluciones ni demuestra una fórmula exacta de conteo.
 
 #### Puntos de Entrada y Objetivos ($X \rightarrow Y$)
 Para $n$ en el rango de $8$ a $24$:
@@ -203,7 +211,7 @@ n=10 -> x=(10, 4, 0) -> Y=724
 n=11 -> x=(11, 5, 1) -> Y=2680
 n=12 -> x=(12, 0, 0) -> Y=14200
 ...
-n=24 -> x=(24, 0, 0) -> Y=2207893435808352
+n=24 -> x=(24, 0, 0) -> Y=227514171973736
 ```
 
 #### Fórmula Encontrada (Aproximación del Objetivo en Espacio Logarítmico)
@@ -283,7 +291,7 @@ Planeamos implementar los siguientes hitos en futuras versiones:
 
 1. **Optimización de GPU**: Fusionar operadores adicionales (potencia, módulo, trigonométricas) directamente en los kernels CUDA RPN personalizados, y minimizar las asignaciones de VRAM para poblaciones más grandes.
 2. **Expansión de la Suite de Pruebas**: Implementar un framework de pruebas en Python (usando `pytest`) que cubra los wrappers del motor GPU, la tokenización RPN y las fronteras de la interfaz CUDA.
-3. **Integración del Benchmark de Feynman**: Evaluar automáticamente el rendimiento de la búsqueda contra los conjuntos de datos Feynman y Keijzer, proporcionando comparaciones directas de R2 y tiempo de ejecución contra PySR y Operon.
+3. **Evaluación a escala SRBench**: Ampliar el harness reproducible Nguyen/Feynman/Friedman a SRBench++, con presupuestos de tiempo equivalentes frente a PySR, Operon, EvoGP, Beagle y PSE.
 4. **Documentación Matemática y API**: Publicar explicaciones matemáticas detalladas para nuestros algoritmos de migración adaptativa por islas, mutación por perturbación de constantes y optimización por enjambre de partículas (PSO).
 5. **Ejemplos y Tutoriales**: Añadir notebooks de Jupyter que demuestren la regresión simbólica en datos tabulares personalizados (CSVs), mostrando la optimización de constantes y restricciones de dominio personalizadas.
 
@@ -304,6 +312,10 @@ Planeamos implementar los siguientes hitos en futuras versiones:
 3. O ejecutar el script de búsqueda por consola:
    ```powershell
    python scripts/run_gpu_console.py
+   ```
+4. Ejecutar el holdout científico independiente:
+   ```powershell
+   python scripts/benchmark_scientific.py --suite all --methods alphasymbolic
    ```
 
 #### Configuración de C++ / Code

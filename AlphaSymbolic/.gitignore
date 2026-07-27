@@ -58,9 +58,12 @@ cache/
 !tests/
 tests/*
 !tests/conftest.py
+!tests/test_parser_and_ensemble_regressions.py
 !tests/gpu/
 tests/gpu/*
 !tests/gpu/test_cuda_eval_modes.py
+!tests/gpu/test_operator_sampling_priors.py
+!tests/gpu/test_simplifier_semantic_safety.py
 !tests/ui/
 !tests/ui/**
 !tests/e2e/

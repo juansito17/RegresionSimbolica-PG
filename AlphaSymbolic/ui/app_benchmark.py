@@ -1,116 +1,118 @@
 import gradio as gr
-from AlphaSymbolic.utils.benchmark_comparison import run_comparison_benchmark
-from AlphaSymbolic.ui.app_core import get_model
+
 from AlphaSymbolic.ui.formatting import escape_html, metric_grid, status_panel
 from AlphaSymbolic.ui.logging_utils import format_exception, get_logger
+from AlphaSymbolic.utils.benchmark_comparison import run_comparison_benchmark
+
 
 logger = get_logger("UI.BENCH")
 
+
 def get_benchmark_tab():
-    with gr.Tab("🥇 Benchmark (IQ Test)"):
-        gr.Markdown("### Evaluar Inteligencia del Modelo (Comparativa)")
-        gr.Markdown("Ejecuta una batería de **10 problemas estándar** comparando diferentes métodos de búsqueda.")
-        
+    with gr.Tab("🥇 Benchmark"):
+        gr.Markdown("### Benchmark con holdout independiente")
+        gr.Markdown(
+            "Ejecuta **10 problemas de regresión simbólica**. GPU-GP y el "
+            "baseline polinomial son implementaciones distintas; el baseline "
+            "es una comprobación de cordura, no un competidor SOTA."
+        )
+
         with gr.Row():
             methods_chk = gr.CheckboxGroup(
-                choices=["beam", "mcts", "hybrid"], 
-                value=["hybrid"], 
-                label="Métodos a Evaluar",
-                info="Selecciona uno o más métodos para comparar."
+                choices=[
+                    ("AlphaSymbolic GPU-GP", "gpu_gp"),
+                    ("Polinomio grado 5 (baseline)", "polynomial"),
+                ],
+                value=["gpu_gp"],
+                label="Métodos a evaluar",
+                info="Cada etiqueta ejecuta una implementación real diferente.",
             )
             timeout_slider = gr.Slider(
-                minimum=5, 
-                maximum=60, 
-                value=30, 
-                step=5, 
-                label="Timeout GP (s)", 
-                info="Tiempo máximo para Beta-GP por problema."
+                minimum=5,
+                maximum=60,
+                value=30,
+                step=5,
+                label="Timeout GPU-GP (s)",
+                info="Tiempo máximo por problema para AlphaSymbolic.",
             )
-        
-        run_btn = gr.Button("🚀 Iniciar Benchmark Comparativo", variant="primary")
-        
-        # Area de resultados
-        summary_html = gr.HTML("Resultados aparecerán aquí...")
-        
+
+        run_btn = gr.Button("🚀 Iniciar benchmark", variant="primary")
+        summary_html = gr.HTML("Los resultados aparecerán aquí.")
         results_df = gr.Dataframe(
-            headers=["Problema", "Nivel", "Método", "Formula", "RMSE", "Tiempo", "Estado"],
-            label="Resultados Detallados",
-            interactive=False
+            headers=[
+                "Problema",
+                "Nivel",
+                "Método",
+                "Fórmula",
+                "RMSE train",
+                "RMSE test",
+                "NRMSE test",
+                "Tiempo",
+                "Estado",
+            ],
+            label="Resultados detallados",
+            interactive=False,
         )
-        
+
         def run_bench(selected_methods, gp_timeout, progress=gr.Progress()):
-            model_obj, device_obj = get_model()
-            if not model_obj:
-                return status_panel("Modelo no cargado.", "error"), []
-            
             if not selected_methods:
                 return status_panel("Selecciona al menos un método.", "warning"), []
-                
-            progress(0, desc="Iniciando Benchmark...")
-            
-            # Run comparison
+
+            progress(0, desc="Iniciando benchmark...")
             try:
                 result_data = run_comparison_benchmark(
-                    model_obj, 
-                    device_obj, 
                     methods=selected_methods,
                     gp_timeout=gp_timeout,
-                    beam_width=50,
-                    progress_callback=lambda p, desc: progress(p, desc=desc)
+                    progress_callback=lambda value, desc: progress(value, desc=desc),
                 )
-            except Exception as e:
-                logger.error("Error en benchmark: %s", format_exception(e))
-                return status_panel(f"Error en benchmark: {e}", "error"), []
-            
-            results = result_data['results']
-            summary_dict = result_data['summary']
-            
-            # Format dataframe
+            except Exception as exc:
+                logger.error("Error en benchmark: %s", format_exception(exc))
+                return status_panel(f"Error en benchmark: {exc}", "error"), []
+
             rows = []
-            for r in results:
-                status_icon = "✅" if r['success'] else "❌"
-                rmse_val = f"{r['rmse']:.5f}" if r['rmse'] < 1e6 else "> 10^6"
-                rows.append([
-                    r['problem_name'],
-                    r['level'],
-                    r['method'].upper(),
-                    r['formula'],
-                    rmse_val,
-                    f"{r['time']:.2f}s",
-                    status_icon
-                ])
-            
-            # Generate HTML Summary
+            for result in result_data["results"]:
+                valid_train = result["train_rmse"] < 1e100
+                valid_test = result["test_rmse"] < 1e100
+                valid_nrmse = result["test_nrmse"] < 1e100
+                rows.append(
+                    [
+                        result["problem_name"],
+                        result["level"],
+                        result["method"].upper(),
+                        result["formula"],
+                        f"{result['train_rmse']:.5g}" if valid_train else "inválido",
+                        f"{result['test_rmse']:.5g}" if valid_test else "inválido",
+                        f"{result['test_nrmse']:.5g}" if valid_nrmse else "inválido",
+                        f"{result['time']:.2f}s",
+                        "✅" if result["success"] else "❌",
+                    ]
+                )
+
             html_content = '<div class="as-benchmark-summary">'
-            
-            # Determine winner if multiple methods
-            winner_method = None
-            if len(selected_methods) > 1:
-                winner_method = max(summary_dict.items(), key=lambda x: (x[1]['solved'], -x[1]['avg_rmse']))[0]
-            
-            for method, stats in summary_dict.items():
-                is_winner = (method == winner_method)
-                border_color = "#4CAF50" if is_winner else ("#FF9800" if stats['score'] > 50 else "#F44336")
-                bg_color = "#1e1e2f"
-                if is_winner:
-                    bg_color = "#1b3a24" # Dark green tint for winner
-                    
-                trophy = "🏆 GANADOR" if is_winner else ""
-                
+            for method, stats in result_data["summary"].items():
+                border_color = "#4CAF50" if stats["score"] > 50 else "#FF9800"
                 html_content += (
-                    f'<section class="as-panel as-benchmark-card" style="border-color:{border_color};background:{bg_color};">'
-                    f'<div class="as-eyebrow">{escape_html(method.upper())} {escape_html(trophy)}</div>'
+                    '<section class="as-panel as-benchmark-card" '
+                    f'style="border-color:{border_color};background:#1e1e2f;">'
+                    f'<div class="as-eyebrow">{escape_html(method.upper())}</div>'
                     + metric_grid(
                         [
                             ("Resueltos", f"{stats['solved']} / {stats['total']}"),
-                            ("Nota", f"{stats['score']:.1f}%"),
+                            (
+                                "Ejecuciones válidas",
+                                f"{stats['valid_runs']} / {stats['total']}",
+                            ),
+                            ("Fallos", stats["failed"]),
                             ("Tiempo avg", f"{stats['avg_time']:.2f}s"),
                         ]
                     )
                     + "</section>"
                 )
             html_content += "</div>"
-            
             return html_content, rows
-            
-        run_btn.click(run_bench, inputs=[methods_chk, timeout_slider], outputs=[summary_html, results_df])
+
+        run_btn.click(
+            run_bench,
+            inputs=[methods_chk, timeout_slider],
+            outputs=[summary_html, results_df],
+        )

@@ -467,15 +467,23 @@ void launch_fused_pso(
     TORCH_CHECK(K <= PSO_MAX_K, "Constants exceed PSO_MAX_K");
     TORCH_CHECK(D <= PSO_MAX_D, "Data samples exceed PSO_MAX_D");
     TORCH_CHECK(num_particles <= PSO_MAX_PARTICLES, "Particles exceed PSO_MAX_PARTICLES");
-
-    // Shared memory: K floats (gbest_pos) + 1 float (gbest_err) + P floats (particle_errs)
-    size_t smem_bytes = (K + 1 + num_particles) * sizeof(float);
+    TORCH_CHECK(
+        x.scalar_type() == torch::kFloat32,
+        "fused_pso currently supports float32 only; use the multi-kernel fallback for float64");
+    TORCH_CHECK(init_consts.scalar_type() == x.scalar_type(), "init_consts dtype must match x");
+    TORCH_CHECK(y_target.scalar_type() == x.scalar_type(), "y_target dtype must match x");
+    TORCH_CHECK(out_gbest_pos.scalar_type() == x.scalar_type(), "out_gbest_pos dtype must match x");
+    TORCH_CHECK(out_gbest_err.scalar_type() == x.scalar_type(), "out_gbest_err dtype must match x");
 
     // Grid: B blocks, each with num_particles threads
     int threads = num_particles;
     int blocks = B;
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "fused_pso_kernel", ([&] {
+        // Dynamic shared storage contains scalar_t values, not unconditionally
+        // float values. This also prevents future FP64 support from aliasing
+        // or writing beyond the allocated shared-memory region.
+        size_t smem_bytes = (K + 1 + num_particles) * sizeof(scalar_t);
         fused_pso_kernel<scalar_t><<<blocks, threads, smem_bytes>>>(
             population.data_ptr<unsigned char>(),
             init_consts.data_ptr<scalar_t>(),

@@ -77,10 +77,69 @@ class GPUOperators:
             self.token_arity[tid] = arity
             if arity == 1: self.arity_1_ids.append(tid)
             elif arity == 2: self.arity_2_ids.append(tid)
-            
+
+        # Native generation samples uniformly from the ID tensors it receives.
+        # Preserve that very cheap kernel API while making the configured
+        # per-operator priors real: repeated IDs implement a categorical
+        # distribution (rather than only weighting unary vs. binary as a
+        # category).  A resolution of 200 retains the smallest configured
+        # weight (0.005) without creating large lookup tables.
+        configured_order = (
+            '+', '-', '*', '/', 'pow', '%',
+            'sin', 'cos', 'tan', 'log', 'exp', 'fact', 'floor',
+            '__gamma_family__', 'asin', 'acos', 'atan', 'ceil', 'sign',
+            'sqrt', 'abs',
+        )
+        configured_map = getattr(GpuGlobals, 'OPERATOR_WEIGHT_BY_NAME', None)
+        if configured_map is not None:
+            weight_by_operator = {
+                name: max(0.0, float(configured_map.get(name, 0.0)))
+                for name in configured_order
+            }
+        else:
+            raw_weights = list(getattr(GpuGlobals, 'OPERATOR_WEIGHTS', ()))
+            weight_by_operator = {
+                name: max(0.0, float(raw_weights[idx]))
+                for idx, name in enumerate(configured_order)
+                if idx < len(raw_weights)
+            }
+        # The single gamma-family prior is shared so enabling both spellings
+        # does not silently double its probability mass.
+        gamma_weight = weight_by_operator.pop('__gamma_family__', 0.0)
+        enabled_gamma = [name for name in ('gamma', 'lgamma') if name in self.grammar.operators]
+        if enabled_gamma:
+            for name in enabled_gamma:
+                weight_by_operator[name] = gamma_weight / len(enabled_gamma)
+        # Unary negation is always available but historically had no explicit
+        # configuration entry. Give it a small, documented exploration prior.
+        weight_by_operator.setdefault(
+            'neg', float(getattr(GpuGlobals, 'NEG_OPERATOR_WEIGHT', 0.02))
+        )
+        self._sampling_weight_by_operator = weight_by_operator
+
+        def weighted_ids(ids):
+            expanded = []
+            for tid in ids:
+                name = self.grammar.id_to_token[int(tid)]
+                weight = weight_by_operator.get(name, 0.0)
+                if weight > 0.0:
+                    expanded.extend([tid] * max(1, int(round(weight * 200.0))))
+            # A custom grammar may not have entries in GpuGlobals. In that
+            # case retain uniform sampling rather than returning an empty set.
+            return expanded if expanded else list(ids)
+
+        uniform_arity_1_ids = list(self.arity_1_ids)
+        uniform_arity_2_ids = list(self.arity_2_ids)
+        self.arity_1_ids = weighted_ids(uniform_arity_1_ids)
+        self.arity_2_ids = weighted_ids(uniform_arity_2_ids)
+
         self.arity_0_ids = torch.tensor(self.arity_0_ids, device=self.device, dtype=self.pop_dtype)
         self.arity_1_ids = torch.tensor(self.arity_1_ids, device=self.device, dtype=self.pop_dtype)
         self.arity_2_ids = torch.tensor(self.arity_2_ids, device=self.device, dtype=self.pop_dtype)
+        self._uniform_arity_1_ids = torch.tensor(
+            uniform_arity_1_ids, device=self.device, dtype=self.pop_dtype)
+        self._uniform_arity_2_ids = torch.tensor(
+            uniform_arity_2_ids, device=self.device, dtype=self.pop_dtype)
         self._full_terminal_ids = self.terminal_ids.clone()
         self._full_arity_0_ids = self.arity_0_ids.clone()
         self._full_arity_1_ids = self.arity_1_ids.clone()
@@ -130,6 +189,12 @@ class GPUOperators:
                     binary_names.extend([op] * max(0, int(weight)))
             binary_ids = [self.grammar.token_to_id[op] for op in binary_names]
             self.arity_2_ids = torch.tensor(binary_ids, device=self.device, dtype=self.pop_dtype) if binary_ids else self._full_arity_2_ids
+        elif profile == "full_uniform":
+            self._sampling_profile = profile
+            self.terminal_ids = self._full_terminal_ids
+            self.arity_0_ids = self._full_arity_0_ids
+            self.arity_1_ids = self._uniform_arity_1_ids
+            self.arity_2_ids = self._uniform_arity_2_ids
         else:
             self._sampling_profile = "full"
             self.terminal_ids = self._full_terminal_ids
@@ -139,14 +204,27 @@ class GPUOperators:
         self._sampling_profile_version = getattr(self, '_sampling_profile_version', 0) + 1
 
     def _sampling_category_weights(self):
-        _op_w = GpuGlobals.OPERATOR_WEIGHTS
         if getattr(self, '_sampling_profile', 'full') in ("log_algebraic", "log_algebraic_rich"):
             _bin_sum = 1.0
             _una_sum = 0.05
             _t_frac = float(getattr(GpuGlobals, 'LOGSPACE_TERMINAL_PROB', GpuGlobals.TERMINAL_VS_VARIABLE_PROB))
         else:
-            _bin_sum = sum(_op_w[:6])           # +,-,*,/,**,%
-            _una_sum = sum(_op_w[6:])           # sin,cos,tan,log,exp,fact,...,sqrt,abs
+            unary_names = {
+                self.grammar.id_to_token[int(token)]
+                for token in self._uniform_arity_1_ids
+            }
+            binary_names = {
+                self.grammar.id_to_token[int(token)]
+                for token in self._uniform_arity_2_ids
+            }
+            _bin_sum = sum(
+                self._sampling_weight_by_operator.get(name, 0.0)
+                for name in binary_names
+            )
+            _una_sum = sum(
+                self._sampling_weight_by_operator.get(name, 0.0)
+                for name in unary_names
+            )
             _t_frac = float(GpuGlobals.TERMINAL_VS_VARIABLE_PROB)
         _op_sum = max(_bin_sum + _una_sum, 1e-6)
         _t_frac = max(0.05, min(0.95, _t_frac))
@@ -1447,7 +1525,7 @@ class GPUOperators:
         return population, constants, n_invalid
 
     # ================================================================
-    #   SOTA P0 — Constant Perturbation
+    #   Local constant perturbation
     # ================================================================
     def constant_perturbation(
         self,
@@ -1511,7 +1589,7 @@ class GPUOperators:
         return constants
 
     # ================================================================
-    #   SOTA P0 — Headless Chicken Crossover
+    #   Headless chicken crossover
     # ================================================================
     def headless_chicken_crossover(
         self,

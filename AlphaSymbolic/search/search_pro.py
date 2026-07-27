@@ -14,6 +14,7 @@ import time
 import argparse
 import sys
 import os
+from collections.abc import Mapping
 
 # Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,8 +26,47 @@ from AlphaSymbolic.search.mcts import MCTS
 from AlphaSymbolic.utils.optimize_constants import optimize_constants
 from AlphaSymbolic.utils.simplify import simplify_tree
 from AlphaSymbolic.search.pareto import ParetoFront
-from data.pattern_memory import PatternMemory
 from AlphaSymbolic.utils.detect_pattern import detect_pattern, summarize_pattern
+
+try:
+    # Optional legacy persistence component. It is not the GPU PatternMemory,
+    # whose constructor and lifecycle are deliberately different.
+    from AlphaSymbolic.data.pattern_memory import PatternMemory
+except ImportError:
+    try:
+        from data.pattern_memory import PatternMemory
+    except ImportError:
+        PatternMemory = None
+
+
+def _mcts_tokens(search_result):
+    """Accept the current MCTS result contract and the legacy token-list form."""
+    if isinstance(search_result, Mapping):
+        return search_result.get("tokens")
+    return search_result
+
+
+def _create_pattern_memory(enabled, verbose):
+    if not enabled:
+        return None
+    if PatternMemory is None:
+        if verbose:
+            print("\nPattern memory unavailable; continuing without persistence.")
+        return None
+    try:
+        memory = PatternMemory()
+        if not callable(getattr(memory, "record", None)):
+            raise TypeError("missing record(tokens, rmse, formula)")
+        if not callable(getattr(memory, "save", None)):
+            raise TypeError("missing save()")
+        return memory
+    except Exception as exc:
+        if verbose:
+            print(
+                "\nPattern memory could not be initialized; "
+                f"continuing without persistence ({exc})."
+            )
+        return None
 
 
 def solve_pro(target_x, target_y, 
@@ -39,6 +79,12 @@ def solve_pro(target_x, target_y,
     """
     Professional formula solver with all bells and whistles.
     """
+    method = str(method).strip().lower()
+    if method not in {"beam", "mcts"}:
+        raise ValueError(
+            f"Unsupported search method {method!r}; expected 'beam' or 'mcts'."
+        )
+
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     VOCAB_SIZE = len(VOCABULARY)
     
@@ -70,7 +116,7 @@ def solve_pro(target_x, target_y,
             print("\n⚠ Model not found, using random weights")
     
     # --- Load Pattern Memory ---
-    memory = PatternMemory() if use_memory else None
+    memory = _create_pattern_memory(use_memory, verbose)
     
     # --- Phase 1: Search ---
     if verbose:
@@ -87,16 +133,20 @@ def solve_pro(target_x, target_y,
             all_results.extend(results)
     else:
         mcts = MCTS(model, DEVICE)
-        best_seq = mcts.search(target_x, target_y, num_simulations=mcts_simulations)
-        tree = ExpressionTree(best_seq)
-        if tree.is_valid:
-            constants, rmse = optimize_constants(tree, target_x, target_y)
-            all_results.append({
-                'tokens': best_seq,
-                'rmse': rmse,
-                'constants': constants,
-                'formula': tree.get_infix()
-            })
+        search_result = mcts.search(
+            target_x, target_y, num_simulations=mcts_simulations)
+        best_seq = _mcts_tokens(search_result)
+        if best_seq:
+            tree = ExpressionTree(best_seq)
+            if tree.is_valid:
+                constants, rmse = optimize_constants(
+                    tree, target_x, target_y)
+                all_results.append({
+                    'tokens': best_seq,
+                    'rmse': rmse,
+                    'constants': constants,
+                    'formula': tree.get_infix()
+                })
     
     search_time = time.time() - start_time
     
@@ -139,8 +189,13 @@ def solve_pro(target_x, target_y,
         }
         
         # Record in pattern memory
-        if memory:
-            memory.record(best_rmse.tokens, best_rmse.rmse, best_rmse.formula)
+        if memory is not None:
+            try:
+                memory.record(
+                    best_rmse.tokens, best_rmse.rmse, best_rmse.formula)
+            except Exception as exc:
+                if verbose:
+                    print(f"Pattern memory record failed ({exc}).")
     
     if simplest and simplest != best_rmse:
         tree = ExpressionTree(simplest.tokens)
@@ -163,8 +218,12 @@ def solve_pro(target_x, target_y,
         }
     
     # Save memory
-    if memory:
-        memory.save()
+    if memory is not None:
+        try:
+            memory.save()
+        except Exception as exc:
+            if verbose:
+                print(f"Pattern memory save failed ({exc}).")
     
     # --- Final Report ---
     if verbose:

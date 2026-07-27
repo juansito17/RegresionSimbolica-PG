@@ -1,12 +1,12 @@
 """
-Library Learning — SOTA P2 Feature
-====================================
+Experimental Library Learning
+=============================
 Identifies frequently occurring, high-fitness subtrees (building blocks)
 from the population and stores them in a reusable library. These blocks can
 then be injected into the mutation bank or used as structural initializers.
 
-Inspired by: LaSR (Li et al. 2024), GP library learning, ALP (Automated
-Library-based Programming).
+Inspired by GP library-learning approaches. This implementation is disabled by
+default until subtree boundaries and hash-collision equality are validated.
 
 Design:
   - GPU-native subtree hashing (no Python loops per individual)
