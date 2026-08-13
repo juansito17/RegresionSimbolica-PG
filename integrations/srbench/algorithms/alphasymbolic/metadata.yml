@@ -1,7 +1,7 @@
 authors:
   - juansito17
 email: 69127937+juansito17@users.noreply.github.com
-name: AlphaSymbolic GPU
+name: WarpSymbolic GPU
 description: |
   Universal adaptive symbolic regression with a GPU-native evolutionary
   engine, training-data-only grammar allocation, one-expression output,

@@ -1,11 +1,11 @@
-"""Thin SRBench shim for :class:`AlphaSymbolicRegressor`.
+"""Thin SRBench shim for :class:`WarpSymbolicRegressor`.
 
-The implementation remains in the installable AlphaSymbolic package so this
+The implementation remains in the installable WarpSymbolic package so this
 file can be copied into either the legacy or current SRBench method layout
 without duplicating model logic.
 """
 
-from AlphaSymbolic.sklearn import AlphaSymbolicRegressor
+from warpsymbolic.api.sklearn import WarpSymbolicRegressor
 
 
 def model(estimator, X=None):
@@ -20,7 +20,7 @@ def complexity(estimator):
     return int(estimator.symbolic_complexity_)
 
 
-est = AlphaSymbolicRegressor(
+est = WarpSymbolicRegressor(
     pop_size=50_000,
     n_islands=20,
     max_len=48,
@@ -41,7 +41,7 @@ est = AlphaSymbolicRegressor(
 )
 
 
-# Keep SRBench's official outer scaling enabled so AlphaSymbolic receives the
+# Keep SRBench's official outer scaling enabled so WarpSymbolic receives the
 # same prepared inputs as peer methods in the 2025 protocol.
 eval_kwargs = {
     "scale_x": True,

@@ -27,17 +27,17 @@ jobs:
 
     - name: Configure CMake (with CUDA detection)
       run: |
-        cd Code
+        cd legacy/cpp_engine
         cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
     - name: Build SymbolicRegressionGP & TestOperators
       run: |
-        cd Code
+        cd legacy/cpp_engine
         cmake --build build --config Release
 
     - name: Run C++ Operators Tests (CPU Fallback)
       run: |
-        cd Code
+        cd legacy/cpp_engine
         ./build/TestOperators
 
   build-python:
@@ -65,7 +65,7 @@ jobs:
         pip install ninja
         # Install PyTorch specifically compiled for CUDA 12.4
         pip install torch --index-url https://download.pytorch.org/whl/cu124
-        if [ -f AlphaSymbolic/requirements.txt ]; then pip install -r AlphaSymbolic/requirements.txt; fi
+        pip install -e ".[benchmark]"
 
     - name: Compile Python CUDA Extension
       env:
@@ -73,9 +73,9 @@ jobs:
       run: |
         export CUDA_HOME=$CUDA_PATH
         echo "Compiling with CUDA_HOME=$CUDA_HOME"
-        cd AlphaSymbolic/core/gpu/cuda
-        python setup.py build_ext --inplace
+        cd src/warpsymbolic/gpu/cuda
+        python setup.py build_ext --build-temp ../../../../.local/build/cuda/temp --build-lib ../../../../.local/build/python
 
-    - name: Run Python Smoke Test (CPU Fallback)
+    - name: Run Python CUDA Extension Smoke Test
       run: |
-        python -c "import os, sys; sys.path.insert(0, os.getcwd()); from AlphaSymbolic.core.gpu import TensorGeneticEngine; engine = TensorGeneticEngine(num_variables=1, pop_size=256, n_islands=2, max_len=16, max_constants=4); print('Success!')"
+        python -c "from warpsymbolic.gpu.cuda_loader import load_rpn_cuda_native; import torch; load_rpn_cuda_native(); print('CUDA extension loaded; device=', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'compile-only runner')"

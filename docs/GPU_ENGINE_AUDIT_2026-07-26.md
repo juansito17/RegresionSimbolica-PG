@@ -24,9 +24,9 @@ requisito, no un resultado asumido.
 
 ## Alcance auditado
 
-- Motor tensorial e islas evolutivas en `AlphaSymbolic/core/gpu`.
+- Motor tensorial e islas evolutivas en `src/warpsymbolic/gpu`.
 - Evaluador RPN, generación, evolución, PSO y simplificación CUDA nativa.
-- Evaluador y fitness CUDA del motor C++ en `Code/src`.
+- Evaluador y fitness CUDA del motor C++ en `legacy/cpp_engine/src`.
 - Search híbrido, Beam/MCTS, caché de motores y memoria de patrones.
 - Pantallas Gradio de evolución en vivo y benchmark.
 - Semántica de fórmulas entre parser, Python, GPU y presentación.
@@ -298,7 +298,7 @@ de descubrimiento “desde cero”.
 Benchmark de rendimiento:
 
 ```powershell
-python AlphaSymbolic/scripts/benchmark_gpu_console.py `
+python -m warpsymbolic.cli.benchmark_gpu_console `
   --pop-size 1000000 --islands 20 --generations 120 `
   --warmup-generations 2 --repeats 5 --discard-first 1 `
   --cooldown-sec 2 --seed 4200 --timeout-sec 120 `
@@ -308,7 +308,7 @@ python AlphaSymbolic/scripts/benchmark_gpu_console.py `
 Holdout científico:
 
 ```powershell
-python AlphaSymbolic/scripts/benchmark_scientific.py `
+python -m warpsymbolic.cli.benchmark_scientific `
   --suite all --methods alphasymbolic --seeds 6000,6001,6002 `
   --train-points 128 --test-points 512 --pop-size 100000 `
   --islands 20 --generations 150 --timeout-sec 30 `
@@ -318,7 +318,7 @@ python AlphaSymbolic/scripts/benchmark_scientific.py `
 Comparador PySR pareado:
 
 ```powershell
-python AlphaSymbolic/scripts/benchmark_scientific.py `
+python -m warpsymbolic.cli.benchmark_scientific `
   --suite all --methods pysr --seeds 6000,6001,6002 `
   --train-points 128 --test-points 512 --pop-size 100000 `
   --islands 20 --generations 150 --timeout-sec 30 `
@@ -329,13 +329,13 @@ python AlphaSymbolic/scripts/benchmark_scientific.py `
 Pruebas ejecutadas:
 
 ```text
-python -m pytest AlphaSymbolic/tests -q
+python -m pytest tests -q
 47 passed
 
-python -m pytest AlphaSymbolic/tests/gpu -q --confcutdir=AlphaSymbolic/tests/gpu
+python -m pytest tests/gpu -q
 94 passed, 4 skipped
 
-Code/scripts/run_tests.bat
+legacy/cpp_engine/scripts/run_tests.bat
 7 native C++/CUDA test suites passed
 ```
 

@@ -13,17 +13,17 @@ Los datos PMLB se fijan en
 El entrypoint local es:
 
 ```text
-python -m AlphaSymbolic.scripts.benchmark_srbench
+python -m warpsymbolic.cli.benchmark_srbench
 ```
 
-La salida predeterminada es `benchmarks/srbench_2025.jsonl` y el caché
-predeterminado es `cache/srbench_2025`; esta guía pasa ambas rutas
+La salida predeterminada es `benchmarks/raw/srbench_2025.jsonl` y el caché
+predeterminado es `.local/cache/srbench_2025`; esta guía pasa ambas rutas
 explícitamente para evitar ambigüedad.
 
 Antes de una corrida, confirme la interfaz realmente instalada:
 
 ```text
-python -m AlphaSymbolic.scripts.benchmark_srbench --help
+python -m warpsymbolic.cli.benchmark_srbench --help
 ```
 
 ## Perfiles
@@ -59,13 +59,13 @@ esa marca. Cualquier override adicional también se registra y la corrida debe
 presentarse como una evaluación local derivada.
 
 El manifiesto versionado es
-`AlphaSymbolic/scripts/srbench_2025_manifest.json`. El caché predeterminado se
-divide en `cache/srbench_2025/datasets` y
-`cache/srbench_2025/official_results`.
+`src/warpsymbolic/cli/srbench_2025_manifest.json`. El caché predeterminado se
+divide en `.local/cache/srbench_2025/datasets` y
+`.local/cache/srbench_2025/official_results`.
 
 ## Requisitos
 
-- Un checkout limpio de AlphaSymbolic y Git.
+- Un checkout limpio de WarpSymbolic y Git.
 - Python compatible con el proyecto; registre la versión exacta.
 - PyTorch con CUDA y una GPU NVIDIA. Una ejecución con fallback CPU constituye
   otra configuración experimental.
@@ -83,8 +83,8 @@ compilada para Windows no puede reutilizarse dentro de WSL/Linux.
 La integración versionada se divide en:
 
 ```text
-AlphaSymbolic/sklearn_estimator.py
-AlphaSymbolic/sklearn.py
+src/warpsymbolic/api/estimator.py
+src/warpsymbolic/api/sklearn.py
 integrations/srbench/experiment/methods/alphasymbolic/regressor.py
 integrations/srbench/algorithms/alphasymbolic/metadata.yml
 integrations/srbench/algorithms/alphasymbolic/requirements.txt
@@ -98,11 +98,11 @@ y exporta una expresión SymPy. El shim de SRBench define el estimator,
 archivos son parte del tratamiento: publíquelos con el commit usado.
 
 `integrations/srbench/algorithms/alphasymbolic/install.sh` acepta
-`ALPHASYMBOLIC_REPO` y `ALPHASYMBOLIC_REF`. En una corrida reproducible,
-`ALPHASYMBOLIC_REF` debe ser un commit completo accesible, nunca el valor
+`WARPSYMBOLIC_REPO` y `WARPSYMBOLIC_REF`. En una corrida reproducible,
+`WARPSYMBOLIC_REF` debe ser un commit completo accesible, nunca el valor
 flotante `main`.
 
-## Preparación de AlphaSymbolic
+## Preparación de WarpSymbolic
 
 ### Windows PowerShell
 
@@ -114,13 +114,13 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e ".[benchmark]"
 
-Push-Location AlphaSymbolic\core\gpu\cuda
+Push-Location src\warpsymbolic\gpu\cuda
 python setup.py build_ext --inplace
 Pop-Location
 
 python -c "import torch; print('torch=', torch.__version__, 'cuda_runtime=', torch.version.cuda, 'cuda=', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO CUDA')"
-python -c "from AlphaSymbolic.core.gpu.cuda_loader import load_rpn_cuda_native; m=load_rpn_cuda_native(); print('native_cuda=', m.__file__)"
-python -m AlphaSymbolic.scripts.benchmark_srbench --help
+python -c "from warpsymbolic.gpu.cuda_loader import load_rpn_cuda_native; m=load_rpn_cuda_native(); print('native_cuda=', m.__file__)"
+python -m warpsymbolic.cli.benchmark_srbench --help
 ```
 
 Instale la rueda de PyTorch adecuada para su driver desde las instrucciones
@@ -134,13 +134,13 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[benchmark]"
 
-pushd AlphaSymbolic/core/gpu/cuda
+pushd src/warpsymbolic/gpu/cuda
 python setup.py build_ext --inplace
 popd
 
 python -c "import torch; print('torch=', torch.__version__, 'cuda_runtime=', torch.version.cuda, 'cuda=', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO CUDA')"
-python -c "from AlphaSymbolic.core.gpu.cuda_loader import load_rpn_cuda_native; m=load_rpn_cuda_native(); print('native_cuda=', m.__file__)"
-python -m AlphaSymbolic.scripts.benchmark_srbench --help
+python -c "from warpsymbolic.gpu.cuda_loader import load_rpn_cuda_native; m=load_rpn_cuda_native(); print('native_cuda=', m.__file__)"
+python -m warpsymbolic.cli.benchmark_srbench --help
 ```
 
 No continúe con una medición oficial si la extensión esperada no carga o si el
@@ -155,26 +155,26 @@ commits, GPUs o perfiles diferentes en el mismo JSONL.
 
 ```powershell
 $Commit = git rev-parse --short=12 HEAD
-$RunRoot = "results\srbench\$Commit"
-$Cache = "cache\srbench_2025"
+$RunRoot = ".local\results\srbench\$Commit"
+$Cache = ".local\cache\srbench_2025"
 New-Item -ItemType Directory -Force $RunRoot | Out-Null
 
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile quick    --cache-dir $Cache --output "$RunRoot\quick.jsonl"    --resume
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile full     --cache-dir $Cache --output "$RunRoot\full.jsonl"     --resume
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile official --cache-dir $Cache --output "$RunRoot\official.jsonl" --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile quick    --cache-dir $Cache --output "$RunRoot\quick.jsonl"    --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile full     --cache-dir $Cache --output "$RunRoot\full.jsonl"     --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile official --cache-dir $Cache --output "$RunRoot\official.jsonl" --resume
 ```
 
 ### Linux, WSL2 o contenedor
 
 ```bash
 commit="$(git rev-parse --short=12 HEAD)"
-run_root="results/srbench/$commit"
-cache="cache/srbench_2025"
+run_root=".local/results/srbench/$commit"
+cache=".local/cache/srbench_2025"
 mkdir -p "$run_root"
 
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile quick    --cache-dir "$cache" --output "$run_root/quick.jsonl"    --resume
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile full     --cache-dir "$cache" --output "$run_root/full.jsonl"     --resume
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile official --cache-dir "$cache" --output "$run_root/official.jsonl" --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile quick    --cache-dir "$cache" --output "$run_root/quick.jsonl"    --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile full     --cache-dir "$cache" --output "$run_root/full.jsonl"     --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile official --cache-dir "$cache" --output "$run_root/official.jsonl" --resume
 ```
 
 La salida es incremental: una interrupción no debe invalidar las líneas JSON
@@ -222,7 +222,7 @@ Como mínimo publique:
 - driver NVIDIA, versión CUDA reportada por el driver, CUDA Toolkit/NVCC;
 - sistema operativo/kernel o versión de Windows/WSL;
 - Python, PyTorch, `torch.version.cuda` y dependencias congeladas;
-- commit AlphaSymbolic, estado limpio/sucio y hash del diff si lo hubiera;
+- commit WarpSymbolic, estado limpio/sucio y hash del diff si lo hubiera;
 - commit SRBench, perfil, semillas, repeticiones, timeout, memoria y nivel de
   paralelismo efectivos;
 - política de calentamiento, procesos concurrentes y, si se publica energía,
@@ -231,7 +231,7 @@ Como mínimo publique:
 ### Captura en Windows PowerShell
 
 ```powershell
-$RunRoot = "results\srbench\$(git rev-parse --short=12 HEAD)"
+$RunRoot = ".local\results\srbench\$(git rev-parse --short=12 HEAD)"
 $DiffText = git diff --binary | Out-String
 $Sha256 = [Security.Cryptography.SHA256]::Create()
 $DiffHash = [BitConverter]::ToString(
@@ -240,8 +240,8 @@ $DiffHash = [BitConverter]::ToString(
 $Sha256.Dispose()
 @(
   "timestamp_utc=$([DateTime]::UtcNow.ToString('o'))"
-  "alphasymbolic_commit=$(git rev-parse HEAD)"
-  "alphasymbolic_tree=$(if (git status --porcelain) { 'dirty' } else { 'clean' })"
+  "warpsymbolic_commit=$(git rev-parse HEAD)"
+  "warpsymbolic_tree=$(if (git status --porcelain) { 'dirty' } else { 'clean' })"
   "diff_sha256=$DiffHash"
   "python=$(python --version 2>&1)"
   "os=$((Get-CimInstance Win32_OperatingSystem).Caption)"
@@ -262,14 +262,14 @@ también `working-tree.patch` o, mejor, haga un commit identificable.
 ### Captura en Linux/WSL
 
 ```bash
-run_root="results/srbench/$(git rev-parse --short=12 HEAD)"
+run_root=".local/results/srbench/$(git rev-parse --short=12 HEAD)"
 {
   printf 'timestamp_utc=%s\n' "$(date -u +%FT%TZ)"
-  printf 'alphasymbolic_commit=%s\n' "$(git rev-parse HEAD)"
+  printf 'warpsymbolic_commit=%s\n' "$(git rev-parse HEAD)"
   if test -z "$(git status --porcelain)"; then
-    printf 'alphasymbolic_tree=clean\n'
+    printf 'warpsymbolic_tree=clean\n'
   else
-    printf 'alphasymbolic_tree=dirty\n'
+    printf 'warpsymbolic_tree=dirty\n'
   fi
   printf 'diff_sha256=%s\n' "$(git diff --binary | sha256sum | cut -d' ' -f1)"
   uname -a
@@ -305,8 +305,8 @@ Para separar adquisición y cómputo, prepare el caché mientras hay red y ejecu
 después con `--offline`:
 
 ```text
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile official --cache-dir cache/srbench_2025 --output results/srbench/<commit>/prepare.jsonl --prepare-only
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile official --cache-dir cache/srbench_2025 --output results/srbench/<commit>/official.jsonl --offline --resume
+python -m warpsymbolic.cli.benchmark_srbench --profile official --cache-dir .local/cache/srbench_2025 --output .local/results/srbench/<commit>/prepare.jsonl --prepare-only
+python -m warpsymbolic.cli.benchmark_srbench --profile official --cache-dir .local/cache/srbench_2025 --output .local/results/srbench/<commit>/official.jsonl --offline --resume
 ```
 
 Cada línea de resultado usa `schema_version` y
@@ -316,11 +316,11 @@ Cada línea de resultado usa `schema_version` y
 run_id, timestamp_utc, profile, official_protocol, override_reasons, algorithm
 dataset, dataset_group, random_state, trial
 srbench_commit, pmlb_commit, dataset_sha256, protocol_sha256
-alphasymbolic_commit, alphasymbolic_diff_sha256, alphasymbolic_source_sha256
+warpsymbolic_commit, warpsymbolic_diff_sha256, warpsymbolic_source_sha256
 split, scaling, fit_time_limit_sec, params
 ```
 
-`alphasymbolic_source_sha256` cubre tanto archivos seguidos por Git como
+`warpsymbolic_source_sha256` cubre tanto archivos seguidos por Git como
 archivos fuente nuevos todavía no añadidos; a diferencia del hash de
 `git diff`, no deja fuera el adaptador o runner cuando aún son `untracked`.
 
@@ -332,33 +332,33 @@ métricas contiene `r2`, `mse` y `mae`. Conserve las filas fallidas: `status` y
 Compruebe que el JSONL solo contiene líneas completas y JSON válido:
 
 ```powershell
-python -c "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=[json.loads(line) for line in p.read_text(encoding='utf-8').splitlines() if line.strip()]; assert len(rows)==720, f'se esperaban 720 filas, hay {len(rows)}'; assert all(r.get('record_type')=='srbench_run' for r in rows); assert all(r.get('official_protocol') is False for r in rows), 'el harness fijo no debe declararse protocolo oficial'; assert all('fixed_runner_skips_upstream_hyperparameter_tuning' in r.get('override_reasons',[]) for r in rows), 'falta la razón de desviación obligatoria'; keys=[(r.get('algorithm'),r.get('dataset_group'),r.get('dataset'),r.get('random_state'),r.get('trial')) for r in rows]; assert len(keys)==len(set(keys)), 'tareas duplicadas'; print('rows=',len(rows)); print('profiles=',sorted({str(r.get('profile')) for r in rows})); print('srbench=',sorted({str(r.get('srbench_commit')) for r in rows})); print('protocols=',sorted({str(r.get('protocol_sha256')) for r in rows})); print('errors=',sum(bool(r.get('error')) for r in rows))" "results\srbench\<commit>\official.jsonl"
+python -c "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=[json.loads(line) for line in p.read_text(encoding='utf-8').splitlines() if line.strip()]; assert len(rows)==720, f'se esperaban 720 filas, hay {len(rows)}'; assert all(r.get('record_type')=='srbench_run' for r in rows); assert all(r.get('official_protocol') is False for r in rows), 'el harness fijo no debe declararse protocolo oficial'; assert all('fixed_runner_skips_upstream_hyperparameter_tuning' in r.get('override_reasons',[]) for r in rows), 'falta la razón de desviación obligatoria'; keys=[(r.get('algorithm'),r.get('dataset_group'),r.get('dataset'),r.get('random_state'),r.get('trial')) for r in rows]; assert len(keys)==len(set(keys)), 'tareas duplicadas'; print('rows=',len(rows)); print('profiles=',sorted({str(r.get('profile')) for r in rows})); print('srbench=',sorted({str(r.get('srbench_commit')) for r in rows})); print('protocols=',sorted({str(r.get('protocol_sha256')) for r in rows})); print('errors=',sum(bool(r.get('error')) for r in rows))" ".local\results\srbench\<commit>\official.jsonl"
 ```
 
 ```bash
-python -c "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=[json.loads(line) for line in p.read_text(encoding='utf-8').splitlines() if line.strip()]; assert len(rows)==720, f'se esperaban 720 filas, hay {len(rows)}'; assert all(r.get('record_type')=='srbench_run' for r in rows); assert all(r.get('official_protocol') is False for r in rows), 'el harness fijo no debe declararse protocolo oficial'; assert all('fixed_runner_skips_upstream_hyperparameter_tuning' in r.get('override_reasons',[]) for r in rows), 'falta la razón de desviación obligatoria'; keys=[(r.get('algorithm'),r.get('dataset_group'),r.get('dataset'),r.get('random_state'),r.get('trial')) for r in rows]; assert len(keys)==len(set(keys)), 'tareas duplicadas'; print('rows=',len(rows)); print('profiles=',sorted({str(r.get('profile')) for r in rows})); print('srbench=',sorted({str(r.get('srbench_commit')) for r in rows})); print('protocols=',sorted({str(r.get('protocol_sha256')) for r in rows})); print('errors=',sum(bool(r.get('error')) for r in rows))" "results/srbench/<commit>/official.jsonl"
+python -c "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=[json.loads(line) for line in p.read_text(encoding='utf-8').splitlines() if line.strip()]; assert len(rows)==720, f'se esperaban 720 filas, hay {len(rows)}'; assert all(r.get('record_type')=='srbench_run' for r in rows); assert all(r.get('official_protocol') is False for r in rows), 'el harness fijo no debe declararse protocolo oficial'; assert all('fixed_runner_skips_upstream_hyperparameter_tuning' in r.get('override_reasons',[]) for r in rows), 'falta la razón de desviación obligatoria'; keys=[(r.get('algorithm'),r.get('dataset_group'),r.get('dataset'),r.get('random_state'),r.get('trial')) for r in rows]; assert len(keys)==len(set(keys)), 'tareas duplicadas'; print('rows=',len(rows)); print('profiles=',sorted({str(r.get('profile')) for r in rows})); print('srbench=',sorted({str(r.get('srbench_commit')) for r in rows})); print('protocols=',sorted({str(r.get('protocol_sha256')) for r in rows})); print('errors=',sum(bool(r.get('error')) for r in rows))" ".local/results/srbench/<commit>/official.jsonl"
 ```
 
 Revise además que todas las filas declaren la revisión SRBench y el perfil
 esperados; que `dataset_sha256` corresponda al manifiesto del caché; y que el
 número de filas coincida con el plan efectivo registrado por el perfil. El
-commit AlphaSymbolic se vincula mediante `environment.txt` y la ruta de corrida.
+commit WarpSymbolic se vincula mediante `environment.txt` y la ruta de corrida.
 Los fallos y timeouts forman parte del denominador: nunca se deben eliminar al
 agregar métricas.
 
 Genere un hash del artefacto final después de cerrar la corrida:
 
 ```powershell
-Get-FileHash -Algorithm SHA256 "results\srbench\<commit>\official.jsonl"
-Get-FileHash -Algorithm SHA256 "results\srbench\<commit>\environment.txt"
-Get-FileHash -Algorithm SHA256 "results\srbench\<commit>\pip-freeze.txt"
+Get-FileHash -Algorithm SHA256 ".local\results\srbench\<commit>\official.jsonl"
+Get-FileHash -Algorithm SHA256 ".local\results\srbench\<commit>\environment.txt"
+Get-FileHash -Algorithm SHA256 ".local\results\srbench\<commit>\pip-freeze.txt"
 ```
 
 ```bash
 sha256sum \
-  "results/srbench/<commit>/official.jsonl" \
-  "results/srbench/<commit>/environment.txt" \
-  "results/srbench/<commit>/pip-freeze.txt"
+  ".local/results/srbench/<commit>/official.jsonl" \
+  ".local/results/srbench/<commit>/environment.txt" \
+  ".local/results/srbench/<commit>/pip-freeze.txt"
 ```
 
 Publique esos hashes junto con los archivos, no solo una captura de pantalla o
@@ -370,7 +370,7 @@ todos los valores flotantes entre drivers o arquitecturas GPU diferentes.
 Genere el ranking desde el JSONL cerrado, sin volver a entrenar:
 
 ```text
-python -m AlphaSymbolic.scripts.benchmark_srbench --profile official --rank-only --output results/srbench/<commit>/official.jsonl --ranking-output results/srbench/<commit>/official-ranking.json
+python -m warpsymbolic.cli.benchmark_srbench --profile official --rank-only --output .local/results/srbench/<commit>/official.jsonl --ranking-output .local/results/srbench/<commit>/official-ranking.json
 ```
 
 No combine en un ranking filas con `protocol_sha256`, perfiles o recursos
@@ -381,7 +381,7 @@ JSONL local al mismo conjunto de datasets que el Feather de referencia.
 
 ## Qué significa `official`
 
-El perfil local `official` fija el track AlphaSymbolic de 24 datasets descrito
+El perfil local `official` fija el track WarpSymbolic de 24 datasets descrito
 arriba y su cobertura 24×30 con un techo de 3600 s por tarea. El nombre del
 perfil no convierte el resultado en oficial: el harness usa un runner de
 configuración fija, no reproduce dentro de sí el grid search completo del
@@ -395,7 +395,7 @@ leaderboard o publicación:
    final como cadena compatible con SymPy;
 2. datasets, splits, tuning, límites de tiempo/memoria y número de trials deben
    coincidir con la pista upstream que se declare;
-3. AlphaSymbolic y sus comparadores deben ejecutarse bajo el mismo orquestador
+3. WarpSymbolic y sus comparadores deben ejecutarse bajo el mismo orquestador
    y política de recursos;
 4. los resultados deben pasar la evaluación y postprocesamiento upstream;
 5. una aceptación o corrida upstream debe enlazarse de forma separada.
@@ -425,7 +425,7 @@ históricos `v2.0` y los de la revisión 2025 tampoco deben combinarse.
 - No seleccione la mejor semilla ni ajuste hiperparámetros sobre el test.
 - Una expresión numéricamente precisa no es necesariamente simbólicamente
   equivalente; use la evaluación SymPy upstream y conserve los fallos de parseo.
-- La métrica interna de candidatos-generación/s de AlphaSymbolic no es
+- La métrica interna de candidatos-generación/s de WarpSymbolic no es
   directamente comparable con GPops/s, evaluaciones punto a punto o tiempo de
   otros motores.
 - N-Reinas A000170 del benchmark científico local es regresión de una secuencia;
@@ -443,7 +443,7 @@ El informe local de rendimiento y corrección del motor está en
 
 ## Lista de comprobación para publicar
 
-- [ ] Checkout AlphaSymbolic limpio y commit completo registrado.
+- [ ] Checkout WarpSymbolic limpio y commit completo registrado.
 - [ ] Commit SRBench igual a `dc3f6daa93bf10955df8775256a6f8644f38fd93`.
 - [ ] Commit PMLB igual a `7c1f4bdc00136dc2e55c87fa6b8ba6e8af6d1a68`.
 - [ ] Perfil efectivo `official`; cobertura 24×30, techo y comandos archivados.
@@ -464,7 +464,7 @@ El informe local de rendimiento y corrección del motor está en
 El candidato universal se congela antes de mirar los 24 datasets:
 
 ```powershell
-python AlphaSymbolic/scripts/freeze_adaptive_config.py benchmarks/adaptive_config_candidate.json
+python -m warpsymbolic.cli.freeze_adaptive_config benchmarks/adaptive_config_candidate.json
 ```
 
 El hash excluye únicamente la semilla de repetición e incluye los parámetros que alteran la búsqueda. El runner no ramifica por nombre ni grupo y usa la misma configuración en todas las filas. `search_mode="legacy"` sigue siendo el valor predeterminado hasta que `check_release_gates.py` confirme todos los gates.
@@ -474,4 +474,4 @@ Hay dos ejecuciones deliberadamente distintas:
 - `integrations/srbench/run_local_24x30.sh`: reproducción independiente y reanudable; nunca se etiqueta como resultado oficial.
 - `integrations/srbench/prepare_upstream.sh` y `run_upstream_24x30.sh`: checkout fijado de cavalab/srbench, contenedor del algoritmo, 30 repeticiones, `eco2ai`, agregación upstream y el verificador `experiment/assess_symbolic_model.py` upstream.
 
-El límite externo upstream continúa en 3600 s para igualar la infraestructura; AlphaSymbolic conserva internamente su presupuesto congelado de 60 s. Una corrida sólo permite promoción si las 720 parejas dataset/semilla tienen un único hash, cobertura completa, energía disponible y primer puesto literal en las seis métricas definidas.
+El límite externo upstream continúa en 3600 s para igualar la infraestructura; WarpSymbolic conserva internamente su presupuesto congelado de 60 s. Una corrida sólo permite promoción si las 720 parejas dataset/semilla tienen un único hash, cobertura completa, energía disponible y primer puesto literal en las seis métricas definidas.

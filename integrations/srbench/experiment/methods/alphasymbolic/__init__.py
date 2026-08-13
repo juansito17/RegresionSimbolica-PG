@@ -1,1 +1,1 @@
-"""AlphaSymbolic SRBench method."""
+"""WarpSymbolic SRBench method."""

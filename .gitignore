@@ -58,6 +58,7 @@ logs/
 !LICENSE
 !requirements.txt
 !requirements-dev.txt
+.local/
 outputs/
 results/
 cache/
@@ -99,23 +100,25 @@ untracked_not_ignored.txt
 *.tmp
 
 # Project specific
-AlphaSymbolic/data/*.json
+src/warpsymbolic_tools/data/*.json
 pattern_memory.json
 hh.py
 comparison_results.txt
 build_log_v2.txt
-AlphaSymbolic/notebooks/AlphaSymbolic_Colab.ipynb
-Code/notebooks/GoogleColab_Project.ipynb
+research/notebooks/WarpSymbolic_Colab.ipynb
+legacy/cpp_engine/notebooks/GoogleColab_Project.ipynb
 
 # GPU / CUDA specific
-AlphaSymbolic/core/gpu/cache/
-AlphaSymbolic/core/gpu/cuda/build/
-AlphaSymbolic/core/gpu/cuda/dist/
-AlphaSymbolic/core/gpu/cuda/temp_build/
-AlphaSymbolic/core/gpu/cuda/*.egg-info/
-AlphaSymbolic/core/gpu/cuda/*.log
-AlphaSymbolic/core/gpu/cuda/*.txt
-AlphaSymbolic/core/gpu/cuda/*.pyd
+src/warpsymbolic/gpu/cache/
+src/warpsymbolic/gpu/cuda/build/
+src/warpsymbolic/gpu/cuda/dist/
+src/warpsymbolic/gpu/cuda/temp_build/
+src/warpsymbolic/gpu/cuda/*.egg-info/
+src/warpsymbolic/gpu/cuda/*.log
+src/warpsymbolic/gpu/cuda/*.txt
+src/warpsymbolic/gpu/cuda/*.pyd
+research/models/
+build/python_legacy/
 **/*.pt
 **/*.pt.tmp
 **/*.pyd
