@@ -88,6 +88,8 @@ benchmarks/*
 !benchmarks/adaptive_nqueens_clean_smoke_20260813.jsonl
 !benchmarks/adaptive_config_candidate_20260813.json
 !benchmarks/ADAPTIVE_STATUS_20260813.md
+benchmarks/adaptive_config_candidate_*.json
+benchmarks/adaptive_*_smoke_*.jsonl
 *.pkl
 *.bak
 *.temp
