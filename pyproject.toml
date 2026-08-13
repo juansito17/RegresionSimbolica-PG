@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "AlphaSymbolic"
+version = "1.0.0"
+description = "GPU-accelerated symbolic regression with a scikit-learn compatible API"
+readme = "AlphaSymbolic/README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy>=1.20",
+    "pandas>=1.5",
+    "scipy>=1.8",
+    "scikit-learn>=1.2",
+    "sympy>=1.9",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+benchmark = [
+    "pyarrow>=12",
+    "requests>=2.28",
+]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+alphasymbolic-srbench = "AlphaSymbolic.scripts.benchmark_srbench:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["AlphaSymbolic*"]
+
+[tool.setuptools.package-data]
+"AlphaSymbolic.scripts" = [
+    "srbench_2025_manifest.json",
+]
+"AlphaSymbolic.core.gpu" = [
+    "cuda/*.cpp",
+    "cuda/*.cu",
+    "cuda/setup.py",
+]

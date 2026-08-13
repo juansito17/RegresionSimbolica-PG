@@ -7,7 +7,17 @@ import gradio as gr
 import torch
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+# ``AlphaSymbolic/sklearn.py`` is the public adapter; when this file is run as
+# a script its directory would otherwise shadow the third-party ``sklearn``
+# package.  Import through the repository root only.
+sys.path = [
+    entry
+    for entry in sys.path
+    if os.path.abspath(entry or os.curdir) != _SCRIPT_DIR
+]
+sys.path.insert(0, _REPO_ROOT)
 
 from AlphaSymbolic.ui.app_core import load_model, get_device, get_device_info, set_device, get_training_errors, request_stop_training
 from AlphaSymbolic.ui.app_training import train_basic, train_curriculum, train_self_play, train_supervised, train_hybrid_feedback_loop, train_from_memory
@@ -124,12 +134,12 @@ def create_app(verbose=False):
                         
                         gr.Markdown("---")
                         search_method = gr.Radio(
-                            choices=["Beam Search", "MCTS", "Alpha-GP Hybrid"],
-                            value="Alpha-GP Hybrid",
-                            label="Algoritmo de Búsqueda"
+                            choices=["AlphaSymbolic Adaptive"],
+                            value="AlphaSymbolic Adaptive",
+                            label="Estimador universal"
                         )
-                        beam_slider = gr.Slider(5, 500, value=50, step=5, label="Intensidad (Beam Width)")
-                        workers_slider = gr.Slider(1, 16, value=6, step=1, label="Workers (Paralelismo)", info="Procesos para el motor GP")
+                        beam_slider = gr.Slider(5, 500, value=50, step=5, visible=False)
+                        workers_slider = gr.Slider(1, 16, value=6, step=1, visible=False)
                         
                         with gr.Accordion("⚙Configuración Avanzada", open=False):
                             pop_size_slider = gr.Slider(10_000, 4_000_000, value=100_000, step=10_000, label="Tamaño Población (GPU)", info="Menos es más rápido. 4M para benchmarks difíciles.")
@@ -322,8 +332,8 @@ def create_app(verbose=False):
                     
                     refresh_errors_btn.click(update_errors, outputs=[error_table])
             
-            # TAB 3: GPU Evolution
-            with gr.Tab("⚡ GPU Evolution"):
+            # Historical low-level engine retained only for diagnostics.
+            with gr.Tab("GPU Engine Legacy (diagnóstico)"):
                 get_gpu_live_tab(verbose_state)
             
             # TAB 4: Benchmark

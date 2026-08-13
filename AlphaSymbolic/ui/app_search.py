@@ -28,6 +28,7 @@ from AlphaSymbolic.search.pareto import ParetoFront
 from AlphaSymbolic.utils.detect_pattern import detect_pattern
 from AlphaSymbolic.utils.optimize_constants import optimize_constants, substitute_constants
 from AlphaSymbolic.ui.app_core import get_model
+from AlphaSymbolic.sklearn import AlphaSymbolicRegressor
 
 logger = get_logger("UI.SEARCH")
 
@@ -104,6 +105,63 @@ def solve_formula(x_str, y_str, beam_width, search_method, max_workers=4, pop_si
     x, y, error = parse_data(x_str, y_str)
     if error:
         return status_panel(error, "error"), None, "", "", ""
+
+    # The public web path uses the same estimator and selection protocol as the
+    # console and SRBench bridge.  Historical search implementations remain
+    # importable for reproducibility, but are not a second production path.
+    progress(0.1, desc="Perfilando datos y validación...")
+    estimator = AlphaSymbolicRegressor(
+        search_mode="adaptive",
+        target_transform="log" if use_log else "auto",
+        pop_size=int(pop_size),
+        max_time=60.0,
+        random_state=0,
+    )
+    start_time = time.perf_counter()
+    try:
+        estimator.fit(x, y)
+        y_pred = estimator.predict(x)
+    except Exception as exc:
+        logger.error("Error en búsqueda adaptativa: %s", format_exception(exc))
+        return status_panel(f"Error: {exc}", "error"), None, "", "", ""
+    search_time = time.perf_counter() - start_time
+    progress(0.9, desc="Preparando expresión verificable...")
+    display_formula = estimator.sympy_formula_
+    rmse = float(np.sqrt(np.mean((y_pred - y) ** 2)))
+    fig = create_fit_plot(x, y, y_pred, display_formula)
+    result_html = formula_card(display_formula, "Fórmula encontrada") + metric_grid(
+        [
+            ("RMSE", f"{rmse:.6g}"),
+            ("Nodos", estimator.symbolic_complexity_),
+            ("MDL", f"{estimator.mdl_:.3f}"),
+            ("Tiempo", f"{search_time:.2f}s"),
+            ("Método", "AlphaSymbolic adaptive"),
+            ("Hash", estimator.configuration_hash_[:12]),
+        ]
+    )
+    pred_rows = []
+    for index in range(min(50, len(y))):
+        sample = np.asarray(x[index]).reshape(-1)
+        x_text = "[" + ", ".join(f"{value:.4g}" for value in sample) + "]"
+        pred_rows.append(
+            (
+                x_text,
+                f"{y_pred[index]:.6g}",
+                f"{y[index]:.6g}",
+                f"{abs(y_pred[index] - y[index]):.6g}",
+            )
+        )
+    alternatives = [
+        (candidate["formula"], f"score={candidate['score']:.4g}")
+        for candidate in estimator.pareto_front_[:4]
+    ]
+    return (
+        result_html,
+        fig,
+        prediction_table(pred_rows),
+        alternatives_list(alternatives),
+        display_formula,
+    )
     
     MODEL, DEVICE = get_model()
     

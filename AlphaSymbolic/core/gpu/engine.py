@@ -1319,11 +1319,19 @@ class TensorGeneticEngine:
 
     @staticmethod
     def _simplify_with_sympy(formula_str):
-        """Try to simplify formula using SymPy for reduced complexity."""
+        """Canonicalize a formula without invoking unbounded SymPy searches.
+
+        ``sympy.simplify`` delegates to ``trigsimp`` and can take minutes on
+        small nested-trigonometric expressions.  This method runs after the
+        timed evolutionary search, so such a call also bypasses the engine's
+        wall-clock budget.  ``parse_expr`` already performs deterministic
+        arithmetic canonicalization; the caller subsequently accepts its
+        result only when it is shorter and numerically equivalent.
+        """
         try:
             import sympy
             import re as re_mod
-            from sympy import symbols, sin, cos, sqrt, exp, log, Abs, pi, factorial, gamma, loggamma
+            from sympy import symbols, Abs, factorial, gamma, loggamma
             from sympy.parsing.sympy_parser import parse_expr, standard_transformations
             # Use real=True to avoid re(), im(), Abs() from complex assumptions
             x0 = symbols('x0', real=True, positive=False)
@@ -1332,11 +1340,8 @@ class TensorGeneticEngine:
                 'fact': factorial, 'gamma': gamma, 'lgamma': loggamma
             }
             expr = parse_expr(formula_str, local_dict=local_dict,
-                             transformations=standard_transformations)
-            simplified = sympy.simplify(expr)
-            # Try to clean up floats close to integers
-            simplified = sympy.nsimplify(simplified, tolerance=1e-3, rational=False)
-            result = str(simplified)
+                              transformations=standard_transformations)
+            result = str(expr)
             # Sanitize SymPy-specific syntax back to Python-evaluable
             result = result.replace('Abs(', 'abs(')
             result = result.replace('factorial(', 'fact(')
@@ -1564,35 +1569,6 @@ class TensorGeneticEngine:
         seeds.append(f"(({v} * sin({v})) + 0.0)")
         seeds.append(f"(({v} * cos({v})) + 0.0)")
         seeds.append(f"((sin(({v} ^ 2)) * cos({v})) + 0.0)")
-        
-        # --- COMBINATORIAL FAMILY (N-Queens / Factorials) ---
-        if GpuGlobals.USE_OP_FACT:
-            seeds.append(f"fact({v})")
-            seeds.append(f"(fact({v}) / {v})")
-            seeds.append(f"(fact({v}) / ({v} ** 2))")
-            seeds.append(f"(fact(({v} + 1.0)))")
-        
-        if GpuGlobals.USE_OP_GAMMA:
-            # lgamma is safer for large numbers (log-factorial)
-            # Add C to allow PSO to scale the factorial: exp(C * lgamma(x) + C)
-            seeds.append(f"exp((C * lgamma({v})) + C)")
-            seeds.append(f"(C * lgamma({v}))") 
-            seeds.append(f"lgamma({v})")
-            seeds.append(f"exp(lgamma({v}))") 
-            seeds.append(f"(lgamma({v}) * {v})")
-            # Linear fit in log-space: C * lgamma(x) + B
-            seeds.append(f"((C * lgamma({v})) + C)")
-            seeds.append(f"((C * fact({v})) + C)")
-            # Asymptotic N-Queens: log(Q(n)) ~ lgamma(n) - C*n (Stirling shape)
-            seeds.append(f"(lgamma({v}) - (C * {v}))")
-            seeds.append(f"((lgamma({v}) - (C * {v})) + C)")
-            
-        # --- SUPER-POLYNOMIAL FAMILY ---
-        # A000170 grows faster than C^n. Try n^n variations with scaling.
-        seeds.append(f"(C * ({v} ** {v}))")
-        seeds.append(f"({v} ** (C * {v}))")
-        seeds.append(f"({v} ** (log({v})))")
-        seeds.append(f"(lgamma({v}) ** 2)")
         
         return seeds
 

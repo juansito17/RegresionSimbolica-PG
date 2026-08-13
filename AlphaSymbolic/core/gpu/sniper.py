@@ -515,10 +515,7 @@ class Sniper:
         """
         CONVERGENCE FIX: Check for lgamma-based patterns.
         
-        Fits templates:
-          1. y = a*lgamma(b*x+c) + d*x + e   (Stirling-like)
-          2. y = lgamma(x) - a*x + b           (N-Queens dominant structure)
-          3. y = a*lgamma(x+b) + c*sqrt(x) + d (lgamma + correction)
+        Fits generic lgamma templates selected only from observed X/y.
         
         Uses torch autograd optimization.
         Returns formula string if found, else None.
@@ -539,14 +536,7 @@ class Sniper:
                     'fn': lambda p, x: p[0] * torch.lgamma(torch.clamp(p[1] * x + p[2], min=0.5)) + p[3] * x + p[4],
                     'build': lambda p: self._build_lgamma_formula(p, 'lgamma_linear'),
                 },
-                # Template 2: y = lgamma(x+a) - b*x + c (N-Queens)
-                {
-                    'name': 'lgamma_nqueens',
-                    'init': [0.0, 1.0, 0.0],
-                    'fn': lambda p, x: torch.lgamma(torch.clamp(x + p[0], min=0.5)) - p[1] * x + p[2],
-                    'build': lambda p: self._build_lgamma_formula(p, 'lgamma_nqueens'),
-                },
-                # Template 3: y = a*lgamma(x+b) + c*sqrt(x) + d
+                # y = a*lgamma(x+b) + c*sqrt(x) + d
                 {
                     'name': 'lgamma_sqrt',
                     'init': [1.0, 0.5, 0.0, 0.0],
@@ -612,22 +602,6 @@ class Sniper:
                 
                 if abs(e) > 0.01:
                     parts.append(format_const(e))
-                
-                return "(" + " + ".join(parts) + ")" if parts else None
-                
-            elif template_name == 'lgamma_nqueens':
-                a, b, c = params
-                # y = lgamma(x+a) - b*x + c
-                if abs(a) > 0.01:
-                    inner = f"(x0 + {format_const(a)})"
-                else:
-                    inner = "x0"
-                
-                parts = [f"lgamma({inner})"]
-                if abs(b) > 0.01:
-                    parts.append(f"({format_const(-b)} * x0)")
-                if abs(c) > 0.01:
-                    parts.append(format_const(c))
                 
                 return "(" + " + ".join(parts) + ")" if parts else None
                 
@@ -727,7 +701,7 @@ class Sniper:
                 return res
             
             # Check 7: lgamma patterns (y = a*lgamma(bx+c) + dx + e)
-            # CONVERGENCE FIX: Essential for N-Queens and combinatorial sequences
+            # Generic combinatorial operators are evaluated like every other arm.
             res = self._check_lgamma_pattern(x_t, y_t)
             if res:
                 print(f"[Sniper GPU] Detected lgamma pattern: {res}")
@@ -741,4 +715,4 @@ class Sniper:
             
         except Exception as e:
             pass
-        return None
+        return None

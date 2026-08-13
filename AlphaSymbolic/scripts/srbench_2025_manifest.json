@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "name": "srbench-2025-pinned",
+  "sources": {
+    "srbench": {
+      "repository": "https://github.com/cavalab/srbench",
+      "commit": "dc3f6daa93bf10955df8775256a6f8644f38fd93"
+    },
+    "pmlb": {
+      "repository": "https://github.com/EpistasisLab/pmlb",
+      "commit": "7c1f4bdc00136dc2e55c87fa6b8ba6e8af6d1a68",
+      "dataset_url_template": "https://github.com/EpistasisLab/pmlb/raw/{commit}/datasets/{dataset}/{dataset}.tsv.gz"
+    }
+  },
+  "protocol": {
+    "train_fraction": 0.75,
+    "test_fraction": 0.25,
+    "splitter": "sklearn.model_selection.train_test_split",
+    "scale_x": true,
+    "scale_y": true,
+    "scaler": "sklearn.preprocessing.StandardScaler",
+    "max_train_samples": 40000,
+    "official_trials": 30,
+    "official_fit_time_limit_sec": 3600,
+    "local_hyperparameter_tuning": "fixed_runner_skips_upstream_hyperparameter_tuning"
+  },
+  "profiles": {
+    "quick": {
+      "datasets": [
+        "579_fri_c0_250_5",
+        "first_principles_hubble"
+      ],
+      "seed_count": 1,
+      "fit_time_limit_sec": 60,
+      "generations": 20,
+      "population_size": 10000
+    },
+    "full": {
+      "dataset_groups": [
+        "blackbox",
+        "firstprinciples"
+      ],
+      "seed_count": 3,
+      "fit_time_limit_sec": 600,
+      "generations": 100,
+      "population_size": 50000
+    },
+    "official": {
+      "dataset_groups": [
+        "blackbox",
+        "firstprinciples"
+      ],
+      "seed_count": 30,
+      "fit_time_limit_sec": 3600,
+      "generations": 150,
+      "population_size": 50000
+    }
+  },
+  "seeds": [
+    23654,
+    15795,
+    860,
+    5390,
+    16850,
+    29910,
+    4426,
+    21962,
+    14423,
+    28020,
+    29802,
+    21575,
+    11964,
+    11284,
+    22118,
+    6265,
+    11363,
+    27495,
+    16023,
+    8322,
+    1685,
+    32052,
+    769,
+    26967,
+    30187,
+    32157,
+    23333,
+    2433,
+    5311,
+    5051
+  ],
+  "official_results": [
+    {
+      "dataset_group": "blackbox",
+      "path": "results/black-box-tuning/results.feather",
+      "url": "https://media.githubusercontent.com/media/cavalab/srbench/dc3f6daa93bf10955df8775256a6f8644f38fd93/results/black-box-tuning/results.feather",
+      "sha256": "5b428264a346f6bbbeabded219f87454b9206afa70c19c012075c672533f342e",
+      "size_bytes": 5596634
+    },
+    {
+      "dataset_group": "firstprinciples",
+      "path": "results/first-principles-tuning/results.feather",
+      "url": "https://media.githubusercontent.com/media/cavalab/srbench/dc3f6daa93bf10955df8775256a6f8644f38fd93/results/first-principles-tuning/results.feather",
+      "sha256": "2f56ad1a4faa8115381c0a181e7173fb7bd85de54f4dbe0f9499b9e4ae808570",
+      "size_bytes": 2370514
+    }
+  ],
+  "datasets": [
+    {
+      "name": "1028_SWD",
+      "dataset_group": "blackbox",
+      "sha256": "b0526495039ad62169c52a9cf34a957f16b1d02cab995746d3098bbdbfa951cc",
+      "size_bytes": 3096,
+      "rows": 1000,
+      "features": 10
+    },
+    {
+      "name": "1089_USCrime",
+      "dataset_group": "blackbox",
+      "sha256": "57b36b18d3ed1b78d6ca647f701fdef974b27979cda7dda2fe91a81eb7e329d6",
+      "size_bytes": 1425,
+      "rows": 47,
+      "features": 13
+    },
+    {
+      "name": "1193_BNG_lowbwt",
+      "dataset_group": "blackbox",
+      "sha256": "ec7968db175dda2a12e69f7d5688658210ed9c8bf484391c653d28b4b3c068e7",
+      "size_bytes": 772235,
+      "rows": 31104,
+      "features": 9
+    },
+    {
+      "name": "1199_BNG_echoMonths",
+      "dataset_group": "blackbox",
+      "sha256": "30c2a018122b17c9022336f6b575194d740bc438821c2d813e9d3804d517b480",
+      "size_bytes": 1028443,
+      "rows": 17496,
+      "features": 9
+    },
+    {
+      "name": "192_vineyard",
+      "dataset_group": "blackbox",
+      "sha256": "55dbc985067fc77003b9eeabd829198669ae84868f6e8c3cf35031bf846571a4",
+      "size_bytes": 273,
+      "rows": 52,
+      "features": 2
+    },
+    {
+      "name": "210_cloud",
+      "dataset_group": "blackbox",
+      "sha256": "030e8ed8bc25b858a391eb1f9eb275c144de9bbe08ce0e5150c068903d8f8246",
+      "size_bytes": 2024,
+      "rows": 108,
+      "features": 5
+    },
+    {
+      "name": "522_pm10",
+      "dataset_group": "blackbox",
+      "sha256": "ecbabaa5a989a8c11f5a57e874c135f386da5379d6689ae6d5d4264a652fa5e0",
+      "size_bytes": 13373,
+      "rows": 500,
+      "features": 7
+    },
+    {
+      "name": "557_analcatdata_apnea1",
+      "dataset_group": "blackbox",
+      "sha256": "39628a3401b9ebfe2b4da629e0182736917694bf6f793dd4be821343459fca1e",
+      "size_bytes": 1681,
+      "rows": 475,
+      "features": 3
+    },
+    {
+      "name": "579_fri_c0_250_5",
+      "dataset_group": "blackbox",
+      "sha256": "d32597bb1043df296ac3be1fff926646b26f268f89185310ea898e59b5fff896",
+      "size_bytes": 14473,
+      "rows": 250,
+      "features": 5
+    },
+    {
+      "name": "606_fri_c2_1000_10",
+      "dataset_group": "blackbox",
+      "sha256": "4757ff95609abb91a98577cf6023c804ba2b0b749a9dfcc48597ac49d4bf72a0",
+      "size_bytes": 99931,
+      "rows": 1000,
+      "features": 10
+    },
+    {
+      "name": "650_fri_c0_500_50",
+      "dataset_group": "blackbox",
+      "sha256": "115180248a4dceeccbbf5a0f77e18224a025f838db47911fbec826227555a52f",
+      "size_bytes": 228062,
+      "rows": 500,
+      "features": 50
+    },
+    {
+      "name": "678_visualizing_environmental",
+      "dataset_group": "blackbox",
+      "sha256": "996db450c025b7586db095411d743fa8632c3e810f60435b6150c3869972c37f",
+      "size_bytes": 987,
+      "rows": 111,
+      "features": 3
+    },
+    {
+      "name": "first_principles_absorption",
+      "dataset_group": "firstprinciples",
+      "sha256": "469d734ef8b6f79d2e38bc487251940bcaa9349050cb455063209e3371dcd439",
+      "size_bytes": 158,
+      "rows": 14,
+      "features": 1
+    },
+    {
+      "name": "first_principles_bode",
+      "dataset_group": "firstprinciples",
+      "sha256": "a568223ad5181bf644ca9e871fd235d0e614895b995155b0cb2dfec53f8f9328",
+      "size_bytes": 110,
+      "rows": 8,
+      "features": 1
+    },
+    {
+      "name": "first_principles_hubble",
+      "dataset_group": "firstprinciples",
+      "sha256": "bef7e5fb62eb611f1d60e8418df7b546c0df0ae28a51b5c3f7501b2128fdbb17",
+      "size_bytes": 674,
+      "rows": 32,
+      "features": 1
+    },
+    {
+      "name": "first_principles_ideal_gas",
+      "dataset_group": "firstprinciples",
+      "sha256": "346b2e3bbc0c631bc00b2d001dfc5791fe729cb472795b23d593895252ce6bb8",
+      "size_bytes": 1205,
+      "rows": 30,
+      "features": 3
+    },
+    {
+      "name": "first_principles_kepler",
+      "dataset_group": "firstprinciples",
+      "sha256": "5704b631ba0afc6bf761196ae757565c6ea8398019094526f16383802b8f6cda",
+      "size_bytes": 118,
+      "rows": 6,
+      "features": 1
+    },
+    {
+      "name": "first_principles_leavitt",
+      "dataset_group": "firstprinciples",
+      "sha256": "85b0d6a23ccc3a1db5e2a94928c32e35dd2388d2cb13328c9a914fc594e7bab1",
+      "size_bytes": 526,
+      "rows": 26,
+      "features": 1
+    },
+    {
+      "name": "first_principles_newton",
+      "dataset_group": "firstprinciples",
+      "sha256": "59df1d16cb8aa383900dc43a067ca79437912283dd3b32e4834b20185efc586e",
+      "size_bytes": 1291,
+      "rows": 30,
+      "features": 3
+    },
+    {
+      "name": "first_principles_planck",
+      "dataset_group": "firstprinciples",
+      "sha256": "a70e4196c6288b9132c1fa2515235a18be44b16f6a54fdb04ea043b8027b6ea0",
+      "size_bytes": 2979,
+      "rows": 100,
+      "features": 2
+    },
+    {
+      "name": "first_principles_rydberg",
+      "dataset_group": "firstprinciples",
+      "sha256": "0c848103ae200b9a969cf5eb9836592b7663aa7553e8a129102d7fc387c2f490",
+      "size_bytes": 560,
+      "rows": 50,
+      "features": 2
+    },
+    {
+      "name": "first_principles_schechter",
+      "dataset_group": "firstprinciples",
+      "sha256": "21586d500f0961c0d2c8296644e3ec269e2ecf783f3c39c0fdf1dc6159edee0a",
+      "size_bytes": 580,
+      "rows": 27,
+      "features": 1
+    },
+    {
+      "name": "first_principles_supernovae_zr",
+      "dataset_group": "firstprinciples",
+      "sha256": "5910dd1ee08ef353c08e2c25b629f66d42565eb4c990656e06d1b575fe5880a7",
+      "size_bytes": 3923,
+      "rows": 236,
+      "features": 1
+    },
+    {
+      "name": "first_principles_tully_fisher",
+      "dataset_group": "firstprinciples",
+      "sha256": "a80f850226d7a536fad6f33fdae2d08bee9bf36c3a28c452ed0aaa244c88bf39",
+      "size_bytes": 423,
+      "rows": 18,
+      "features": 1
+    }
+  ]
+}

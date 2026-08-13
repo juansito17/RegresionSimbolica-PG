@@ -1,6 +1,5 @@
 import math
 import threading
-import numpy as np
 
 class GpuGlobals:
     # Process-wide guard for code paths that still adapt these legacy globals.
@@ -24,41 +23,13 @@ class GpuGlobals:
     INF = float('inf')
 
     # ============================================================
-    #                  2. DATASET CONFIGURATION
+    #                  2. TARGET TRANSFORMATION
     # ============================================================
-    # Target Sequence: OEIS A000170 (N-Queens)
-    _PROBLEM_Y_RAW = np.array([
-        1,0,0,2,10,4,40,92,352,724,2680,14200,73712,365596,2279184,
-        14772512,95815104,666090624,4968057848,39029188884,314666222712,
-        2691008701644,24233937684440,227514171973736,2207893435808352
-    ], dtype=np.float64)
-
-    # Range and Filter
-    PROBLEM_X_START = 8
-    PROBLEM_X_END = 24            # Inclusive
-    DATA_FILTER_TYPE = "ALL"      # Options: "ALL", "ODD", "EVEN"
-
-    # Filter Logic (Computed)
-    _indices_raw = np.arange(PROBLEM_X_START, PROBLEM_X_END + 1)
-    if DATA_FILTER_TYPE == "ODD":
-        _mask = _indices_raw % 2 != 0
-    elif DATA_FILTER_TYPE == "EVEN":
-        _mask = _indices_raw % 2 == 0
-    else:
-        _mask = np.ones(len(_indices_raw), dtype=bool)
-
-    PROBLEM_X_FILTERED = _indices_raw[_mask]
-    # Slice Y to match the X range (N=1 at index 0 corresponds to raw index 0)
-    PROBLEM_Y_FILTERED = _PROBLEM_Y_RAW[(PROBLEM_X_START - 1) : PROBLEM_X_END][_mask]
-    PROBLEM_Y_FULL = PROBLEM_Y_FILTERED  # Alias
-
-    # Input Transformations
     # Scientific-safe default: callers must explicitly opt into fitting log(y).
-    # A global implicit transform changes the target problem and is invalid for
-    # non-positive observations. N-Queens runners opt in at the call site.
+    # Dataset values, identities and derived features deliberately do not live
+    # in the engine configuration.  Every problem enters through the public
+    # estimator as an ordinary X/y pair.
     USE_LOG_TRANSFORMATION = False
-    VAR_MOD_X1 = 6                 # x1 = n % 6
-    VAR_MOD_X2 = 2                 # x2 = n % 2
 
     # ============================================================
     #                  3. SEARCH STRATEGY (ISLAND MODEL)
@@ -119,9 +90,7 @@ class GpuGlobals:
     USE_LOGSPACE_ALGEBRAIC_SAMPLING = True   # CONVERGENCE: random algebraic subpopulation when target is log-transformed
     LOGSPACE_ALGEBRAIC_MUTATION_PROFILE = True # Keep mutations algebraic in log-space; evaluator still supports full grammar
     LOGSPACE_ALGEBRAIC_SINGLE_VAR_ONLY = True  # Preserve full grammar for multi-var combinatorial searches
-    # Paired 1M x 120 measurements on A000170 showed the former uniform
-    # within-arity portfolio converges better than the generic operator prior
-    # for log-transformed, multi-variable sequence features.
+    # Optional legacy portfolio for log-transformed multi-variable inputs.
     LOGSPACE_MULTIVAR_UNIFORM_OPERATOR_SAMPLING = True
     LOGSPACE_ALGEBRAIC_MIN_POSITIVE_FRACTION = 0.95 # Only treat mostly-positive targets as exponential/log-space
     LOGSPACE_VARIABLE_TERMINAL_WEIGHT = 4      # Weighted random terminal pool; not a formula template
@@ -153,8 +122,8 @@ class GpuGlobals:
     USE_OP_DIV      = True
     USE_OP_POW      = True
     USE_OP_MOD      = False
-    # General scientific-regression default. Domain-specific runners (such as
-    # A000170) select a narrower portfolio explicitly.
+    # General scientific-regression defaults. Adaptive runs select grammar
+    # families using training-data validation only.
     USE_OP_SIN      = True
     USE_OP_COS      = True
     USE_OP_TAN      = False
@@ -195,7 +164,7 @@ class GpuGlobals:
         0.05 * (1.0 if USE_OP_TAN else 0.0), # REDUCED: Tan suele ser inestable
         0.08 * (1.0 if USE_OP_LOG else 0.0), # INCREASED log/exp weight
         0.08 * (1.0 if USE_OP_EXP else 0.0),
-        # OPTIMIZED: fact/lgamma/pow aumentados para N-Queens (fórmula objetivo usa lgamma)
+        # Generic combinatorial operators; enabled only by a grammar arm.
         0.08 * (1.0 if USE_OP_FACT else 0.0),
         0.01 * (1.0 if USE_OP_FLOOR else 0.0),
         0.08 * (1.0 if USE_OP_GAMMA else 0.0),
@@ -392,7 +361,7 @@ class GpuGlobals:
     #                  8. ADVANCED FEATURES
     # ============================================================
     # LEXICASE: Habilidad experimental activada. Evalúa fitness punto por punto.
-    # Essential for escaping deep N-Queens local minima (e.g. 0.017).
+    # Pointwise selection can improve diversity on heterogeneous residuals.
     USE_LEXICASE_SELECTION = False
     USE_LEXICASE_SUB_SAMPLING = True    # SPEED: Sample a subset of points for Lexicase
     LEXICASE_SUB_SAMPLE_SIZE = 128      # Memory-efficient subset size (RTX 3050 friendly)

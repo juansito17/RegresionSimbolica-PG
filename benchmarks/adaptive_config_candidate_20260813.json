@@ -1,0 +1,33 @@
+{
+  "configuration": {
+    "device": null,
+    "fallback_strategy": "linear",
+    "feature_selection": "hybrid",
+    "generations": 150,
+    "max_active_variables": 8,
+    "max_constants": 10,
+    "max_gpu_samples": 1024,
+    "max_gpu_variables": 4,
+    "max_len": 48,
+    "max_polynomial_variables": 8,
+    "max_time": 60.0,
+    "n_islands": 20,
+    "polynomial_degree": 3,
+    "pop_size": 50000,
+    "random_state_policy": "external_repetition_seed",
+    "ridge_alpha": 1e-06,
+    "search_mode": "adaptive",
+    "sparse_polynomial_terms": 12,
+    "target_transform": "auto",
+    "use_log": false,
+    "validation_fraction": 0.2
+  },
+  "configuration_sha256": "b85eb9a326cc256e6c8dd0b579640e4c045308558a97efce244c0d7ca3921c4e",
+  "integrity": {
+    "dataset_metadata": false,
+    "max_time_sec": 60.0,
+    "single_expression": true,
+    "test_access": false
+  },
+  "protocol": "adaptive-v1"
+}

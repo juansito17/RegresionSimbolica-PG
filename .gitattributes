@@ -1,0 +1,3 @@
+# This historical source is committed with CRLF bytes.  Treat it as-is so a
+# focused edit does not rewrite every line under core.autocrlf=true.
+AlphaSymbolic/core/gpu/sniper.py -text

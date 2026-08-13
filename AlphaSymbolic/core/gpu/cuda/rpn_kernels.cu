@@ -320,7 +320,7 @@ __global__ void rpn_eval_kernel(
             continue;
         }
         
-        // Unary — lgamma/fact/sqrt first (most-used in N-Queens target)
+        // Unary operators ordered to reduce warp divergence.
         if (__builtin_expect(sp < 1, 0)) { error = true; break; }
         scalar_t op1 = stack[--sp];
         scalar_t res = (scalar_t)0.0;
@@ -2374,7 +2374,7 @@ __global__ void rpn_eval_fused_kernel(
             continue;
         }
 
-        // ── Unary operators (hot path: lgamma/fact/sqrt/exp/log first for N-Queens) ──
+        // ── Unary operators (hot path ordered by evaluator cost) ──
         if (__builtin_expect(sp < 1, 0)) { error = true; break; }
         scalar_t op1 = stack[--sp];
         scalar_t res;
