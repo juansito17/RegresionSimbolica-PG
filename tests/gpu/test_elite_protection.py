@@ -79,5 +79,26 @@ class TestEliteProtection(unittest.TestCase):
         
         print("\n[VERIFIED] Elite protection confirmed: population[0] remains unchanged after evolve_generation_cuda.")
 
+    def test_lexicase_subsample_has_fewer_cases_than_training_data(self):
+        """The native tournament must index the evaluated error columns only."""
+        engine = self.engine
+        batch = engine.pop_size
+        population = engine.operators.generate_random_population(batch)
+        constants = torch.zeros(batch, engine.max_constants, device=self.device)
+        fitness = torch.ones(batch, device=self.device)
+        # Regression: X has 256 rows, while lexicase evaluated only 16 cases.
+        abs_errors = torch.ones(batch, 16, device=self.device)
+        x_t = torch.linspace(-1, 1, 256, device=self.device).unsqueeze(1)
+        y_t = torch.zeros(256, device=self.device)
+
+        next_pop, next_c, _ = engine.evolve_generation_cuda(
+            population, constants, fitness, abs_errors, x_t, y_t, None,
+            mutation_rate=0.0, crossover_rate=0.0,
+            tournament_size=3, pso_steps=0,
+        )
+        torch.cuda.synchronize()
+        self.assertEqual(next_pop.shape, population.shape)
+        self.assertEqual(next_c.shape, constants.shape)
+
 if __name__ == "__main__":
     unittest.main()

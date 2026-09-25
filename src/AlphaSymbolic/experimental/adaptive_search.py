@@ -11,6 +11,7 @@ import ast
 import hashlib
 import json
 import math
+import os
 import sys
 import time
 import warnings
@@ -540,6 +541,8 @@ def fit_adaptive(estimator: Any, X: Any, y: Any):
                     {"arm": arm_name, "timeout_sec": timeout, "score": candidate.score, "improved": improvement}
                 )
             except Exception as exc:
+                if os.environ.get("WARPSYMBOLIC_RAISE_ENGINE_ERROR") == "1":
+                    raise
                 posterior[arm_name][1] += 1.0
                 failures.append({"candidate": f"engine_{arm_name}", "error": f"{type(exc).__name__}: {exc}"})
                 allocations.append({"arm": arm_name, "timeout_sec": timeout, "error": f"{type(exc).__name__}: {exc}"})
@@ -623,6 +626,8 @@ def fit_adaptive(estimator: Any, X: Any, y: Any):
                     }
                 )
             except Exception as exc:
+                if os.environ.get("WARPSYMBOLIC_RAISE_ENGINE_ERROR") == "1":
+                    raise
                 posterior[arm_name][1] += 1.0
                 failures.append(
                     {

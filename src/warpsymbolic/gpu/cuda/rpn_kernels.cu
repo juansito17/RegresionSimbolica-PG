@@ -1883,10 +1883,17 @@ std::vector<torch::Tensor> evolve_generation(
     
     auto winner_idx = torch::empty({B}, long_opt);
     
-    // Lexicase Approximation: If abs_errors provided, each tournament picks a random test case.
+    // Lexicase may evaluate a subsample of X. Draw case indices from the
+    // actual error columns, not the full X width, to avoid out-of-bounds reads.
     torch::Tensor rand_cases;
     if (abs_errors.numel() > 0) {
-        rand_cases = torch::randint(0, N_data, {B}, int_opt);
+        TORCH_CHECK(abs_errors.dim() == 2 && abs_errors.size(0) == B,
+                    "abs_errors must have shape [population, evaluated_cases]");
+        const int error_cases = abs_errors.size(1);
+        TORCH_CHECK(error_cases > 0, "abs_errors must include evaluated cases");
+        TORCH_CHECK(!mad_eps.defined() || mad_eps.numel() == 0 || mad_eps.numel() == error_cases,
+                    "mad_eps must match the evaluated case count");
+        rand_cases = torch::randint(0, error_cases, {B}, int_opt);
     } else {
         rand_cases = torch::empty({0}, int_opt);
     }
