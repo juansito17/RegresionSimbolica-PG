@@ -791,18 +791,20 @@ class WarpSymbolicRegressor(RegressorMixin, BaseEstimator):
             values[rows, columns] = self.feature_fill_values_[columns]
         return values
 
-    def fit(self, X: Any, y: Any):
+    def fit(self, X: Any, y: Any, *, progress_callback=None, progress_interval=None):
         """Fit exactly one expression using the selected search protocol."""
 
         self._validate_parameters()
         self._require_cuda()
         if self.search_mode == "adaptive":
+            if progress_callback is not None or progress_interval is not None:
+                raise ValueError("live progress is available with search_mode='legacy'")
             from AlphaSymbolic.experimental.adaptive_search import fit_adaptive
 
             return fit_adaptive(self, X, y)
-        return self._fit_legacy(X, y)
+        return self._fit_legacy(X, y, progress_callback=progress_callback, progress_interval=progress_interval)
 
-    def _fit_legacy(self, X: Any, y: Any):
+    def _fit_legacy(self, X: Any, y: Any, *, progress_callback=None, progress_interval=None):
         """Fit one symbolic expression and retain a deterministic safe fallback."""
 
         self._validate_parameters()
@@ -928,7 +930,14 @@ class WarpSymbolicRegressor(RegressorMixin, BaseEstimator):
         gpu_target = training_target[gpu_indices]
         engine = None
         try:
-            with _seeded_engine_runtime(seed, self.generations):
+            overrides = {}
+            if self.generations is None:
+                overrides["GENERATIONS"] = None
+            if progress_interval is not None:
+                if int(progress_interval) <= 0:
+                    raise ValueError("progress_interval must be positive")
+                overrides["PROGRESS_REPORT_INTERVAL"] = int(progress_interval)
+            with _seeded_engine_runtime(seed, self.generations, overrides=overrides):
                 engine_class = _load_engine_class()
                 engine_device = self.device
                 if isinstance(engine_device, str):
@@ -953,6 +962,7 @@ class WarpSymbolicRegressor(RegressorMixin, BaseEstimator):
                     gpu_target,
                     seeds=[],
                     timeout_sec=float(self.max_time),
+                    callback=progress_callback,
                     use_log=bool(self.use_log),
                 )
                 candidate = _normalise_formula(candidate)

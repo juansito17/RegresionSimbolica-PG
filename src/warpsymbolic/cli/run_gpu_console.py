@@ -11,6 +11,7 @@ import json
 import logging
 from pathlib import Path
 import sys
+import time
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -30,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--legacy", action="store_true")
     parser.add_argument("--verbose", action="store_true", help="Activar logs detallados")
+    parser.add_argument("--pop-size", type=int, default=100_000)
+    parser.add_argument("--islands", type=int, default=20)
+    parser.add_argument("--generations", type=int, default=None,
+                        help="Límite opcional de generaciones; sin este argumento solo rige --max-time")
+    parser.add_argument("--progress-interval", type=int, default=10)
     return parser
 
 
@@ -40,13 +46,35 @@ def main(argv: list[str] | None = None) -> int:
     if args.target not in frame.columns:
         raise SystemExit(f"target column not found: {args.target!r}")
     y = frame.pop(args.target).to_numpy(dtype=np.float64)
+    started = time.monotonic()
+
+    def show_progress(generation, best_rmse, _rpn, _constants, improved, _island):
+        label = "mejora" if improved else "avance"
+        generation_label = str(generation) if args.generations is None else f"{generation}/{args.generations}"
+        print(
+            f"[{time.monotonic() - started:7.1f}s] "
+            f"Gen {generation_label} | "
+            f"mejor RMSE: {best_rmse:.6g} | {label}",
+            flush=True,
+        )
+
     model = WarpSymbolicRegressor(
         search_mode="legacy" if args.legacy else "adaptive",
         target_transform="auto",
         max_time=min(float(args.max_time), 60.0) if not args.legacy else float(args.max_time),
         random_state=int(args.seed),
         device=args.device,
-    ).fit(frame, y)
+        pop_size=args.pop_size,
+        n_islands=args.islands,
+        generations=args.generations,
+    ).fit(
+        frame,
+        y,
+        progress_callback=show_progress if args.legacy else None,
+        progress_interval=args.progress_interval if args.legacy else None,
+    )
+    if getattr(model, "engine_error_", None):
+        raise RuntimeError(f"GPU engine failed: {model.engine_error_}")
     prediction = model.predict(frame)
     rmse = float(np.sqrt(np.mean((prediction - y) ** 2)))
     print(model.sympy_formula_)

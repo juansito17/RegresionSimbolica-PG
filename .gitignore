@@ -127,6 +127,8 @@ build/python_legacy/
 
 # Notebooks
 *.ipynb
+!research/notebooks/AlphaSymbolic.ipynb
+!research/notebooks/SRBench_Oficial_Colab.ipynb
 
 # OS generated
 .DS_Store

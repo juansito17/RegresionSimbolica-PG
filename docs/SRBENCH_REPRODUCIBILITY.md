@@ -39,13 +39,9 @@ python -m warpsymbolic.cli.benchmark_srbench --help
 Los valores efectivos escritos por el programa en cada registro —no los
 defaults recordados por el operador— son la configuración autoritativa.
 
-El runner aplica una política de presupuesto fija y registrada para tablas
-`firstprinciples`: con menos de 32 filas de train limita el GP a 10 000
-individuos, 30 generaciones y 60 s; con menos de 128, a 25 000 individuos,
-60 generaciones y 180 s. El portfolio polinómico/fallback sigue usando todo el
-train. `runner_metadata.budget_policy` y `params` guardan el caso efectivo.
-Esta adaptación evita gastar minutos optimizando GP sobre 3–20 observaciones y
-forma parte del algoritmo, no es un override escogido después de ver el test.
+El runner usa la misma configuración fijada para ambas pistas, `blackbox` y
+`firstprinciples`, independientemente del número de filas de entrenamiento.
+`runner_metadata.budget_policy` y `params` registran los valores efectivos.
 
 Los tres perfiles aplican un split reproducible 75/25 de scikit-learn, limitan
 solo el train a un máximo de 40 000 filas, ajustan `StandardScaler` de `X` y de
@@ -474,4 +470,4 @@ Hay dos ejecuciones deliberadamente distintas:
 - `integrations/srbench/run_local_24x30.sh`: reproducción independiente y reanudable; nunca se etiqueta como resultado oficial.
 - `integrations/srbench/prepare_upstream.sh` y `run_upstream_24x30.sh`: checkout fijado de cavalab/srbench, contenedor del algoritmo, 30 repeticiones, `eco2ai`, agregación upstream y el verificador `experiment/assess_symbolic_model.py` upstream.
 
-El límite externo upstream continúa en 3600 s para igualar la infraestructura; WarpSymbolic conserva internamente su presupuesto congelado de 60 s. Una corrida sólo permite promoción si las 720 parejas dataset/semilla tienen un único hash, cobertura completa, energía disponible y primer puesto literal en las seis métricas definidas.
+El límite externo upstream y el presupuesto interno de WarpSymbolic son de 3600 s por tarea; una búsqueda puede finalizar antes por otros criterios de parada. Una corrida sólo permite promoción si las 720 parejas dataset/semilla tienen un único hash, cobertura completa, energía disponible y primer puesto literal en las seis métricas definidas.

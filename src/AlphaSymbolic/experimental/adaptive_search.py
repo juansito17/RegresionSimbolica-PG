@@ -362,7 +362,7 @@ def _pareto_front(candidates: list[_AdaptiveCandidate]) -> list[_AdaptiveCandida
 def fit_adaptive(estimator: Any, X: Any, y: Any):
     estimator._validate_parameters()
     started = time.perf_counter()
-    deadline = started + min(float(estimator.max_time), 60.0)
+    deadline = started + float(estimator.max_time)
     values, target, columns, feature_names, is_frame = estimator._coerce_fit_data(X, y)
     values, fill_values = estimator._fit_imputation(values)
     seed = estimator._seed()
@@ -703,7 +703,7 @@ def fit_adaptive(estimator: Any, X: Any, y: Any):
     estimator.n_gpu_samples_ = int(min(values.shape[0], 1024))
     elapsed = time.perf_counter() - started
     estimator.search_elapsed_sec_ = elapsed
-    estimator.search_budget_sec_ = min(float(estimator.max_time), 60.0)
+    estimator.search_budget_sec_ = float(estimator.max_time)
     estimator.energy_joules_ = None
     configuration = estimator.get_params(deep=False)
     configuration.pop("random_state", None)

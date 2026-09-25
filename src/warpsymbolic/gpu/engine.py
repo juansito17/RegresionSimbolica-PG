@@ -1891,7 +1891,7 @@ class TensorGeneticEngine:
             # Timeout
             elapsed = time.time() - start_time
             if timeout_sec and elapsed >= timeout_sec: break
-            if generations >= GpuGlobals.GENERATIONS: break
+            if GpuGlobals.GENERATIONS is not None and generations >= GpuGlobals.GENERATIONS: break
             
             # Time-based early exit: configurable good-enough solution before full timeout
             # Only exit with non-trivial formulas and high explained variance.

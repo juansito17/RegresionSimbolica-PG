@@ -389,5 +389,5 @@ def test_default_runner_adapts_tiny_budget_from_training_rows_only(monkeypatch):
 
     assert captured["pop_size"] == 50_000
     assert captured["generations"] == 150
-    assert captured["max_time"] == 60.0
+    assert captured["max_time"] == 3600.0
     assert result["metadata"]["budget_policy"] == "universal_frozen"

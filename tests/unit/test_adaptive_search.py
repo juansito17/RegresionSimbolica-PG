@@ -59,7 +59,7 @@ def test_missing_values_and_irrelevant_variables_are_supported():
     assert np.isfinite(prediction).all()
 
 
-def test_adaptive_budget_is_capped_at_sixty_seconds():
+def test_adaptive_budget_respects_requested_time():
     X = np.arange(8, dtype=np.float64).reshape(-1, 1)
     y = X[:, 0] + 1.0
     started = time.perf_counter()
@@ -68,7 +68,7 @@ def test_adaptive_budget_is_capped_at_sixty_seconds():
         search_mode="adaptive", max_time=600.0, polynomial_degree=1
     ).fit(X, y)
     assert time.perf_counter() - started < 5.0
-    assert model.search_budget_sec_ == 60.0
+    assert model.search_budget_sec_ == 600.0
 
 
 def test_fold_policy_changes_only_with_row_count():

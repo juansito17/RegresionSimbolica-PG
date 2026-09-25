@@ -20,8 +20,7 @@ COMMON=(
   -ml alphasymbolic
 )
 
-# The estimator has an internal frozen 60 s cap, while the external 3600 s cap
-# and infrastructure match the comparator protocol.
+# The estimator receives the same 3600 s fit ceiling as the upstream harness.
 python experiment/analyze.py datasets/blackbox/ -script optimize_model "${COMMON[@]}"
 python experiment/analyze.py datasets/firstprinciples/ -script optimize_model "${COMMON[@]}"
 

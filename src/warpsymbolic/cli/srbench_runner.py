@@ -55,7 +55,7 @@ def _effective_params(context: Any, n_train: int) -> tuple[Dict[str, Any], str]:
         {
             "pop_size": int(context.population_size),
             "generations": int(context.generations),
-            "max_time": min(float(context.fit_time_limit_sec), 60.0),
+            "max_time": float(context.fit_time_limit_sec),
             "random_state": int(context.random_state),
         }
     )
