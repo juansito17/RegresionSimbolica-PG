@@ -24,6 +24,14 @@ from .simplification import GPUSimplifier
 from .gpu_simplifier import GPUSymbolicSimplifier
 from .cuda_loader import load_rpn_cuda_native
 from .workspace import CUDAEvolutionWorkspace
+import math
+
+try:
+    rpn_cuda_native = load_rpn_cuda_native()
+    RPN_CUDA_AVAILABLE = True
+except ImportError:  # pragma: no cover - CPU-only installs
+    rpn_cuda_native = None
+    RPN_CUDA_AVAILABLE = False
 
 class TensorGeneticEngine:
     _cached_code_metadata = None
@@ -158,6 +166,7 @@ class TensorGeneticEngine:
         # --- Zero-Allocation Buffers for Evolution Loop ---
         self._pop_mask_buf = torch.empty((self.pop_size, self.max_len), dtype=torch.bool, device=self.device)
         self._lengths_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
+        self._var_count_buf = torch.empty(self.pop_size, dtype=torch.int32, device=self.device)
         self._tarpeian_rand_buf = torch.empty(self.pop_size, dtype=torch.float32, device=self.device)
         self._oversized_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
         self._penalize_mask_buf = torch.empty(self.pop_size, dtype=torch.bool, device=self.device)
@@ -1014,7 +1023,9 @@ class TensorGeneticEngine:
             int(self.operators.arity_2_ids.numel()),
         )
         if getattr(self, '_cached_sampling_arity_key', None) != sampling_key:
-            self._cached_arity_0_ids = self.operators.arity_0_ids.contiguous().to(torch.uint8)
+            # Point mutation never creates or removes C tokens (constant slots
+            # are positional), so the mutation terminal pool excludes C.
+            self._cached_arity_0_ids = self.operators.mutation_terminal_ids().to(torch.uint8)
             self._cached_arity_1_ids = self.operators.arity_1_ids.contiguous().to(torch.uint8)
             self._cached_arity_2_ids = self.operators.arity_2_ids.contiguous().to(torch.uint8)
             self._cached_sampling_arity_key = sampling_key
@@ -1128,14 +1139,20 @@ class TensorGeneticEngine:
             vm.op_sin, vm.op_cos, vm.op_tan, vm.op_log, vm.op_exp,
             vm.op_sqrt, vm.op_abs, vm.op_neg, vm.op_fact, vm.op_floor, vm.op_ceil, vm.op_sign,
             vm.op_gamma, vm.op_lgamma, vm.op_asin, vm.op_acos, vm.op_atan,
-            3.14159265359, 2.718281828, self.n_islands,
+            math.pi, math.e, self.n_islands,
             cached_idx['p1'], cached_idx['p2'], cached_idx['copy'], cached_idx['island_base'],
-            int(torch.initial_seed()) & 0x7FFFFFFFFFFFFFFF, int(generation)
+            int(torch.initial_seed()) & 0x7FFFFFFFFFFFFFFF, int(generation),
+            float(getattr(GpuGlobals, 'SBX_ETA', 2.0)),
+            float(getattr(GpuGlobals, 'SBX_PROBABILITY', 0.5)),
+            float(getattr(GpuGlobals, 'GRAFT_CONSTANT_RANGE', (-5.0, 5.0))[0]),
+            float(getattr(GpuGlobals, 'GRAFT_CONSTANT_RANGE', (-5.0, 5.0))[1]),
         ]
-        
+
         result = rpn_cuda.evolve_generation(*_args)
-        
+
         new_pop, new_consts, new_fit = result[0], result[1], result[2]
+        # Parent of every child (lineage), used for age-layered selection.
+        self._last_parent_idx = result[3] if len(result) > 3 else None
         
         # Convert constants back to engine dtype if needed
         if self.dtype != torch.float32:
@@ -1292,7 +1309,7 @@ class TensorGeneticEngine:
             result = re_mod.sub(r'\bre\(', '(', result)   # re(x0) → (x0)
             result = re_mod.sub(r'\bim\(', '(0*', result)  # im(x0) → (0*...)
             result = re_mod.sub(r'\bI\b', '0', result)     # imaginary unit → 0
-            result = re_mod.sub(r'\bE\b', '2.718281828', result)  # Euler constant
+            result = re_mod.sub(r'\bE\b', 'e', result)  # Euler constant (exact, evaluable)
             result = re_mod.sub(r'(?<!\w)oo(?!\w)', '1e30', result)  # infinity
             # Reject if has SymPy-specific functions we can't eval
             bad_tokens = ['zoo', 'nan', 'Symbol', 'Rational', 'Integer', 'Float',
@@ -1338,16 +1355,35 @@ class TensorGeneticEngine:
         except Exception:
             return formula_str
 
+    def _samples_matrix(self, x_t):
+        """Samples-first numpy view of the training inputs: [N] or [N, V]."""
+        x_np = x_t.detach().cpu().numpy()
+        if x_np.ndim == 2:
+            if x_np.shape[1] == 1:
+                return x_np[:, 0]
+            if x_np.shape[0] == self.num_variables and x_np.shape[1] != self.num_variables:
+                x_np = x_np.T
+        return x_np
+
     @staticmethod
     def _eval_formula_safe(formula_str, x_np):
-        """Try to eval a formula string on numpy data. Returns y_pred or None."""
+        """Try to eval a formula string on numpy data. Returns y_pred or None.
+
+        ``x_np`` is [N] for one variable or [N, V] (samples first).
+        """
         import numpy as np
         import scipy.special
         import warnings
         try:
+            x_np = np.asarray(x_np)
+            columns = {'x0': x_np} if x_np.ndim == 1 else {
+                f'x{i}': x_np[:, i] for i in range(x_np.shape[1])}
+            n_samples = x_np.shape[0]
             safe_dict = {
-                'x0': x_np, 'sin': np.sin, 'cos': np.cos, 'exp': np.exp,
+                **columns, 'sin': np.sin, 'cos': np.cos, 'tan': np.tan, 'exp': np.exp,
                 'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
+                'asin': np.arcsin, 'acos': np.arccos, 'atan': np.arctan,
+                'floor': np.floor, 'ceil': np.ceil, 'sign': np.sign,
                 'pi': np.pi, 'e': np.e, 'neg': lambda a: -a,
                 'fact': lambda a: scipy.special.gamma(a + 1),
                 'gamma': scipy.special.gamma,
@@ -1358,8 +1394,8 @@ class TensorGeneticEngine:
                 with np.errstate(all='ignore'):
                     y = eval(formula_str, {"__builtins__": {}}, safe_dict)
             if isinstance(y, (int, float)):
-                y = np.full_like(x_np, y)
-            if isinstance(y, np.ndarray) and len(y) == len(x_np) and np.all(np.isfinite(y)):
+                y = np.full(n_samples, float(y))
+            if isinstance(y, np.ndarray) and len(y) == n_samples and np.all(np.isfinite(y)):
                 return y
         except Exception:
             pass
@@ -1373,8 +1409,8 @@ class TensorGeneticEngine:
             return formula_str
         
         import numpy as np
-        x_np = x_t.cpu().numpy().flatten().astype(np.float32)
-        y_np = y_t.cpu().numpy().flatten().astype(np.float32)
+        x_np = self._samples_matrix(x_t).astype(np.float64)
+        y_np = y_t.cpu().numpy().flatten().astype(np.float64)
         
         best = formula_str
         best_len = len(formula_str)
@@ -1393,7 +1429,7 @@ class TensorGeneticEngine:
                 y_snap = self._eval_formula_safe(snapped, x_np)
                 if y_snap is not None:
                     rmse_snap = float(np.sqrt(np.mean((y_np - y_snap) ** 2)))
-                    if rmse_snap <= rmse_orig * 1.05 + 1e-6:
+                    if rmse_snap <= rmse_orig * 1.001 + 1e-9:
                         best = snapped
                         best_len = len(snapped)
                         rmse_orig = rmse_snap
@@ -1423,7 +1459,7 @@ class TensorGeneticEngine:
                 y_sympy = self._eval_formula_safe(sympy_result, x_np)
                 if y_sympy is not None:
                     rmse_sympy = float(np.sqrt(np.mean((y_np - y_sympy) ** 2)))
-                    if rmse_sympy <= rmse_orig * 1.1 + 1e-6:
+                    if rmse_sympy <= rmse_orig * 1.001 + 1e-9:
                         best = sympy_result
                         best_len = len(sympy_result)
         except Exception:
@@ -2031,11 +2067,16 @@ class TensorGeneticEngine:
                         _y_eval = y_t[_sub_indices]
 
                 abs_errors = self.evaluator.evaluate_batch_full(
-                    population, _x_eval, _y_eval, pop_constants, 
+                    population, _x_eval, _y_eval, pop_constants,
                     strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION),
                     force_f32=True
                 )
-                fitness_rmse = torch.mean(abs_errors.to(self.dtype)**2, dim=1).sqrt() # Approx RMSE for stats
+                # Best tracking, PSO and elitism need the RMSE on the whole
+                # training set: a random sub-sample RMSE is optimistic for
+                # whichever individual happens to fit that sample.
+                fitness_rmse = self.evaluator.evaluate_batch(
+                    population, x_t, y_t, pop_constants,
+                    strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
             else:
                 fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                 abs_errors = None
@@ -2061,7 +2102,8 @@ class TensorGeneticEngine:
                 _cached_var_pen = _vp
                 _cached_has_all_vars = _hall
 
-            if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
+            if (self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0
+                    and not (RPN_CUDA_AVAILABLE and hasattr(rpn_cuda_native, 'population_row_stats'))):
                 _hav = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
                 for vid in self._single_var_ids:
                     _hav |= (population == vid).any(dim=1)
@@ -2087,15 +2129,17 @@ class TensorGeneticEngine:
                     if front_local:
                         # Mapear índices locales a globales
                         self._pareto_front_global = top_pareto_idx[front_local].tolist()
-                        # Inyectar miembros del frente como élites en islas aleatorias
-                        for fi, gi in enumerate(self._pareto_front_global[:self.n_islands]):
-                            elite_slot = fi * self.island_size  # Pos 0 de cada isla
-                            if population is self.pop_buffer_A:
-                                self.pop_buffer_A[elite_slot] = population[gi]
-                                self.const_buffer_A[elite_slot] = pop_constants[gi]
-                            else:
-                                self.pop_buffer_B[elite_slot] = population[gi]
-                                self.const_buffer_B[elite_slot] = pop_constants[gi]
+                        # Inyectar miembros del frente como élites (pos 0 de cada isla).
+                        # The C++ path returns fresh tensors every generation, so the
+                        # live population is never one of the A/B buffers: write to
+                        # it directly and carry the members' fitness with them.
+                        front_src = torch.tensor(self._pareto_front_global[:self.n_islands],
+                                                 device=self.device, dtype=torch.long)
+                        elite_slots = torch.arange(front_src.numel(), device=self.device,
+                                                   dtype=torch.long) * self.island_size
+                        population[elite_slots] = population[front_src]
+                        pop_constants[elite_slots] = pop_constants[front_src]
+                        fitness_rmse[elite_slots] = fitness_rmse[front_src]
                 except Exception:
                     pass  # Non-fatal
                 
@@ -2137,7 +2181,12 @@ class TensorGeneticEngine:
                         k_opt = min(self.pop_size, GpuGlobals.PSO_K_NORMAL)
                         pso_steps = GpuGlobals.PSO_STEPS_NORMAL
                     
-                    _base_pso_metric = selection_metric if _cached_var_pen is not None else fitness_rmse
+                    if _cached_var_pen is not None:
+                        # selection_metric is only built later in the generation;
+                        # rank on this generation's fitness plus the same penalty.
+                        _base_pso_metric = fitness_rmse + _cached_var_pen.to(fitness_rmse.dtype) * GpuGlobals.VAR_DIVERSITY_PENALTY
+                    else:
+                        _base_pso_metric = fitness_rmse
                     if getattr(GpuGlobals, 'PSO_CONSTANTS_ONLY', False):
                         _constant_token = self.grammar.token_to_id.get('C', -1)
                         _has_constant = (population == _constant_token).any(dim=1)
@@ -2171,7 +2220,9 @@ class TensorGeneticEngine:
                     opt_consts = pop_constants[top_idx]
                     _pre_pso_fitness = fitness_rmse[top_idx].clone()
                     
-                    refined_consts, refined_mse = self.optimizer.nano_pso(opt_pop, opt_consts, x_t, y_t, steps=pso_steps)
+                    refined_consts, refined_mse = self.optimizer.nano_pso(
+                        opt_pop, opt_consts, x_t, y_t, steps=pso_steps,
+                        num_particles=int(getattr(GpuGlobals, 'PSO_PARTICLES', 20)))
                     # Forzar constantes enteras si está configurado
                     if GpuGlobals.FORCE_INTEGER_CONSTANTS:
                         refined_consts = refined_consts.round()
@@ -2182,9 +2233,11 @@ class TensorGeneticEngine:
 
                     # PSO is a local polish step: never let it make an individual worse.
                     _pso_improved = torch.isfinite(refined_mse) & (refined_mse < _pre_pso_fitness)
-                    _improved_idx = top_idx[_pso_improved]
-                    pop_constants[_improved_idx] = refined_consts[_pso_improved]
-                    fitness_rmse[_improved_idx] = refined_mse[_pso_improved]
+                    # Masked writes through integer indices: no host synchronisation.
+                    pop_constants[top_idx] = torch.where(
+                        _pso_improved.unsqueeze(1), refined_consts.to(pop_constants.dtype), opt_consts)
+                    fitness_rmse[top_idx] = torch.where(
+                        _pso_improved, refined_mse.to(fitness_rmse.dtype), _pre_pso_fitness)
 
                     if getattr(GpuGlobals, 'PSO_ROI_ADAPTIVE', False):
                         _roi = float(_pso_improved.float().mean().item())
@@ -2251,7 +2304,10 @@ class TensorGeneticEngine:
             
             # Try CUDA Best Tracker kernel
             try:
-                rpn_cuda_native = load_rpn_cuda_native()
+                # Module-level handle: rebinding the name here would make it a
+                # local of run() and break earlier uses in the same loop.
+                if not RPN_CUDA_AVAILABLE:
+                    raise ImportError("rpn_cuda_native unavailable")
                 # Prepare fitness (must be float32 for kernel)
                 fit_f32 = fitness_rmse.float() if fitness_rmse.dtype != torch.float32 else fitness_rmse
                 
@@ -2378,7 +2434,9 @@ class TensorGeneticEngine:
                             if simp_formula and simp_formula != cand_formula:
                                 simp_pop, simp_const = self.load_population_from_strings([simp_formula])
                                 if simp_pop is not None and simp_pop.shape[0] > 0:
-                                    simp_rmse_t = self.evaluator.evaluate_batch(simp_pop, x_t, y_t, simp_const)
+                                    simp_rmse_t = self.evaluator.evaluate_batch(
+                                        simp_pop, x_t, y_t, simp_const,
+                                        strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                                     simp_rmse = simp_rmse_t[0].item()
                                     if simp_rmse <= best_rmse * 1.05 + 1e-9:
                                         best_rmse = simp_rmse
@@ -2559,6 +2617,8 @@ class TensorGeneticEngine:
                       population = torch.cat([elites, new_pop])
                       pop_constants = torch.cat([elite_c, new_c])
                  
+                 if _alps_enabled:
+                     individual_ages[n_elites:] = 0
                  stagnation = 0
                  _pso_skip_counter = 0
                  continue
@@ -2705,6 +2765,8 @@ class TensorGeneticEngine:
                         self.pop_buffer_B[:] = population
                         self.const_buffer_B[:] = pop_constants
 
+                if _alps_enabled:
+                    individual_ages.zero_()
                 stagnation = 0
                 global_stagnation = 0
                 _pso_skip_counter = 0  # ANTI-STAG: forzar PSO inmediato en nueva población
@@ -2729,14 +2791,10 @@ class TensorGeneticEngine:
                          self.best_global_consts = best_consts_vec
                          stagnation = 0 # Reset!
                          
-                         # Inject into population (Elitism slot 0)
-                         # We need to write to CURRENT buffers
-                         if population is self.pop_buffer_A:
-                             self.pop_buffer_A[0] = best_rpn
-                             self.const_buffer_A[0] = best_consts_vec
-                         else:
-                             self.pop_buffer_B[0] = best_rpn
-                             self.const_buffer_B[0] = best_consts_vec
+                         # Inject into the live population (elitism slot 0).
+                         population[0] = best_rpn
+                         pop_constants[0] = best_consts_vec.to(pop_constants.dtype)
+                         fitness_rmse[0] = best_rmse
                 
                 # --- Stagnation Random Injection ---
                 # Inyectar individuos aleatorios durante estancamiento para mantener diversidad.
@@ -2750,9 +2808,18 @@ class TensorGeneticEngine:
                         # FIX: Reemplazar posiciones ALEATORIAS, no los peores.
                         # Antes: los lgamma elites estaban "protegidos" y los nuevos iban al fondo.
                         # Ahora: lgamma variants tienen 50% de probabilidad de ser reemplazados.
-                        inject_positions = torch.randint(0, self.pop_size, (n_inject,), device=self.device)
+                        # Slot 0 holds the elite and is never overwritten.
+                        inject_positions = torch.randint(1, self.pop_size, (n_inject,), device=self.device)
                         population[inject_positions] = inject_pop
                         pop_constants[inject_positions] = inject_c
+                        # Fresh individuals must compete with their own fitness,
+                        # not the stale fitness of the individual they replaced.
+                        _final_rows = population[inject_positions]
+                        fitness_rmse[inject_positions] = self.evaluator.evaluate_batch(
+                            _final_rows, x_t, y_t, pop_constants[inject_positions],
+                            strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION)).to(fitness_rmse.dtype)
+                        if _alps_enabled:
+                            individual_ages[inject_positions] = 0
                          
             else:
                 current_mutation_rate = GpuGlobals.BASE_MUTATION_RATE
@@ -2787,7 +2854,13 @@ class TensorGeneticEngine:
                         else:
                             fresh = fresh[:, :_L]
                     population[_reseed_idx] = fresh
-                    pop_constants[_reseed_idx].uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                    # pop_constants[idx] is a copy: assign instead of uniform_() on it.
+                    pop_constants[_reseed_idx] = torch.empty(
+                        n_reseed, self.max_constants, device=self.device, dtype=pop_constants.dtype
+                    ).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
+                    fitness_rmse[_reseed_idx] = self.evaluator.evaluate_batch(
+                        fresh, x_t, y_t, pop_constants[_reseed_idx],
+                        strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION)).to(fitness_rmse.dtype)
                     individual_ages[_reseed_idx] = 0
 
             # Adaptive parsimony (general): increase structural pressure during stagnation,
@@ -2813,8 +2886,17 @@ class TensorGeneticEngine:
             
             # --- EVOLUTION STEP (Reproduction) ---
             if GpuGlobals.USE_CUDA_ORCHESTRATOR:
-                torch.ne(population, PAD_ID, out=self._pop_mask_buf)
-                torch.sum(self._pop_mask_buf, dim=1, dtype=torch.float32, out=self._lengths_buf)
+                _row_stats = RPN_CUDA_AVAILABLE and population.is_cuda and hasattr(rpn_cuda_native, 'population_row_stats')
+                if _row_stats:
+                    # One pass over the population: program length and number of
+                    # distinct variables (replaces ne+sum and eq+any reductions).
+                    rpn_cuda_native.population_row_stats(
+                        population.contiguous(), self._lengths_buf, self._var_count_buf,
+                        PAD_ID, self.grammar.token_to_id.get(self.grammar.active_variables[0], 1),
+                        self.num_variables)
+                else:
+                    torch.ne(population, PAD_ID, out=self._pop_mask_buf)
+                    torch.sum(self._pop_mask_buf, dim=1, dtype=torch.float32, out=self._lengths_buf)
                 lengths = self._lengths_buf
                 selection_metric = self._selection_metric_buf
                 
@@ -2831,7 +2913,7 @@ class TensorGeneticEngine:
                     self._penalize_mask_buf.logical_and_(self._oversized_buf)
                     
                     selection_metric.mul_(fitness_rmse)
-                    selection_metric[self._penalize_mask_buf] = float('inf')
+                    selection_metric.masked_fill_(self._penalize_mask_buf, float('inf'))
                 else:
                     selection_metric.mul_(fitness_rmse)
 
@@ -2852,7 +2934,9 @@ class TensorGeneticEngine:
                 # OPTIMIZED: removed .any() CPU sync — penalty is 0 for formulas WITH variables.
                 if self._single_var_ids and GpuGlobals.NO_VARIABLE_PENALTY > 0:
                     # BUG-1 FIX: reuse precomputed mask
-                    if _cached_has_any_var is not None:
+                    if _row_stats:
+                        no_var = self._var_count_buf == 0
+                    elif _cached_has_any_var is not None:
                         no_var = ~_cached_has_any_var
                     else:
                         has_var = torch.zeros(self.pop_size, dtype=torch.bool, device=self.device)
@@ -2941,9 +3025,18 @@ class TensorGeneticEngine:
                                     device=self.device, dtype=torch.long
                                 )
                                 self._fitness_sharing_primes = _primes_cache
-                            _primes = _primes_cache[:_hash_len]
-                            _pop_long = population[:, :_hash_len].long()
-                            _hashes = (_pop_long * _primes.unsqueeze(0)).sum(dim=1)  # [pop_size]
+                            if RPN_CUDA_AVAILABLE and population.is_cuda and hasattr(rpn_cuda_native, 'compute_population_hashes'):
+                                # Hash of the whole program: clusters are exact structural clones
+                                # (the 8-token prefix grouped unrelated formulas sharing leaves).
+                                _hashes = torch.empty(self.pop_size, dtype=torch.long, device=self.device)
+                                _vp = torch.empty(self.pop_size, dtype=torch.int32, device=self.device)
+                                rpn_cuda_native.compute_population_hashes(
+                                    population.contiguous(), _hashes, _vp, PAD_ID,
+                                    self.grammar.token_to_id.get('x0', 1), self.num_variables)
+                            else:
+                                _primes = _primes_cache[:_hash_len]
+                                _pop_long = population[:, :_hash_len].long()
+                                _hashes = (_pop_long * _primes.unsqueeze(0)).sum(dim=1)  # [pop_size]
                             
                             # Per-island: count how many share each hash
                             _h_view = _hashes.view(self.n_islands, self.island_size)
@@ -3034,6 +3127,10 @@ class TensorGeneticEngine:
                     # Update local refs for next generation
                     next_pop = next_pop[:self.pop_size]
                     next_c = next_c[:self.pop_size]
+                    if _alps_enabled and getattr(self, '_last_parent_idx', None) is not None:
+                        # A child inherits the age of the parent whose structure it
+                        # carries (it was incremented this generation already).
+                        individual_ages = individual_ages[self._last_parent_idx[:self.pop_size]]
                     # P0-1: Cache the fitness from C++ for reuse in next iteration
                     cached_next_fit = next_fit[:self.pop_size] if (next_fit is not None and orchestrator_pso_steps > 0) else None
                     if orchestrator_pso_steps <= 0:
@@ -3355,15 +3452,19 @@ class TensorGeneticEngine:
                  sim_pop, sim_const, n_s = self.gpu_simplifier.simplify_batch(
                      best_rpn.unsqueeze(0), best_consts_vec.unsqueeze(0), max_passes=10)
                  if n_s > 0:
-                     # Validate: only use simplified if RMSE is not worse
+                     # Validate with the search semantics; accept only formulas that
+                     # are not worse, and report the RMSE of what is returned.
                      c_use = sim_const if sim_const is not None else best_consts_vec.unsqueeze(0)
                      if c_use.dim() == 1:
                          c_use = c_use.unsqueeze(0)
-                     sim_rmse = self.evaluator.evaluate_batch(sim_pop, x_t, y_t, c_use)
+                     sim_rmse = self.evaluator.evaluate_batch(
+                         sim_pop, x_t, y_t, c_use,
+                         strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
                      sim_rmse_val = sim_rmse.item() if sim_rmse.numel() == 1 else sim_rmse[0].item()
-                     if sim_rmse_val <= best_rmse * 1.2 + 1e-9:
+                     if sim_rmse_val == sim_rmse_val and sim_rmse_val <= best_rmse * (1.0 + 1e-6) + 1e-12:
                          best_rpn = sim_pop[0]
                          best_consts_vec = c_use[0]
+                         best_rmse = min(best_rmse, sim_rmse_val)
              except Exception:
                  pass  # Non-fatal
              
@@ -3393,7 +3494,7 @@ class TensorGeneticEngine:
              # Validate: if post-simplify worsened RMSE on training data, revert
              try:
                  import numpy as np
-                 x_np = x_t.cpu().numpy().flatten()
+                 x_np = self._samples_matrix(x_t)
                  y_np = y_output_t.cpu().numpy().flatten()
                  y_pred = self._eval_formula_safe(formula, x_np)
                  y_pre_pred = self._eval_formula_safe(formula_pre, x_np)
@@ -3401,7 +3502,7 @@ class TensorGeneticEngine:
                          len(y_pred) == len(y_np) and len(y_pre_pred) == len(y_np)):
                      rmse_after = float(np.sqrt(np.mean((y_np - y_pred) ** 2)))
                      rmse_before = float(np.sqrt(np.mean((y_np - y_pre_pred) ** 2)))
-                     if rmse_after > rmse_before * 1.1 + 1e-6:
+                     if rmse_after > rmse_before * 1.001 + 1e-9:
                          formula = formula_pre
              except Exception:
                  pass

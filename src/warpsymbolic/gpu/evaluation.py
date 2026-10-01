@@ -100,13 +100,14 @@ class GPUEvaluator:
         N_vars, N_samples = x.shape
 
         # ── Fast path: fused kernel ──
-        # Returns [B] RMSE directly from GPU — no B×D intermediate buffers.
+        # Returns [B] RMSE directly from GPU — no B×D intermediate buffers, so
+        # it is used for every population size (the classic path below
+        # materialises [chunk, D] matrices and spills out of VRAM above ~1.5M).
         can_try_fused = (
             bool(getattr(GpuGlobals, 'CUDA_FUSED_EVOLVE_SCORE', True)) and
             GpuGlobals.LOSS_FUNCTION == 'RMSE' and
             hasattr(self.vm, 'eval_fused') and
             not self._disable_fused_eval and
-            B_pop <= 1_500_000 and
             population.is_cuda and
             x.is_cuda and
             y_target.is_cuda and
@@ -120,9 +121,12 @@ class GPUEvaluator:
                 c_in = constants.to(x.dtype) if (constants is not None and constants.dtype != x.dtype) else constants
                 rmse = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode)
                 return rmse.to(self.dtype)
-            except Exception:
-                # Avoid repeated exception overhead in hot loops.
+            except Exception as exc:
+                # Avoid repeated exception overhead in hot loops, but never
+                # degrade to the ~8x slower classic path silently.
                 self._disable_fused_eval = True
+                print(f"[GPUEvaluator] WARNING: fused evaluator disabled after error: {exc}. "
+                      "Falling back to the classic (slower) evaluator.")
 
         # ── Original chunked path (RMSLE or fused unavailable) ──
         max_chunk_inds = 1000000

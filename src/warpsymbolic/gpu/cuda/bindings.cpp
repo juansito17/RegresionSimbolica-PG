@@ -259,7 +259,11 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor cached_copy_src,
     torch::Tensor cached_island_base,
     uint64_t rng_seed,
-    uint64_t generation
+    uint64_t generation,
+    float sbx_eta,
+    float sbx_prob,
+    float graft_const_lo,
+    float graft_const_hi
 );
 
 // --- Phase 6 Forward Declaration: Fused PSO ---
@@ -284,7 +288,8 @@ void launch_fused_pso(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    uint64_t rng_seed
+    uint64_t rng_seed,
+    int strict_mode
 );
 
 // --- Phase 5 Forward Declarations (Simplifier + Generator Kernels) ---
@@ -319,7 +324,9 @@ void launch_generate_random_rpn(
     uint64_t seed,
     float term_weight,   // OPTIMIZED: peso categoria terminal
     float unary_weight,  // OPTIMIZED: peso categoria unaria
-    float bin_weight     // OPTIMIZED: peso categoria binaria
+    float bin_weight,    // OPTIMIZED: peso categoria binaria
+    int min_len,         // ramped target length (max_len_target <= 0: legacy)
+    int max_len_target
 );
 
 // --- Diversity Kernels Forward Declarations (Structural Hash & Dedup) ---
@@ -336,7 +343,9 @@ void launch_structural_dedup(
     const torch::Tensor& hashes,
     torch::Tensor& hash_table,
     torch::Tensor& duplicate_mask,
-    torch::Tensor& original_index
+    torch::Tensor& original_index,
+    const torch::Tensor& population,
+    int PAD_ID
 );
 
 int64_t launch_count_unique(const torch::Tensor& duplicate_mask);
@@ -422,6 +431,13 @@ void launch_batch_update_best(
     float tolerance
 );
 
+void launch_population_row_stats(
+    const torch::Tensor& population,
+    torch::Tensor& out_len,
+    torch::Tensor& out_var_count,
+    int PAD_ID, int id_x_start, int num_vars
+);
+
 void launch_constant_perturbation(
     torch::Tensor& constants,
     float rate,
@@ -498,13 +514,20 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("cached_copy_src") = torch::empty({0}, torch::kInt64),
         py::arg("cached_island_base") = torch::empty({0}, torch::kInt64),
         py::arg("rng_seed") = 0,
-        py::arg("generation") = 0
+        py::arg("generation") = 0,
+        py::arg("sbx_eta") = 2.0f,
+        py::arg("sbx_prob") = 0.5f,
+        py::arg("graft_const_lo") = -5.0f,
+        py::arg("graft_const_hi") = 5.0f
     );
 
     // Phase 5: Simplifier + Generator Kernels
     m.def("simplify_batch", &launch_simplify_batch, "Batch Simplification (CUDA)");
     m.def("precompute_subtree_starts", &launch_precompute_subtree_starts, "Precompute Subtree Starts (CUDA)");
-    m.def("generate_random_rpn", &launch_generate_random_rpn, "Random RPN Generation (CUDA)");
+    m.def("generate_random_rpn", &launch_generate_random_rpn, "Random RPN Generation (CUDA)",
+        py::arg("population"), py::arg("terminal_ids"), py::arg("unary_ids"), py::arg("binary_ids"),
+        py::arg("seed"), py::arg("term_weight"), py::arg("unary_weight"), py::arg("bin_weight"),
+        py::arg("min_len") = 0, py::arg("max_len_target") = 0);
 
     // Phase 6: Fused PSO and Autograd
     m.def("fused_pso", &launch_fused_pso, "Fused PSO (Eval+PSO in single kernel)");
@@ -518,7 +541,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     
     m.def("structural_dedup", &launch_structural_dedup,
         "Find duplicate formulas via structural hash (CUDA)",
-        py::arg("hashes"), py::arg("hash_table"), py::arg("duplicate_mask"), py::arg("original_index"));
+        py::arg("hashes"), py::arg("hash_table"), py::arg("duplicate_mask"), py::arg("original_index"),
+        py::arg("population") = torch::Tensor(), py::arg("PAD_ID") = 0);
     
     m.def("count_unique", &launch_count_unique,
         "Count unique formulas (CUDA)",
@@ -573,6 +597,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Check if best improved without sync (CUDA)",
         py::arg("fitness"), py::arg("tracked_rmse"), py::arg("improved"), py::arg("tolerance") = 1e-9f);
     
+    m.def("population_row_stats", &launch_population_row_stats,
+        "Per-row program length and number of distinct variables (CUDA)",
+        py::arg("population"), py::arg("out_len"), py::arg("out_var_count"),
+        py::arg("PAD_ID"), py::arg("id_x_start"), py::arg("num_vars"));
+
     m.def("batch_update_best", &launch_batch_update_best,
         "Batch update best individual (CUDA)",
         py::arg("population"), py::arg("constants"), py::arg("fitness"),

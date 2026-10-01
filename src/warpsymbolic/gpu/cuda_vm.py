@@ -1,4 +1,5 @@
 
+import math
 import os
 import sys
 import torch
@@ -15,12 +16,13 @@ except ImportError:
     print("[CUDA VM] Warning: 'rpn_cuda_native' extension not found. Please compile it.")
 
 class CudaRPNVM:
-    # Hard limits compiled into rpn_eval_fused_kernel. Keep these next to the
-    # Python dispatch so unsupported shapes never reach a kernel that would
-    # otherwise truncate the program or silently replace x4+ with zero.
-    FUSED_MAX_VARS = 4
+    # Hard limits compiled into rpn_eval_fused_kernel. The decoded evaluator
+    # reads variables straight from x and lets each thread stride over the
+    # samples, so the only structural limit is the decoded program length
+    # (and the uint8 vocabulary, which bounds the number of variables).
+    FUSED_MAX_VARS = 255
     FUSED_MAX_L = 256
-    FUSED_MAX_D = 1024
+    FUSED_MAX_D = None
 
     def __init__(self, grammar, device):
         self.grammar = grammar
@@ -145,7 +147,7 @@ class CudaRPNVM:
             self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
             self.op_gamma, self.op_lgamma,
             self.op_asin, self.op_acos, self.op_atan,
-            3.14159265359, 2.718281828,
+            math.pi, math.e,
             strict_mode
         )
         
@@ -168,7 +170,7 @@ class CudaRPNVM:
             self.op_fact, self.op_floor, self.op_ceil, self.op_sign,
             self.op_gamma, self.op_lgamma,
             self.op_asin, self.op_acos, self.op_atan,
-            3.14159265359, 2.718281828,
+            math.pi, math.e,
             strict_mode, launch_mode
         )
 
@@ -184,7 +186,6 @@ class CudaRPNVM:
             and int(x.shape[0]) == self.num_vars
             and int(x.shape[1]) > 0
             and int(population.shape[1]) <= self.FUSED_MAX_L
-            and int(x.shape[1]) <= self.FUSED_MAX_D
         )
 
     def _select_eval_mode(self, population, x, constants, y_target, out_rmse, strict_mode):
@@ -193,12 +194,12 @@ class CudaRPNVM:
 
         requested = str(getattr(GpuGlobals, 'CUDA_EVAL_MODE', 'auto')).lower()
         D = int(x.shape[1])
-        if requested == 'block' or D > 32:
+        if requested == 'block':
             return 0
         if requested == 'warp':
             return 1
         if not bool(getattr(GpuGlobals, 'CUDA_AUTOTUNE', True)):
-            return 0
+            return 1
 
         B, L = population.shape
         K = constants.shape[1] if constants.dim() > 1 else 0
@@ -211,9 +212,11 @@ class CudaRPNVM:
             return cached
 
         # Tiny batches are latency-bound and not worth a synchronous tuning pass.
+        # One warp per individual keeps every SM busy unless B is tiny and D huge.
         if B < 4096:
-            self._eval_mode_cache[key] = 0
-            return 0
+            mode = 0 if (B < 256 and D > 256) else 1
+            self._eval_mode_cache[key] = mode
+            return mode
 
         timings = {}
         reference = None
@@ -244,10 +247,11 @@ class CudaRPNVM:
     def eval_fused(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor,
                    y_target: torch.Tensor, strict_mode: int = 0) -> torch.Tensor:
         """
-        Fused eval: block-per-individual kernel — returns [B] RMSE directly.
+        Fused eval — returns [B] RMSE directly.
 
-        - 0 warp divergence (all threads in a block run the same program)
-        - Program cached in shared memory (17× less global reads)
+        - Each program is decoded once per individual (not once per sample)
+        - 0 warp divergence (all threads of a warp run the same program)
+        - Any number of variables and samples (threads stride over samples)
         - RMSE computed by warp shuffle inside kernel (no B*D intermediate buffer)
 
         population: [B, L]
@@ -261,9 +265,8 @@ class CudaRPNVM:
 
         if not self.supports_fused_shape(population, x):
             raise ValueError(
-                "eval_rpn_fused only supports at most "
-                f"{self.FUSED_MAX_VARS} variables, programs of length "
-                f"{self.FUSED_MAX_L}, and {self.FUSED_MAX_D} samples; "
+                "eval_rpn_fused only supports programs of length "
+                f"<= {self.FUSED_MAX_L} with x shaped [{self.num_vars}, D]; "
                 "use eval() for the classic safe path."
             )
 
@@ -283,11 +286,10 @@ class CudaRPNVM:
             if not constants.is_contiguous(): constants = constants.contiguous()
             if constants.dtype != dtype:      constants = constants.to(dtype)
 
-        # Pre-allocate output (reuse across calls)
-        rmse_key = ('fused', B, dtype)
-        if rmse_key not in self._output_cache:
-            self._output_cache[rmse_key] = torch.empty(B, dtype=dtype, device=self.device)
-        out_rmse = self._output_cache[rmse_key]
+        # A fresh output per call: callers keep fitness tensors across later
+        # evaluations, so a shared cached buffer would be silently overwritten.
+        # The caching allocator makes this allocation essentially free.
+        out_rmse = torch.empty(B, dtype=dtype, device=self.device)
 
         launch_mode = self._select_eval_mode(
             population, x, constants, y_target, out_rmse, strict_mode)

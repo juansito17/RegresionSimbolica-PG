@@ -241,7 +241,7 @@ class GPUGrammar:
                     if tid > 0:
                         ids.append(tid)
         
-        if len(ids) == 0:
-            return torch.zeros(1, dtype=self.dtype, device=device)  # Return dummy
+        # An empty arity class must stay empty: a dummy 0 would be PAD_ID and
+        # mutating a token into PAD silently truncates the formula.
         return torch.tensor(ids, dtype=self.dtype, device=device)
 

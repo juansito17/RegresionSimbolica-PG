@@ -68,109 +68,107 @@ __device__ __forceinline__ int xorshift_int(uint64_t* state, int n) {
  * y OPERATOR_WEIGHTS no se aplicaban en el kernel CUDA.
  */
 __global__ void generate_random_rpn_kernel(
-    uint8_t* __restrict__ out_pop,              // FIX: uint8_t — coincide con pop_dtype Python
-    const uint8_t* __restrict__ terminal_ids,   // FIX: uint8_t
-    const uint8_t* __restrict__ unary_ids,      // FIX: uint8_t
-    const uint8_t* __restrict__ binary_ids,     // FIX: uint8_t
+    uint8_t* __restrict__ out_pop,              // [B, L] uint8
+    const uint8_t* __restrict__ terminal_ids,   // weighted pool (repeated ids = weight)
+    const uint8_t* __restrict__ unary_ids,
+    const uint8_t* __restrict__ binary_ids,
     int n_terminals, int n_unary, int n_binary,
     int B, int L,
     uint64_t seed,
     float term_weight,
     float unary_weight,
-    float bin_weight
+    float bin_weight,
+    int min_len,
+    int max_len_target
 ) {
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
-    
-    // Initialize per-thread PRNG with unique seed
+
     uint64_t rng_state = seed + (uint64_t)b * 6364136223846793005ULL + 1442695040888963407ULL;
     xorshift_uniform(&rng_state);
     xorshift_uniform(&rng_state);
-    
+
     uint8_t* row = out_pop + (int64_t)b * L;
+
+    // Ramped target size. Each formula is generated with exactly T tokens
+    // (a uniform draw in [min_len, max_len_target]), which yields a spread of
+    // sizes and shapes instead of stopping at the first time the stack
+    // returns to one (that rule produced mostly 2-token formulas).
+    // max_len_target <= 0 keeps the legacy "stop at first completion" mode.
+    const bool legacy = (max_len_target <= 0);
+    int T = L;
+    if (!legacy) {
+        int lo = min_len < 1 ? 1 : min_len;
+        int hi = max_len_target < L ? max_len_target : L;
+        if (hi < lo) hi = lo;
+        if (lo > L) lo = hi = L;
+        T = lo + xorshift_int(&rng_state, hi - lo + 1);
+        // Without unary operators an expression always has odd length.
+        if (n_unary == 0 && (T % 2) == 0) T = (T + 1 <= hi) ? T + 1 : T - 1;
+        if (T < 1) T = 1;
+    }
+
     int stack = 0;
-    int actual_len = 0;
-    
     bool is_completed = false;
-    
+
     for (int j = 0; j < L; j++) {
-        if (is_completed) {
+        if (is_completed || j >= T) {
             row[j] = (uint8_t)PAD_ID_CONST;
             continue;
         }
 
-        int remaining = L - j - 1;
-        
-        // Determine valid categories
-        bool can_terminal = ((stack + 1) >= 1) && ((stack + 1) <= 1 + remaining);
-        bool can_unary = (n_unary > 0) && (stack >= 1) && (stack <= 1 + remaining);
-        bool can_binary = (n_binary > 0) && ((stack - 1) >= 1) && ((stack - 1) <= 1 + remaining);
-        
-        // Last position: must end at stack=1
-        if (remaining == 0) {
-            can_terminal = can_terminal && ((stack + 1) == 1);
-            can_unary = can_unary && (stack == 1);
-            can_binary = can_binary && ((stack - 1) == 1);
-        }
-        
-        // OPTIMIZED: usar pesos configurables en vez de 1.0 fijo
+        int remaining = T - j - 1;
+
+        // A state (s, r) can still finish at depth 1 iff s >= 1, s - 1 <= r
+        // and, without unary operators, the parity of r - (s - 1) is even.
+        auto feasible = [&](int s_new) {
+            if (s_new < 1 || s_new - 1 > remaining) return false;
+            if (n_unary == 0 && ((remaining - (s_new - 1)) & 1)) return false;
+            return true;
+        };
+        bool can_terminal = feasible(stack + 1);
+        bool can_unary = (n_unary > 0) && stack >= 1 && feasible(stack);
+        bool can_binary = (n_binary > 0) && feasible(stack - 1);
+
         float w_t = can_terminal ? term_weight : 0.0f;
         float w_u = can_unary ? unary_weight : 0.0f;
         float w_b = can_binary ? bin_weight : 0.0f;
         float total_w = w_t + w_u + w_b;
-        
-        // FIX: fallback SOLO cuando ninguna categoría es válida (no usar 0.5f fijo
-        // — con pesos <0.5 el threshold antiguo disparaba fallbacks incorrectos)
         if (total_w <= 1e-6f) {
-            w_t = 1.0f;
-            total_w = 1.0f;
-            can_terminal = true;
-            can_unary = false;
-            can_binary = false;
+            // Only reachable for degenerate weights: fall back to any feasible move.
+            w_t = can_terminal ? 1.0f : 0.0f;
+            w_u = can_unary ? 1.0f : 0.0f;
+            w_b = can_binary ? 1.0f : 0.0f;
+            total_w = w_t + w_u + w_b;
+            if (total_w <= 0.0f) { w_t = 1.0f; total_w = 1.0f; }
         }
-        
-        // Select category using random number
+
         float r = xorshift_uniform(&rng_state);
         float p_t = w_t / total_w;
         float p_u = w_u / total_w;
-        
-        uint8_t chosen;  // FIX: uint8_t — token IDs caben en 0..255
+
+        uint8_t chosen;
         int delta;
-        
         if (r < p_t) {
-            // Terminal
-            int idx = xorshift_int(&rng_state, n_terminals);
-            chosen = terminal_ids[idx];
+            chosen = terminal_ids[xorshift_int(&rng_state, n_terminals)];
             delta = 1;
         } else if (r < p_t + p_u) {
-            // Unary
-            int idx = xorshift_int(&rng_state, n_unary);
-            chosen = unary_ids[idx];
+            chosen = unary_ids[xorshift_int(&rng_state, n_unary)];
             delta = 0;
         } else {
-            // Binary
-            int idx = xorshift_int(&rng_state, n_binary);
-            chosen = binary_ids[idx];
+            chosen = binary_ids[xorshift_int(&rng_state, n_binary)];
             delta = -1;
         }
-        
+
         row[j] = chosen;
         stack += delta;
-        actual_len = j + 1;
-        
-        // If stack == 1 and we've written enough, pad the rest
-        if (stack == 1 && j > 0) {
-            is_completed = true;
-        }
+
+        if (legacy && stack == 1 && j > 0) is_completed = true;
     }
-    
-    // Final validation: if stack != 1, replace with simple "x0" formula
+
     if (stack != 1) {
-        // Use first terminal as fallback
         row[0] = terminal_ids[0];
-        for (int j = 1; j < L; j++) {
-            row[j] = PAD_ID_CONST;
-        }
+        for (int j = 1; j < L; j++) row[j] = PAD_ID_CONST;
     }
 }
 
@@ -183,28 +181,29 @@ void launch_generate_random_rpn(
     const torch::Tensor& unary_ids,
     const torch::Tensor& binary_ids,
     uint64_t seed,
-    float term_weight,   // OPTIMIZED: peso categoria terminal
-    float unary_weight,  // OPTIMIZED: peso categoria unaria
-    float bin_weight     // OPTIMIZED: peso categoria binaria
+    float term_weight,
+    float unary_weight,
+    float bin_weight,
+    int min_len,
+    int max_len_target
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(terminal_ids);
-    // unary_ids and binary_ids may be empty but must be on GPU
     CHECK_CUDA(unary_ids);
     CHECK_CUDA(binary_ids);
-    
+
     int B = population.size(0);
     int L = population.size(1);
     int n_terminals = terminal_ids.size(0);
     int n_unary = unary_ids.numel();
     int n_binary = binary_ids.numel();
-    
+
     TORCH_CHECK(n_terminals > 0, "Must have at least one terminal token");
-    
+    if (B == 0) return;
+
     int threads = 256;
     int blocks = (B + threads - 1) / threads;
-    
-    // FIX: usar uint8_t — coincide con el tipo real de los tensores en Python (pop_dtype = uint8)
+
     generate_random_rpn_kernel<<<blocks, threads>>>(
         population.data_ptr<uint8_t>(),
         terminal_ids.data_ptr<uint8_t>(),
@@ -215,6 +214,8 @@ void launch_generate_random_rpn(
         seed,
         term_weight,
         unary_weight,
-        bin_weight
+        bin_weight,
+        min_len,
+        max_len_target
     );
 }

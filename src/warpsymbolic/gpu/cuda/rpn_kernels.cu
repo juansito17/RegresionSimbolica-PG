@@ -11,192 +11,13 @@
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-// Stack size for RPN
-// Max observed stack depth for 112-token formulas is ~14.
-// 32 slots = 2.3x safety margin vs observed max, frees 128 bytes/thread of registers vs STACK_SIZE=64.
-// Higher SM occupancy = more active warps = better latency hiding.
-// Tested: random GP populations rarely exceed depth 28 with MAX_FORMULA_LENGTH=128.
-#define STACK_SIZE 32
+// Operator semantics, RNG and the decoded interpreter are shared with the
+// fused PSO kernel so that every evaluator agrees on what a formula means.
+#include "eval_core.cuh"
 
-// Templated Constants?
-// We will cast inside functions
-
-// Device functions for unary/binary ops (Templated)
-
-// Device functions for unary/binary ops (Templated)
-template <typename T>
-__device__ __forceinline__ T safe_div(T a, T b, bool &error) {
-    if (abs(b) < (T)1e-9) {
-        return a; // protected division
-    }
-    return a / b;
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_mod(T a, T b, bool &error) {
-    if (abs(b) < (T)1e-9) {
-        return (T)0.0; // protected modulo
-    }
-    T r = fmod(a, b);
-    if ((b > 0 && r < 0) || (b < 0 && r > 0)) {
-        r += b;
-    }
-    return r;
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_log(T a, bool &error) {
-    return log(abs(a) + (T)1e-9); // protected log
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_exp(T a, bool &error) {
-    T x = a;
-    if (x < (T)-80.0) x = (T)-80.0;
-    if (x > (T)80.0) x = (T)80.0;
-    return exp(x);
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_sqrt(T a, bool &error) {
-    return sqrt(abs(a)); // protected sqrt
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_pow(T a, T b, bool &error) {
-    if (a != a || b != b) { error = true; return (T)0.0; }
-    
-    // Case (0,0) -> 1.0 (limit)
-    if (abs(a) < (T)1e-10 && abs(b) < (T)1e-10) return (T)1.0;
-    
-    // Protected negative-base handling
-    if (a < (T)0.0) {
-        T ib = round(b);
-        if (abs(b - ib) > (T)1e-3) {
-            a = abs(a);
-        } else {
-            b = ib;
-        }
-    }
-    
-    // Safety: prevent extreme overflow that kills the individual
-    // If a > 1 and b > 100, or similar combinations
-    if (abs(a) > (T)1.0 && b > (T)80.0) b = (T)80.0;
-    if (abs(a) > (T)100.0 && b > (T)10.0) b = (T)10.0;
-
-    T res = pow(a, b);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_asin(T a, bool &error) {
-    if (a < (T)-1.0) a = (T)-1.0;
-    if (a > (T)1.0) a = (T)1.0;
-    return asin(a);
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_acos(T a, bool &error) {
-    if (a < (T)-1.0) a = (T)-1.0;
-    if (a > (T)1.0) a = (T)1.0;
-    return acos(a);
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_tgamma(T a, bool &error) {
-    if (a <= (T)0.0 && floor(a) == a) return (T)0.0;
-    T res = tgamma(a);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
-
-template <typename T>
-__device__ __forceinline__ T safe_lgamma(T a, bool &error) {
-    if (a <= (T)0.0 && floor(a) == a) return (T)0.0;
-    T res = lgamma(a);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
-
-// ============================================================
-//  STRICT math functions — real math, error on domain violations
-// ============================================================
-
-template <typename T>
-__device__ __forceinline__ T strict_div(T a, T b, bool &error) {
-    if (abs(b) < (T)1e-9) { error = true; return (T)0.0; }
-    return a / b;
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_mod(T a, T b, bool &error) {
-    if (abs(b) < (T)1e-9) { error = true; return (T)0.0; }
-    T r = fmod(a, b);
-    if ((b > 0 && r < 0) || (b < 0 && r > 0)) r += b;
-    return r;
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_log(T a, bool &error) {
-    if (a <= (T)0.0) { error = true; return (T)0.0; }
-    return log(a);
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_exp(T a, bool &error) {
-    T res = exp(a);
-    if (isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_sqrt(T a, bool &error) {
-    if (a < (T)0.0) { error = true; return (T)0.0; }
-    return sqrt(a);
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_pow(T a, T b, bool &error) {
-    if (a != a || b != b) { error = true; return (T)0.0; }
-    if (abs(a) < (T)1e-10 && abs(b) < (T)1e-10) return (T)1.0;
-    if (a < (T)0.0) {
-        T ib = round(b);
-        if (abs(b - ib) > (T)1e-3) { error = true; return (T)0.0; } // non-integer exp of negative base
-        b = ib;
-    }
-    T res = pow(a, b);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_asin(T a, bool &error) {
-    if (a < (T)-1.0 || a > (T)1.0) { error = true; return (T)0.0; }
-    return asin(a);
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_acos(T a, bool &error) {
-    if (a < (T)-1.0 || a > (T)1.0) { error = true; return (T)0.0; }
-    return acos(a);
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_tgamma(T a, bool &error) {
-    if (a <= (T)0.0 && floor(a) == a) { error = true; return (T)0.0; }
-    T res = tgamma(a);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
-
-template <typename T>
-__device__ __forceinline__ T strict_lgamma(T a, bool &error) {
-    if (a <= (T)0.0 && floor(a) == a) { error = true; return (T)0.0; }
-    T res = lgamma(a);
-    if (res != res || isinf(res)) { error = true; return (T)0.0; }
-    return res;
-}
+// Stack size for the classic per-sample evaluator. Programs that would exceed
+// it are reported as errors instead of silently dropping pushed values.
+#define STACK_SIZE RPN_EVAL_STACK
 
 // TEMPLATED KERNEL
 template <typename scalar_t>
@@ -226,11 +47,11 @@ __global__ void rpn_eval_kernel(
     // Strict mode: 0 = protected (search), 1 = strict (validation)
     int strict_mode
 ) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= B * D) return;
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long long)B * D) return;
 
-    int b_idx = idx / D; // Population Index
-    int d_idx = idx % D; // Sample Index
+    long long b_idx = idx / D; // Population Index
+    long long d_idx = idx % D; // Sample Index
 
     // Registers
     scalar_t stack[STACK_SIZE];
@@ -287,19 +108,14 @@ __global__ void rpn_eval_kernel(
         }
 
         if (is_push) {
-            if (sp < STACK_SIZE) {
-                stack[sp++] = val;
-            }
+            // A program deeper than the stack is invalid; dropping the value
+            // would silently evaluate a different expression.
+            if (sp >= STACK_SIZE) { error = true; break; }
+            stack[sp++] = val;
             continue;
         }
 
-        // --- Operators (Binary & Unary) ---
-        // Fast-path resolution via another switch block might be tricky because op_* are dynamic ints,
-        // but we can compile them to switch statements if we pass them statically.
-        // Since op_add, op_sub are dynamic arguments to the kernel (from python mappings),
-        // we cannot use them in a native C++ switch(token) case op_add:.
-        // To keep the speedup without hardcoding vocabulary IDs in CUDA, we do tiered checks.
-        
+
         // Binary Operators — most-common first for branch predictor friendliness
         if (__builtin_expect(token == op_add || token == op_sub || token == op_mul || token == op_div || token == op_pow || token == op_mod, 1)) {
             if (__builtin_expect(sp < 2, 0)) { error = true; break; }
@@ -334,7 +150,7 @@ __global__ void rpn_eval_kernel(
         else if (token == op_sin) res = sin(op1);
         else if (token == op_cos) res = cos(op1);
         else if (token == op_tan) res = tan(op1);
-        else if (token == op_abs) res = abs(op1);
+        else if (token == op_abs) res = fabs(op1);
         else if (token == op_neg) res = -op1;
         else if (token == op_floor) res = floor(op1);
         else if (token == op_ceil) res = ceil(op1);
@@ -392,11 +208,11 @@ void launch_rpn_kernel(
     
     int K = constants.size(1);
     
-    int total_threads = B * D;
-    // 256 threads/block: con STACK_SIZE=28 y float32, cada hilo usa menos registros,
-    // lo que permite más bloques concurrentes por SM en la RTX 3050 (112 SM, 64K regs/SM).
+    long long total_threads = (long long)B * D;
+    if (total_threads == 0) return;
     const int block_size = 256;
-    const int grid_size = (total_threads + block_size - 1) / block_size;
+    const long long grid_size = (total_threads + block_size - 1) / block_size;
+    TORCH_CHECK(grid_size <= 2147483647LL, "rpn_eval_kernel: B*D too large for one launch");
     
     // Dispatch based on X type (float or double)
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_kernel", ([&] {
@@ -679,24 +495,14 @@ void launch_validate_crossover_lengths(
 }
 
 __device__ __forceinline__ uint4 philox4x32_10(uint4 counter, uint2 key) {
-    constexpr uint32_t M0 = 0xD2511F53U;
-    constexpr uint32_t M1 = 0xCD9E8D57U;
-    constexpr uint32_t W0 = 0x9E3779B9U;
-    constexpr uint32_t W1 = 0xBB67AE85U;
-#pragma unroll
-    for (int round = 0; round < 10; ++round) {
-        uint32_t hi0 = __umulhi(M0, counter.x);
-        uint32_t lo0 = M0 * counter.x;
-        uint32_t hi1 = __umulhi(M1, counter.z);
-        uint32_t lo1 = M1 * counter.z;
-        counter = make_uint4(hi1 ^ counter.y ^ key.x, lo1,
-                             hi0 ^ counter.w ^ key.y, lo0);
-        key.x += W0;
-        key.y += W1;
-    }
-    return counter;
+    return rpn_philox4x32_10(counter, key);
 }
 
+// Point mutation. Constant tokens are never mutated into (or out of) a
+// different terminal: constants are bound to their slot by position, so a
+// C <-> terminal swap would silently shift every later constant of the
+// formula. Constant values are explored by PSO / perturbation instead, and the
+// terminal pool supplied for mutation excludes C.
 __device__ __forceinline__ unsigned char mutate_token_philox(
     unsigned char token, uint64_t individual, int token_pos,
     const int* __restrict__ token_arities,
@@ -704,9 +510,9 @@ __device__ __forceinline__ unsigned char mutate_token_philox(
     const unsigned char* __restrict__ arity_1_ids, int n_1,
     const unsigned char* __restrict__ arity_2_ids, int n_2,
     float mutation_rate, int L, int vocab_size, int PAD_ID,
-    uint64_t rng_seed, uint64_t generation
+    uint64_t rng_seed, uint64_t generation, int id_C = -1
 ) {
-    if ((int)token == PAD_ID) return token;
+    if ((int)token == PAD_ID || (int)token == id_C) return token;
     uint4 counter = make_uint4(
         (uint32_t)(individual * (uint64_t)L + (uint64_t)token_pos),
         (uint32_t)generation, (uint32_t)(generation >> 32), (uint32_t)individual);
@@ -717,7 +523,10 @@ __device__ __forceinline__ unsigned char mutate_token_philox(
 
     int arity = ((int)token < vocab_size) ? token_arities[(int)token] : 0;
     uint32_t selector = random.y;
-    if (arity == 0 && n_0 > 0) return arity_0_ids[selector % n_0];
+    if (arity == 0 && n_0 > 0) {
+        unsigned char repl = arity_0_ids[selector % n_0];
+        return ((int)repl == id_C) ? token : repl;
+    }
     if (arity == 1 && n_1 > 0) return arity_1_ids[selector % n_1];
     if (arity == 2 && n_2 > 0) return arity_2_ids[selector % n_2];
     return token;
@@ -754,7 +563,7 @@ __global__ void mutation_philox_indirect_kernel(
     const unsigned char* __restrict__ arity_1_ids, int n_1,
     const unsigned char* __restrict__ arity_2_ids, int n_2,
     float mutation_rate, int N, int L, int vocab_size, int PAD_ID,
-    uint64_t rng_seed, uint64_t generation
+    uint64_t rng_seed, uint64_t generation, int id_C
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N * L) return;
@@ -766,7 +575,7 @@ __global__ void mutation_philox_indirect_kernel(
     population[out_idx] = mutate_token_philox(
         population[out_idx], (uint64_t)row, token_pos, token_arities,
         arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
-        mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
+        mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation, id_C);
 }
 
 __global__ void mutation_kernel(
@@ -1039,7 +848,7 @@ __global__ void crossover_splicing_mutation_kernel(
     const unsigned char* __restrict__ arity_2_ids, int n_2,
     float mutation_rate, int vocab_size,
     uint64_t rng_seed, uint64_t generation,
-    int N_pairs, int L, int PAD_ID
+    int N_pairs, int L, int PAD_ID, int id_C
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N_pairs * L) return;
@@ -1092,175 +901,16 @@ __global__ void crossover_splicing_mutation_kernel(
         val_c1 = mutate_token_philox(
             val_c1, (uint64_t)c1_row, t, token_arities,
             arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
-            mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
+            mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation, id_C);
     }
     if (c2_row != 0 && individual_rand[c2_row] < individual_cut) {
         val_c2 = mutate_token_philox(
             val_c2, (uint64_t)c2_row, t, token_arities,
             arity_0_ids, n_0, arity_1_ids, n_1, arity_2_ids, n_2,
-            mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation);
+            mutation_rate, L, vocab_size, PAD_ID, rng_seed, generation, id_C);
     }
     child1[c1_base + t] = val_c1;
     child2[c2_base + t] = val_c2;
-}
-
-__global__ void crossover_constants_kernel(
-    const unsigned char* __restrict__ p1,     // [N, L]
-    const unsigned char* __restrict__ p2,     // [N, L]
-    const int64_t* __restrict__ p1_indices,   // [N] or nullptr
-    const int64_t* __restrict__ p2_indices,   // [N] or nullptr
-    const float* __restrict__ consts1,        // [N, K]
-    const float* __restrict__ consts2,        // [N, K]
-    const int64_t* __restrict__ starts1,      // [N]
-    const int64_t* __restrict__ ends1,        // [N]
-    const int64_t* __restrict__ starts2,      // [N]
-    const int64_t* __restrict__ ends2,        // [N]
-    const bool* __restrict__ cx_mask,         // [N]
-    float* __restrict__ child1_consts,        // [N, K]
-    float* __restrict__ child2_consts,        // [N, K]
-    const int64_t* __restrict__ child1_indices, // [N] or nullptr
-    const int64_t* __restrict__ child2_indices, // [N] or nullptr
-    int N_pairs, int L, int K, int id_C
-) {
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
-    if (n >= N_pairs) return;
-    int64_t p1_base = (p1_indices != nullptr ? p1_indices[n] : n) * (int64_t)L;
-    int64_t p2_base = (p2_indices != nullptr ? p2_indices[n] : n) * (int64_t)L;
-    int64_t c1_base = (child1_indices != nullptr ? child1_indices[n] : n) * (int64_t)K;
-    int64_t c2_base = (child2_indices != nullptr ? child2_indices[n] : n) * (int64_t)K;
-
-    if (cx_mask != nullptr && !cx_mask[n]) {
-        for (int j = 0; j < K; ++j) {
-            child1_consts[c1_base + j] = consts1[n * K + j];
-            child2_consts[c2_base + j] = consts2[n * K + j];
-        }
-        return;
-    }
-
-    int64_t s1 = starts1[n];
-    int64_t e1 = ends1[n];
-    int64_t s2 = starts2[n];
-    int64_t e2 = ends2[n];
-    
-    // --- Child 1 Construction ---
-    int c1_idx = 0;
-    
-    // P1_pre [0, s1-1]
-    int p1_c = 0;
-    for (int i = 0; i < s1; ++i) {
-        if (p1[p1_base + i] == id_C) {
-            if (c1_idx < K && p1_c < K) child1_consts[c1_base + c1_idx++] = consts1[n * K + p1_c];
-            p1_c++;
-        }
-    }
-    
-    // P2_sub [s2, e2]
-    int p2_c = 0;
-    for (int i = 0; i < s2; ++i) {
-        if (p2[p2_base + i] == id_C) p2_c++;
-    }
-    for (int i = s2; i <= e2; ++i) {
-        if (p2[p2_base + i] == id_C) {
-            if (c1_idx < K && p2_c < K) child1_consts[c1_base + c1_idx++] = consts2[n * K + p2_c];
-            p2_c++;
-        }
-    }
-    
-    // P1_post [e1+1, L-1]
-    for (int i = s1; i <= e1; ++i) {
-        if (p1[p1_base + i] == id_C) p1_c++;
-    }
-    for (int i = e1 + 1; i < L; ++i) {
-        if (p1[p1_base + i] == id_C) {
-            if (c1_idx < K && p1_c < K) child1_consts[c1_base + c1_idx++] = consts1[n * K + p1_c];
-            p1_c++;
-        }
-    }
-    
-    while (c1_idx < K) {
-        int fill_idx = c1_idx;
-        child1_consts[c1_base + c1_idx] = consts1[n * K + (fill_idx % K)];
-        c1_idx++;
-    }
-    
-    // --- Child 2 Construction ---
-    int c2_idx = 0;
-    
-    p2_c = 0;
-    for (int i = 0; i < s2; ++i) {
-        if (p2[p2_base + i] == id_C) {
-            if (c2_idx < K && p2_c < K) child2_consts[c2_base + c2_idx++] = consts2[n * K + p2_c];
-            p2_c++;
-        }
-    }
-    
-    p1_c = 0;
-    for (int i = 0; i < s1; ++i) {
-        if (p1[p1_base + i] == id_C) p1_c++;
-    }
-    for (int i = s1; i <= e1; ++i) {
-        if (p1[p1_base + i] == id_C) {
-            if (c2_idx < K && p1_c < K) child2_consts[c2_base + c2_idx++] = consts1[n * K + p1_c];
-            p1_c++;
-        }
-    }
-    
-    for (int i = s2; i <= e2; ++i) {
-        if (p2[p2_base + i] == id_C) p2_c++;
-    }
-    for (int i = e2 + 1; i < L; ++i) {
-        if (p2[p2_base + i] == id_C) {
-            if (c2_idx < K && p2_c < K) child2_consts[c2_base + c2_idx++] = consts2[n * K + p2_c];
-            p2_c++;
-        }
-    }
-    
-    while (c2_idx < K) {
-        int fill_idx = c2_idx;
-        child2_consts[c2_base + c2_idx] = consts2[n * K + (fill_idx % K)];
-        c2_idx++;
-    }
-}
-
-__global__ void sbx_constants_kernel(
-    const float* __restrict__ consts1_orig,
-    const float* __restrict__ consts2_orig,
-    const int64_t* __restrict__ p1_indices,
-    const int64_t* __restrict__ p2_indices,
-    const float* __restrict__ u_sbx,
-    const float* __restrict__ mask_rand,
-    float* __restrict__ consts1_out,
-    float* __restrict__ consts2_out,
-    int total, int K,
-    float eta
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total) return;
-
-    int pair = idx / K;
-    int constant_idx = idx - pair * K;
-    int64_t p1_row = p1_indices != nullptr ? p1_indices[pair] : pair;
-    int64_t p2_row = p2_indices != nullptr ? p2_indices[pair] : pair;
-    float c1 = consts1_orig[p1_row * K + constant_idx];
-    float c2 = consts2_orig[p2_row * K + constant_idx];
-    if (mask_rand[idx] >= 0.5f) {
-        consts1_out[idx] = c1;
-        consts2_out[idx] = c2;
-        return;
-    }
-
-    float u = u_sbx[idx];
-    float inv = 1.0f / (eta + 1.0f);
-    float beta;
-    if (u <= 0.5f) {
-        beta = powf(2.0f * u, inv);
-    } else {
-        float denom = fminf(fmaxf(1.0f - u, 1e-7f), 1.0f);
-        beta = powf(1.0f / (2.0f * denom), inv);
-    }
-
-    consts1_out[idx] = 0.5f * ((1.0f + beta) * c1 + (1.0f - beta) * c2);
-    consts2_out[idx] = 0.5f * ((1.0f - beta) * c1 + (1.0f + beta) * c2);
 }
 
 void launch_crossover_splicing(
@@ -1300,155 +950,295 @@ void launch_crossover_splicing(
     );
 }
 
-// --- Hoist Mutation Kernel ---
-__global__ void hoist_mutation_kernel(
-    unsigned char* __restrict__ population, // [B, L]
-    const int64_t* __restrict__ starts,     // [B, L] (starts of subtree ending at i)
-    const float* __restrict__ rand_floats,  // [B]
-    const int64_t* __restrict__ rand_ints,  // [B]
-    float hoist_rate,
+// Structural mutation without host-side compaction: rows whose graft is
+// enabled (mask && fits) receive pre[0,s) + bank_sub + post(e,len); every other
+// row is copied unchanged. Writes into a separate buffer (no in-place hazard).
+__global__ void graft_splice_masked_kernel(
+    const unsigned char* __restrict__ src,      // [B, L]
+    const unsigned char* __restrict__ bank,     // [Bank, L]
+    const int64_t* __restrict__ bank_rows,      // [B]
+    const int64_t* __restrict__ s_pop, const int64_t* __restrict__ e_pop,
+    const int64_t* __restrict__ s_bank, const int64_t* __restrict__ e_bank,
+    const bool* __restrict__ enabled,           // [B] mask && fits
+    unsigned char* __restrict__ dst,            // [B, L]
     int B, int L, int PAD_ID
 ) {
-    // OPTIMIZED: 128 threads/block en vez de 1 → mejor ocupación SM (era <<<B,1>>>)
-    int b = blockIdx.x * blockDim.x + threadIdx.x;
-    if (b >= B) return;
-    
-    // 1. Check Probability
-    if (hoist_rate < 1.0f && rand_floats != nullptr && rand_floats[b] >= hoist_rate) return;
-    
-    // 2. Select a Random Valid Subtree (Reservoir Sampling)
-    int selected_end = -1;
-    int count = 0;
-    
-    // Simple LCG 
-    uint64_t rng = (uint64_t)rand_ints[b];
-    
-    for (int i = 0; i < L; ++i) {
-        if (starts[b*L + i] != -1) {
-            count++;
-            rng = rng * 6364136223846793005ULL + 1;
-            if ((rng % count) == 0) {
-                selected_end = i;
-            }
-        }
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (int64_t)B * L) return;
+    int64_t row = idx / L;
+    int t = (int)(idx - row * L);
+    const unsigned char* r = src + row * (int64_t)L;
+    if (!enabled[row]) { dst[idx] = r[t]; return; }
+    int64_t s = s_pop[row], e = e_pop[row];
+    int64_t sb = s_bank[row], eb = e_bank[row];
+    int64_t cut = s + (eb - sb + 1);
+    unsigned char v;
+    if (t < s) v = r[t];
+    else if (t < cut) v = bank[bank_rows[row] * (int64_t)L + sb + (t - s)];
+    else {
+        int64_t src_i = e + 1 + (t - cut);
+        v = (src_i < L) ? r[src_i] : (unsigned char)PAD_ID;
     }
-    
-    if (selected_end == -1) return;
-    
-    int start_idx = (int)starts[b*L + selected_end];
-    int end_idx = selected_end;
-    int subtree_len = end_idx - start_idx + 1;
-    
-    // 3. Hoist (Move [start, end] to [0, len])
-    unsigned char* row = &population[b*L];
-    
-    // Create temp buffer to avoid overwrite issues during shift?
-    // Case: shift left [start, end] -> [0, len].
-    // start >= 0. So target index i is always <= source index start_idx + i.
-    // Safe to copy forward directly.
-    
-    for (int i = 0; i < subtree_len; ++i) {
-        row[i] = row[start_idx + i];
-    }
-    
-    // 4. Pad Remainder
-    for (int i = subtree_len; i < L; ++i) {
-        row[i] = (unsigned char)PAD_ID;
-    }
+    dst[idx] = v;
 }
 
-// Hoist directly on selected rows. Computing valid subtree bounds in the same
-// thread avoids materializing a [selected, L] int64 range matrix and the
-// index_select/index_copy round trip used by the generic launcher.
-__global__ void hoist_mutation_indirect_kernel(
-    unsigned char* __restrict__ population,
-    const int64_t* __restrict__ row_indices,
-    const int* __restrict__ token_arities,
-    const int64_t* __restrict__ rand_ints,
-    int N, int L, int vocab_size, int PAD_ID
+__global__ void graft_enable_kernel(
+    const float* __restrict__ individual_rand, float lo, float hi,
+    const int64_t* __restrict__ len_pop,
+    const int64_t* __restrict__ s_pop, const int64_t* __restrict__ e_pop,
+    const int64_t* __restrict__ s_bank, const int64_t* __restrict__ e_bank,
+    bool* __restrict__ enabled, int B, int max_length
 ) {
     int n = blockIdx.x * blockDim.x + threadIdx.x;
-    if (n >= N) return;
-
-    int64_t row_idx = row_indices[n];
-    unsigned char* row = population + row_idx * (int64_t)L;
-    uint64_t rng = (uint64_t)rand_ints[n];
-    int selected_start = -1;
-    int selected_end = -1;
-    int count = 0;
-
-    // Match find_subtree_ranges_kernel + hoist_mutation_kernel exactly:
-    // visit every valid end in sequence order and use the same reservoir LCG.
-    for (int end = 0; end < L; ++end) {
-        int token = (int)row[end];
-        if (token == PAD_ID) break;
-        int arity = (token >= 0 && token < vocab_size) ? token_arities[token] : 0;
-        int start = end;
-        bool valid = (arity == 0);
-        if (arity > 0) {
-            int needed = arity;
-            for (int j = end - 1; j >= 0; --j) {
-                int t = (int)row[j];
-                if (t == PAD_ID) break;
-                int a = (t >= 0 && t < vocab_size) ? token_arities[t] : 0;
-                needed += a - 1;
-                if (needed == 0) {
-                    start = j;
-                    valid = true;
-                    break;
-                }
-            }
-        }
-        if (valid) {
-            ++count;
-            rng = rng * 6364136223846793005ULL + 1;
-            if ((rng % count) == 0) {
-                selected_start = start;
-                selected_end = end;
-            }
-        }
-    }
-
-    if (selected_end < 0) return;
-    int subtree_len = selected_end - selected_start + 1;
-    for (int i = 0; i < subtree_len; ++i) {
-        row[i] = row[selected_start + i];
-    }
-    for (int i = subtree_len; i < L; ++i) {
-        row[i] = (unsigned char)PAD_ID;
-    }
+    if (n >= B) return;
+    float u = individual_rand[n];
+    bool selected = (n != 0) && u >= lo && u < hi;
+    int64_t new_len = s_pop[n] + (e_bank[n] - s_bank[n] + 1) + (len_pop[n] - (e_pop[n] + 1));
+    enabled[n] = selected && new_len >= 1 && new_len <= max_length;
 }
 
-void launch_hoist_mutation(
-    torch::Tensor& population,
-    const torch::Tensor& starts,
-    const torch::Tensor& rand_floats,
-    const torch::Tensor& rand_ints,
-    float hoist_rate,
-    int PAD_ID
+// Per-row statistics in one pass: program length and number of distinct
+// variables used (replaces several full-population PyTorch reductions).
+__global__ void population_row_stats_kernel(
+    const unsigned char* __restrict__ population, int B, int L, int PAD_ID,
+    int id_x_start, int num_vars,
+    float* __restrict__ out_len, int32_t* __restrict__ out_var_count
 ) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B) return;
+    const unsigned char* row = population + (int64_t)b * L;
+    unsigned long long mask = 0ULL;
+    int len = 0;
+    for (; len < L; ++len) {
+        int t = (int)row[len];
+        if (t == PAD_ID) break;
+        int v = t - id_x_start;
+        if (v >= 0 && v < num_vars && v < 64) mask |= (1ULL << v);
+    }
+    if (out_len != nullptr) out_len[b] = (float)len;
+    if (out_var_count != nullptr) out_var_count[b] = __popcll(mask);
+}
+
+void launch_population_row_stats(
+    const torch::Tensor& population,
+    torch::Tensor& out_len,
+    torch::Tensor& out_var_count,
+    int PAD_ID, int id_x_start, int num_vars
+) {
+    CHECK_INPUT(population);
     int B = population.size(0);
     int L = population.size(1);
-    
-    CHECK_INPUT(population);
-    CHECK_INPUT(starts);
-    if (rand_floats.defined() && rand_floats.numel() > 0) CHECK_INPUT(rand_floats);
-    CHECK_INPUT(rand_ints);
-    
-    // OPTIMIZED: 128 threads/block → 128x mejor ocupación de SM (era <<<B,1>>>)
-    const int hoist_threads = 128;
-    const int hoist_blocks = (B + hoist_threads - 1) / hoist_threads;
-    hoist_mutation_kernel<<<hoist_blocks, hoist_threads>>>(
-        population.data_ptr<unsigned char>(),
-        starts.data_ptr<int64_t>(),
-        (rand_floats.defined() && rand_floats.numel() > 0) ? rand_floats.data_ptr<float>() : nullptr,
-        rand_ints.data_ptr<int64_t>(),
-        hoist_rate,
-        B, L, PAD_ID
-    );
-    
+    float* len_ptr = nullptr;
+    int32_t* vc_ptr = nullptr;
+    if (out_len.defined() && out_len.numel() > 0) {
+        CHECK_INPUT(out_len);
+        TORCH_CHECK(out_len.scalar_type() == torch::kFloat32 && out_len.numel() == B, "out_len must be float32 [B]");
+        len_ptr = out_len.data_ptr<float>();
+    }
+    if (out_var_count.defined() && out_var_count.numel() > 0) {
+        CHECK_INPUT(out_var_count);
+        TORCH_CHECK(out_var_count.scalar_type() == torch::kInt32 && out_var_count.numel() == B, "out_var_count must be int32 [B]");
+        vc_ptr = out_var_count.data_ptr<int32_t>();
+    }
+    if (B == 0) return;
+    const int threads = 256;
+    population_row_stats_kernel<<<(B + threads - 1) / threads, threads>>>(
+        population.data_ptr<unsigned char>(), B, L, PAD_ID, id_x_start, num_vars, len_ptr, vc_ptr);
     cudaError_t err = cudaGetLastError();
-    TORCH_CHECK(err == cudaSuccess, "CUDA Error in hoist_mutation: ", cudaGetErrorString(err));
+    TORCH_CHECK(err == cudaSuccess, "CUDA Error in population_row_stats: ", cudaGetErrorString(err));
+}
+
+// ---------------------------------------------------------------------------
+// Offspring constants
+// ---------------------------------------------------------------------------
+// Constants are bound to formula positions (the i-th C token reads slot i).
+// Crossover children therefore receive the constants that travel with their
+// token segments. Copies (no crossover) keep their parent's constants exactly,
+// except when both parents share the same structure: then slot j means the
+// same thing in both, and SBX blending of the two constant vectors is a
+// meaningful recombination.
+__global__ void offspring_constants_kernel(
+    const unsigned char* __restrict__ pop,      // [B, L] parents
+    const float* __restrict__ consts,           // [B, K] parent constants
+    const int64_t* __restrict__ p1_rows,
+    const int64_t* __restrict__ p2_rows,
+    const int64_t* __restrict__ c1_rows,
+    const int64_t* __restrict__ c2_rows,
+    const int64_t* __restrict__ starts1, const int64_t* __restrict__ ends1,
+    const int64_t* __restrict__ starts2, const int64_t* __restrict__ ends2,
+    const bool* __restrict__ cx_mask,
+    float* __restrict__ out_consts,             // [B, K]
+    int N_pairs, int L, int K, int id_C, int PAD_ID,
+    float sbx_eta, float sbx_prob,
+    uint64_t rng_seed, uint64_t generation
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N_pairs || K <= 0) return;
+    const int64_t p1 = p1_rows[n], p2 = p2_rows[n];
+    const int64_t c1 = c1_rows[n], c2 = c2_rows[n];
+    const unsigned char* r1 = pop + p1 * (int64_t)L;
+    const unsigned char* r2 = pop + p2 * (int64_t)L;
+    const float* k1 = consts + p1 * (int64_t)K;
+    const float* k2 = consts + p2 * (int64_t)K;
+    float* o1 = out_consts + c1 * (int64_t)K;
+    float* o2 = out_consts + c2 * (int64_t)K;
+
+    if (!cx_mask[n]) {
+        bool same = (p1 != p2);
+        if (same) {
+            for (int i = 0; i < L; ++i) {
+                if (r1[i] != r2[i]) { same = false; break; }
+                if ((int)r1[i] == PAD_ID) break;
+            }
+        }
+        for (int j = 0; j < K; ++j) {
+            float a = k1[j], b = k2[j];
+            float ya = a, yb = b;
+            if (same && sbx_prob > 0.0f) {
+                uint4 r = rpn_random4(rng_seed ^ 0x5B5C0DE5ULL, generation, (uint64_t)n, (uint64_t)j);
+                if (rpn_u01(r.x) < sbx_prob) {
+                    float u = rpn_u01(r.y);
+                    float inv = 1.0f / (sbx_eta + 1.0f);
+                    float beta = (u <= 0.5f) ? powf(2.0f * u, inv)
+                                             : powf(1.0f / (2.0f * fmaxf(1.0f - u, 1e-7f)), inv);
+                    ya = 0.5f * ((1.0f + beta) * a + (1.0f - beta) * b);
+                    yb = 0.5f * ((1.0f - beta) * a + (1.0f + beta) * b);
+                }
+            }
+            o1[j] = ya;
+            o2[j] = yb;
+        }
+        return;
+    }
+
+    const int64_t s1 = starts1[n], e1 = ends1[n];
+    const int64_t s2 = starts2[n], e2 = ends2[n];
+    float buf1[32];
+    float buf2[32];
+    const int KK = K < 32 ? K : 32;
+    // Child 1 = P1[0, s1) + P2[s2, e2] + P1(e1, L)
+    {
+        int out = 0, pc = 0;
+        for (int64_t i = 0; i < s1; ++i) if ((int)r1[i] == id_C) { if (out < KK) buf1[out++] = k1[pc < K ? pc : K - 1]; ++pc; }
+        int qc = 0;
+        for (int64_t i = 0; i < s2; ++i) if ((int)r2[i] == id_C) ++qc;
+        for (int64_t i = s2; i <= e2; ++i) if ((int)r2[i] == id_C) { if (out < KK) buf1[out++] = k2[qc < K ? qc : K - 1]; ++qc; }
+        for (int64_t i = s1; i <= e1; ++i) if ((int)r1[i] == id_C) ++pc;
+        for (int64_t i = e1 + 1; i < L; ++i) {
+            if ((int)r1[i] == PAD_ID) break;
+            if ((int)r1[i] == id_C) { if (out < KK) buf1[out++] = k1[pc < K ? pc : K - 1]; ++pc; }
+        }
+        for (; out < KK; ++out) buf1[out] = k1[out];
+    }
+    // Child 2 = P2[0, s2) + P1[s1, e1] + P2(e2, L)
+    {
+        int out = 0, qc = 0;
+        for (int64_t i = 0; i < s2; ++i) if ((int)r2[i] == id_C) { if (out < KK) buf2[out++] = k2[qc < K ? qc : K - 1]; ++qc; }
+        int pc = 0;
+        for (int64_t i = 0; i < s1; ++i) if ((int)r1[i] == id_C) ++pc;
+        for (int64_t i = s1; i <= e1; ++i) if ((int)r1[i] == id_C) { if (out < KK) buf2[out++] = k1[pc < K ? pc : K - 1]; ++pc; }
+        for (int64_t i = s2; i <= e2; ++i) if ((int)r2[i] == id_C) ++qc;
+        for (int64_t i = e2 + 1; i < L; ++i) {
+            if ((int)r2[i] == PAD_ID) break;
+            if ((int)r2[i] == id_C) { if (out < KK) buf2[out++] = k2[qc < K ? qc : K - 1]; ++qc; }
+        }
+        for (; out < KK; ++out) buf2[out] = k2[out];
+    }
+    for (int j = 0; j < KK; ++j) { o1[j] = buf1[j]; o2[j] = buf2[j]; }
+    for (int j = KK; j < K; ++j) { o1[j] = k1[j]; o2[j] = k2[j]; }
+}
+
+// Structural (bank) mutation constants: the grafted subtree's C tokens get
+// fresh random values, and the constants of the suffix keep their own values
+// even though their slot indices shift. Must run on the pre-graft tokens.
+__global__ void graft_constants_kernel(
+    const unsigned char* __restrict__ pop,      // [B, L] pre-graft offspring
+    const unsigned char* __restrict__ bank,     // [Bank, L]
+    const int64_t* __restrict__ rows,           // [N] offspring rows
+    const int64_t* __restrict__ bank_rows,      // [N]
+    const int64_t* __restrict__ s_pop, const int64_t* __restrict__ e_pop,
+    const int64_t* __restrict__ s_bank, const int64_t* __restrict__ e_bank,
+    const bool* __restrict__ valid,             // [N]
+    float* __restrict__ consts,                 // [B, K] in-place
+    int N, int L, int K, int id_C, int PAD_ID,
+    float c_lo, float c_hi, uint64_t rng_seed, uint64_t generation
+) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N || K <= 0 || !valid[n]) return;
+    const int64_t row = rows != nullptr ? rows[n] : (int64_t)n;
+    const unsigned char* r = pop + row * (int64_t)L;
+    const unsigned char* g = bank + bank_rows[n] * (int64_t)L;
+    float* k = consts + row * (int64_t)K;
+    const int KK = K < 32 ? K : 32;
+    float old[32];
+    for (int j = 0; j < KK; ++j) old[j] = k[j];
+    float buf[32];
+    int out = 0, pc = 0;
+    const int64_t s = s_pop[n], e = e_pop[n];
+    for (int64_t i = 0; i < s; ++i) if ((int)r[i] == id_C) { if (out < KK) buf[out++] = old[pc < KK ? pc : KK - 1]; ++pc; }
+    int fresh = 0;
+    for (int64_t i = s_bank[n]; i <= e_bank[n]; ++i) {
+        if ((int)g[i] == id_C) {
+            uint4 rnd = rpn_random4(rng_seed ^ 0x6A09E667ULL, generation, (uint64_t)row, (uint64_t)fresh++);
+            if (out < KK) buf[out++] = c_lo + (c_hi - c_lo) * rpn_u01(rnd.x);
+        }
+    }
+    for (int64_t i = s; i <= e; ++i) if ((int)r[i] == id_C) ++pc;
+    for (int64_t i = e + 1; i < L; ++i) {
+        if ((int)r[i] == PAD_ID) break;
+        if ((int)r[i] == id_C) { if (out < KK) buf[out++] = old[pc < KK ? pc : KK - 1]; ++pc; }
+    }
+    for (; out < KK; ++out) buf[out] = old[out];
+    for (int j = 0; j < KK; ++j) k[j] = buf[j];
+}
+
+// Hoist mutation applied directly to the rows selected by the per-individual
+// random draw (no host-side compaction). The chosen subtree end is uniform
+// over the program, and constants are shifted so that the hoisted subtree's
+// C tokens keep reading the values they used before.
+__global__ void hoist_mutation_masked_kernel(
+    unsigned char* __restrict__ population,     // [B, L]
+    float* __restrict__ consts,                 // [B, K]
+    const float* __restrict__ individual_rand,  // [B]
+    float lo, float hi,
+    const int* __restrict__ token_arities,
+    int B, int L, int K, int vocab_size, int PAD_ID, int id_C,
+    uint64_t rng_seed, uint64_t generation
+) {
+    int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= B || b == 0) return;
+    float u = individual_rand[b];
+    if (!(u >= lo && u < hi)) return;
+    unsigned char* row = population + (int64_t)b * L;
+    int len = 0;
+    while (len < L && (int)row[len] != PAD_ID) ++len;
+    if (len < 2) return;
+    uint4 rnd = rpn_random4(rng_seed ^ 0x3C6EF372ULL, generation, (uint64_t)b, 0ULL);
+    int end = (int)(rnd.x % (uint32_t)len);
+    int token = (int)row[end];
+    int arity = (token >= 0 && token < vocab_size) ? token_arities[token] : 0;
+    int start = end;
+    if (arity > 0) {
+        int needed = arity;
+        start = -1;
+        for (int j = end - 1; j >= 0; --j) {
+            int t = (int)row[j];
+            int a = (t >= 0 && t < vocab_size) ? token_arities[t] : 0;
+            needed += a - 1;
+            if (needed == 0) { start = j; break; }
+        }
+        if (start < 0) return;
+    }
+    if (start == 0 && end == len - 1) return;
+    int c_before = 0;
+    for (int i = 0; i < start; ++i) if ((int)row[i] == id_C) ++c_before;
+    int sub_len = end - start + 1;
+    for (int i = 0; i < sub_len; ++i) row[i] = row[start + i];
+    for (int i = sub_len; i < L; ++i) row[i] = (unsigned char)PAD_ID;
+    if (K > 0 && c_before > 0) {
+        float* k = consts + (int64_t)b * K;
+        for (int j = 0; j + c_before < K; ++j) k[j] = k[j + c_before];
+    }
 }
 
 // --- Constant Perturbation: in-place local search for numeric constants ---
@@ -1495,7 +1285,9 @@ __global__ void constant_perturbation_kernel(
     float value = (float)constants[idx];
     float scale = fabsf(value) * sigma + 1e-4f;
     float next = value + z * scale;
-    next = fminf(fmaxf(next, c_min), c_max);
+    // Keep the search range, but never pull an existing out-of-range constant
+    // (e.g. from a seed formula) back to the boundary: that would destroy it.
+    next = fminf(fmaxf(next, fminf(c_min, value)), fmaxf(c_max, value));
     constants[idx] = (scalar_t)next;
 }
 
@@ -1846,7 +1638,11 @@ std::vector<torch::Tensor> evolve_generation(
     torch::Tensor cached_copy_src,
     torch::Tensor cached_island_base,
     uint64_t rng_seed,
-    uint64_t generation
+    uint64_t generation,
+    float sbx_eta,
+    float sbx_prob,
+    float graft_const_lo,
+    float graft_const_hi
 ) {
     // Full Orchestrator: Selection + Crossover + Mutation + PSO
     
@@ -1884,9 +1680,17 @@ std::vector<torch::Tensor> evolve_generation(
     auto winner_idx = torch::empty({B}, long_opt);
     
     // Lexicase Approximation: If abs_errors provided, each tournament picks a random test case.
+    // The case index addresses the columns of abs_errors. Those columns may be a
+    // random subsample of the dataset (lexicase sub-sampling), so the range
+    // must come from abs_errors itself and never from X.
     torch::Tensor rand_cases;
     if (abs_errors.numel() > 0) {
-        rand_cases = torch::randint(0, N_data, {B}, int_opt);
+        TORCH_CHECK(abs_errors.dim() == 2 && abs_errors.size(0) == B,
+                    "abs_errors must have shape [B, cases]");
+        const int n_cases = (int)abs_errors.size(1);
+        TORCH_CHECK(!(mad_eps.defined() && mad_eps.numel() > 0) || mad_eps.numel() == n_cases,
+                    "mad_eps must have one entry per abs_errors column");
+        rand_cases = torch::randint(0, n_cases, {B}, int_opt);
     } else {
         rand_cases = torch::empty({0}, int_opt);
     }
@@ -1989,31 +1793,29 @@ std::vector<torch::Tensor> evolve_generation(
     launch_validate_crossover_lengths(lengths1, lengths2, s1, e1, s2, e2, cx_mask_flat, L);
     cx_mask_flat.logical_and_(cx_candidate_mask);
 
-    // Preserve the historical RNG stream while making point-mutation inputs
-    // available to the fused splice writer.
-    auto u_sbx = torch::rand({n_pairs, K}, float_opt);
-    auto mask_sbx_rand = torch::rand({n_pairs, K}, float_opt);
     auto mut_rand = torch::rand({B}, float_opt);
     bool has_bank = (mutation_bank.numel() > 0);
     float point_cut = has_bank ? 0.5f : 0.8f;
 
     auto offspring = torch::empty_like(population);
     int threads_splice = 256;
-    int blocks_splice = (n_pairs * L + threads_splice - 1) / threads_splice;
-    crossover_splicing_mutation_kernel<<<blocks_splice, threads_splice>>>(
-        population.data_ptr<unsigned char>(), population.data_ptr<unsigned char>(),
-        p1_winner_idx.data_ptr<int64_t>(), p2_winner_idx.data_ptr<int64_t>(),
-        c1_dest_t.data_ptr<int64_t>(), c2_dest_t.data_ptr<int64_t>(),
-        s1.data_ptr<int64_t>(), e1.data_ptr<int64_t>(),
-        s2.data_ptr<int64_t>(), e2.data_ptr<int64_t>(),
-        cx_mask_flat.data_ptr<bool>(), offspring.data_ptr<unsigned char>(),
-        offspring.data_ptr<unsigned char>(), mut_rand.data_ptr<float>(), point_cut,
-        token_arities.data_ptr<int32_t>(),
-        arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
-        arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
-        arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
-        mutation_rate, token_arities.size(0), rng_seed, generation,
-        n_pairs, L, PAD_ID);
+    if (n_pairs > 0) {
+        int blocks_splice = (int)(((int64_t)n_pairs * L + threads_splice - 1) / threads_splice);
+        crossover_splicing_mutation_kernel<<<blocks_splice, threads_splice>>>(
+            population.data_ptr<unsigned char>(), population.data_ptr<unsigned char>(),
+            p1_winner_idx.data_ptr<int64_t>(), p2_winner_idx.data_ptr<int64_t>(),
+            c1_dest_t.data_ptr<int64_t>(), c2_dest_t.data_ptr<int64_t>(),
+            s1.data_ptr<int64_t>(), e1.data_ptr<int64_t>(),
+            s2.data_ptr<int64_t>(), e2.data_ptr<int64_t>(),
+            cx_mask_flat.data_ptr<bool>(), offspring.data_ptr<unsigned char>(),
+            offspring.data_ptr<unsigned char>(), mut_rand.data_ptr<float>(), point_cut,
+            token_arities.data_ptr<int32_t>(),
+            arity_0_ids.data_ptr<unsigned char>(), arity_0_ids.numel(),
+            arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
+            arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
+            mutation_rate, token_arities.size(0), rng_seed, generation,
+            n_pairs, L, PAD_ID, id_C);
+    }
 
     offspring.index_copy_(0, copy_dest_t, population.index_select(0, copy_winner_idx));
     int copy_mut_total = copy_dest_t.size(0) * L;
@@ -2025,142 +1827,108 @@ std::vector<torch::Tensor> evolve_generation(
         arity_1_ids.data_ptr<unsigned char>(), arity_1_ids.numel(),
         arity_2_ids.data_ptr<unsigned char>(), arity_2_ids.numel(),
         mutation_rate, copy_dest_t.size(0), L, token_arities.size(0), PAD_ID,
-        rng_seed, generation);
-    
-    // --- SOTA I1: Simulated Binary Crossover (SBX) for Constants ---
-    float sbx_eta = 2.0;
-    auto consts1 = torch::empty({n_pairs, K}, float_opt);
-    auto consts2 = torch::empty({n_pairs, K}, float_opt);
-    int sbx_total = n_pairs * K;
-    int threads_sbx = 256;
-    int blocks_sbx = (sbx_total + threads_sbx - 1) / threads_sbx;
-    sbx_constants_kernel<<<blocks_sbx, threads_sbx>>>(
-        constants.data_ptr<float>(),
-        constants.data_ptr<float>(),
-        p1_winner_idx.data_ptr<int64_t>(),
-        p2_winner_idx.data_ptr<int64_t>(),
-        u_sbx.data_ptr<float>(),
-        mask_sbx_rand.data_ptr<float>(),
-        consts1.data_ptr<float>(),
-        consts2.data_ptr<float>(),
-        sbx_total, K,
-        sbx_eta
-    );
-    
+        rng_seed, generation, id_C);
+
+    // Offspring constants follow their token segments (see offspring_constants_kernel).
     auto offspring_consts = torch::empty_like(constants);
-    int threads_consts = 256;
-    int blocks_consts = (n_pairs + threads_consts - 1) / threads_consts;
-    crossover_constants_kernel<<<blocks_consts, threads_consts>>>(
-        population.data_ptr<unsigned char>(),
-        population.data_ptr<unsigned char>(),
-        p1_winner_idx.data_ptr<int64_t>(),
-        p2_winner_idx.data_ptr<int64_t>(),
-        consts1.data_ptr<float>(),
-        consts2.data_ptr<float>(),
-        s1.data_ptr<int64_t>(),
-        e1.data_ptr<int64_t>(),
-        s2.data_ptr<int64_t>(),
-        e2.data_ptr<int64_t>(),
-        cx_mask_flat.data_ptr<bool>(),
-        offspring_consts.data_ptr<float>(),
-        offspring_consts.data_ptr<float>(),
-        c1_dest_t.data_ptr<int64_t>(),
-        c2_dest_t.data_ptr<int64_t>(),
-        n_pairs, L, K, id_C
-    );
-
+    if (n_pairs > 0 && K > 0) {
+        int threads_consts = 128;
+        int blocks_consts = (n_pairs + threads_consts - 1) / threads_consts;
+        offspring_constants_kernel<<<blocks_consts, threads_consts>>>(
+            population.data_ptr<unsigned char>(),
+            constants.data_ptr<float>(),
+            p1_winner_idx.data_ptr<int64_t>(), p2_winner_idx.data_ptr<int64_t>(),
+            c1_dest_t.data_ptr<int64_t>(), c2_dest_t.data_ptr<int64_t>(),
+            s1.data_ptr<int64_t>(), e1.data_ptr<int64_t>(),
+            s2.data_ptr<int64_t>(), e2.data_ptr<int64_t>(),
+            cx_mask_flat.data_ptr<bool>(),
+            offspring_consts.data_ptr<float>(),
+            n_pairs, L, K, id_C, PAD_ID,
+            sbx_eta, sbx_prob, rng_seed, generation);
+    }
     offspring_consts.index_copy_(0, copy_dest_t, constants.index_select(0, copy_winner_idx));
-    
-    // 3. Mutation 
-    // Types: Point (Standard), Structural (Bank), Hoist (New)
-    // Budget Split:
-    // If Bank > 0: 50% Point, 30% Structural, 20% Hoist
-    // Else:        80% Point,                20% Hoist
-    
-    torch::Tensor struct_mask, hoist_mask;
-    
-    if (has_bank) {
-        float struct_cut = 0.5f + 0.3f * mutation_rate;
-        float hoist_cut = 0.8f + 0.2f * mutation_rate;
-        struct_mask = (mut_rand >= 0.5) & (mut_rand < struct_cut);
-        hoist_mask = (mut_rand >= 0.8) & (mut_rand < hoist_cut);
-    } else {
-        float hoist_cut = 0.8f + 0.2f * mutation_rate;
-        hoist_mask = (mut_rand >= 0.8) & (mut_rand < hoist_cut);
-    }
 
-    // BUG-ELT-1 Fix: Exclude elite (index 0) from all mutations to preserve pure best.
+    // 3. Mutation
+    // Point mutation is fused into the crossover writer. Structural (bank)
+    // mutation and hoist mutation are per-individual operations:
+    //   bank:    [0.5, 0.5 + 0.3*rate) of the individual draw
+    //   hoist:   [0.8, 0.8 + 0.2*rate)
+    // The elite slot 0 is never mutated.
     if (has_bank) {
-        struct_mask.index_put_({0}, false);
-    }
-    hoist_mask.index_put_({0}, false);
-    
-    // Point mutation is fused into the crossover writer. Structural and hoist
-    // mutation remain per-individual operations.
-    // OPTIMIZED: eliminado .any().item<bool>() — cada llamada forzaba sync GPU→CPU.
-    // nonzero() devuelve tensor vacío si mask=False, y index_select sobre tensor vacío es no-op.
-    
-    // B. Structural Mutation Path (Grafting from Bank)
-    // OPTIMIZED: eliminado .any().item<bool>() y .sum().item<int>() — ambos forzaban sync GPU→CPU.
-    // n_struct se obtiene de struct_idx.size(0) tras nonzero() sin sync adicional.
-    if (has_bank) {
-        auto struct_idx = torch::nonzero(struct_mask).squeeze(1);
-        int n_struct = (int)struct_idx.size(0);
-        if (n_struct > 0) {
+        // Masked over all rows: no torch::nonzero, hence no host synchronisation.
+        float struct_lo = 0.5f;
+        float struct_hi = 0.5f + 0.3f * mutation_rate;
         int bank_size = mutation_bank.size(0);
-        auto bank_indices = torch::randint(0, bank_size, {n_struct}, long_opt);
-        auto len_pop = torch::empty({n_struct}, long_opt);
-        auto len_bank = torch::empty({n_struct}, long_opt);
-        auto rand_e_pop = torch::rand({n_struct}, float_opt);
-        auto rand_e_bank = torch::rand({n_struct}, float_opt);
-        auto s_pop = torch::empty({n_struct}, long_opt);
-        auto e_pop = torch::empty({n_struct}, long_opt);
-        auto s_bank = torch::empty({n_struct}, long_opt);
-        auto e_bank = torch::empty({n_struct}, long_opt);
-        int struct_range_blocks = (n_struct + threads_ranges - 1) / threads_ranges;
-        select_subtree_range_indirect_kernel<<<struct_range_blocks, threads_ranges>>>(
-            offspring.data_ptr<unsigned char>(), struct_idx.data_ptr<int64_t>(),
+        auto bank_indices = torch::randint(0, bank_size, {B}, long_opt);
+        auto len_pop = torch::empty({B}, long_opt);
+        auto len_bank = torch::empty({B}, long_opt);
+        auto rand_e_pop = torch::rand({B}, float_opt);
+        auto rand_e_bank = torch::rand({B}, float_opt);
+        auto s_pop = torch::empty({B}, long_opt);
+        auto e_pop = torch::empty({B}, long_opt);
+        auto s_bank = torch::empty({B}, long_opt);
+        auto e_bank = torch::empty({B}, long_opt);
+        int row_blocks = (B + threads_ranges - 1) / threads_ranges;
+        select_subtree_range_indirect_kernel<<<row_blocks, threads_ranges>>>(
+            offspring.data_ptr<unsigned char>(), nullptr,
             token_arities.data_ptr<int32_t>(), rand_e_pop.data_ptr<float>(),
             len_pop.data_ptr<int64_t>(), s_pop.data_ptr<int64_t>(), e_pop.data_ptr<int64_t>(),
-            n_struct, L, token_arities.size(0), PAD_ID);
-        select_subtree_range_indirect_kernel<<<struct_range_blocks, threads_ranges>>>(
+            B, L, token_arities.size(0), PAD_ID);
+        select_subtree_range_indirect_kernel<<<row_blocks, threads_ranges>>>(
             mutation_bank.data_ptr<unsigned char>(), bank_indices.data_ptr<int64_t>(),
             token_arities.data_ptr<int32_t>(), rand_e_bank.data_ptr<float>(),
             len_bank.data_ptr<int64_t>(), s_bank.data_ptr<int64_t>(), e_bank.data_ptr<int64_t>(),
-            n_struct, L, token_arities.size(0), PAD_ID);
+            B, L, token_arities.size(0), PAD_ID);
 
-        auto child = torch::empty({n_struct, L}, byte_opt);
-        auto dummy_child = torch::empty({n_struct, L}, byte_opt);
-        int struct_splice_blocks = (n_struct * L + threads_splice - 1) / threads_splice;
-        crossover_splicing_kernel<<<struct_splice_blocks, threads_splice>>>(
+        // Grafts that would not fit are skipped instead of truncated
+        // (a truncated RPN program is invalid). Slot 0 (elite) is excluded.
+        auto graft_ok = torch::empty({B}, torch::TensorOptions().dtype(torch::kBool).device(device));
+        graft_enable_kernel<<<row_blocks, threads_ranges>>>(
+            mut_rand.data_ptr<float>(), struct_lo, struct_hi,
+            len_pop.data_ptr<int64_t>(), s_pop.data_ptr<int64_t>(), e_pop.data_ptr<int64_t>(),
+            s_bank.data_ptr<int64_t>(), e_bank.data_ptr<int64_t>(),
+            graft_ok.data_ptr<bool>(), B, L);
+
+        // Constants must be remapped from the pre-graft tokens.
+        if (K > 0) {
+            graft_constants_kernel<<<row_blocks, threads_ranges>>>(
+                offspring.data_ptr<unsigned char>(), mutation_bank.data_ptr<unsigned char>(),
+                nullptr, bank_indices.data_ptr<int64_t>(),
+                s_pop.data_ptr<int64_t>(), e_pop.data_ptr<int64_t>(),
+                s_bank.data_ptr<int64_t>(), e_bank.data_ptr<int64_t>(),
+                graft_ok.data_ptr<bool>(), offspring_consts.data_ptr<float>(),
+                B, L, K, id_C, PAD_ID,
+                graft_const_lo, graft_const_hi, rng_seed, generation);
+        }
+
+        auto grafted = torch::empty_like(offspring);
+        int64_t total = (int64_t)B * L;
+        int splice_blocks = (int)((total + threads_splice - 1) / threads_splice);
+        graft_splice_masked_kernel<<<splice_blocks, threads_splice>>>(
             offspring.data_ptr<unsigned char>(), mutation_bank.data_ptr<unsigned char>(),
-            struct_idx.data_ptr<int64_t>(), bank_indices.data_ptr<int64_t>(),
-            nullptr, nullptr,
+            bank_indices.data_ptr<int64_t>(),
             s_pop.data_ptr<int64_t>(), e_pop.data_ptr<int64_t>(),
             s_bank.data_ptr<int64_t>(), e_bank.data_ptr<int64_t>(),
-            nullptr, child.data_ptr<unsigned char>(), dummy_child.data_ptr<unsigned char>(),
-            n_struct, L, PAD_ID);
-        
-        offspring.index_copy_(0, struct_idx, child);
-        } // end if (n_struct > 0)
-    } // end struct_mask scope
+            graft_ok.data_ptr<bool>(), grafted.data_ptr<unsigned char>(),
+            B, L, PAD_ID);
+        offspring = grafted;
+    }
 
-    // C. Hoist Mutation Path (NEW)
-    // OPTIMIZED: eliminado .any().item<bool>() — forzaba sync GPU→CPU.
+    // Hoist mutation: masked kernel, no host-side compaction or sync.
     {
-        auto hoist_idx = torch::nonzero(hoist_mask).squeeze(1);
-        if (hoist_idx.size(0) > 0) {
-        int n_hoist = (int)hoist_idx.size(0);
-        auto r_ints = torch::randint(0, 1000000, {n_hoist}, long_opt);
+        float hoist_lo = 0.8f;
+        float hoist_hi = 0.8f + 0.2f * mutation_rate;
         const int hoist_threads = 128;
-        const int hoist_blocks = (n_hoist + hoist_threads - 1) / hoist_threads;
-        hoist_mutation_indirect_kernel<<<hoist_blocks, hoist_threads>>>(
-            offspring.data_ptr<unsigned char>(), hoist_idx.data_ptr<int64_t>(),
-            token_arities.data_ptr<int32_t>(), r_ints.data_ptr<int64_t>(),
-            n_hoist, L, token_arities.size(0), PAD_ID);
-        } // end if (hoist_idx.size(0) > 0)
-    } // end hoist_mask scope
-    
+        const int hoist_blocks = (B + hoist_threads - 1) / hoist_threads;
+        hoist_mutation_masked_kernel<<<hoist_blocks, hoist_threads>>>(
+            offspring.data_ptr<unsigned char>(),
+            K > 0 ? offspring_consts.data_ptr<float>() : nullptr,
+            mut_rand.data_ptr<float>(), hoist_lo, hoist_hi,
+            token_arities.data_ptr<int32_t>(),
+            B, L, K, token_arities.size(0), PAD_ID, id_C,
+            rng_seed, generation);
+    }
+
     // 4. NanoPSO (Constant Optimization)
     auto final_consts_out = offspring_consts;
     auto final_fit_out = torch::empty({0}, float_opt);
@@ -2232,40 +2000,162 @@ std::vector<torch::Tensor> evolve_generation(
     }
 
     
-    // Return: [NewPop, NewConsts, NewFitness]
-    return {offspring, final_consts_out, final_fit_out};
+    // Return: [NewPop, NewConsts, NewFitness, ParentIndex]. ParentIndex[i] is
+    // the selected parent whose structure child i descends from (lineage for
+    // age-layered selection).
+    return {offspring, final_consts_out, final_fit_out, winner_idx};
 }
 
 // ============================================================
-//  FUSED EVAL KERNEL — Warp/block-per-individual + RMSE in one pass
+//  FUSED EVAL KERNEL — decoded program + RMSE in one pass
 // ============================================================
 //
-//  Layout: D <= 32 uses one individual per warp (8 warps per block).
-//          D > 32 uses one individual per block.
+//  WARP_MODE: one warp per individual (8 individuals per block). Lanes stride
+//             over the samples, so any number of samples is supported.
+//  BLOCK mode: one block per individual, threads stride over the samples.
 //
 //  Key properties:
-//  1. All threads in a warp execute the SAME program → 0 warp divergence
-//  2. Program loaded into __shared__ memory → 17× less global reads
-//  3. RMSE computed via warp shuffle reduction → outputs only [B] floats
-//     instead of [B×D] predictions (saves ~153 MB of bandwidth per call)
-//  4. No integer division/modulo in the hot path
+//  1. The program is decoded once per individual by one warp (opcode, variable
+//     index, resolved constant/literal value) and its stack discipline is
+//     validated with a warp prefix scan. Invalid programs never execute.
+//  2. Every thread of a warp runs the same program -> no divergence; dispatch
+//     is a dense switch over pre-decoded opcodes, top of stack in a register.
+//  3. RMSE is reduced in-kernel (warp shuffles); only [B] values are written.
+//  4. Strict-mode domain errors stop the whole individual early.
 //
 // ============================================================
 
-#define FUSED_MAX_L   256    // Max formula length (matches MAX_FORMULA_LENGTH)
-#define FUSED_MAX_VARS  4    // Max variables (x0, x1, x2, x3)
-#define FUSED_MAX_D  1024    // Max threads in the block-per-individual path
+#define FUSED_MAX_L   256    // Max formula length (decoded program in shared memory)
+#define FUSED_WARPS_PER_BLOCK 8
+#define FUSED_BLOCK_THREADS 256
 
-template <typename scalar_t, bool WARP_MODE>
-__global__ void rpn_eval_fused_kernel(
+template <typename scalar_t, bool WARP_MODE, bool STRICT>
+__global__ void __launch_bounds__(256)
+rpn_eval_fused_kernel(
     const unsigned char* __restrict__ population,  // [B, L]
     const scalar_t* __restrict__ x,               // [Vars, D]
-    const scalar_t* __restrict__ constants,        // [B, K]
+    const scalar_t* __restrict__ constants,        // [B, K] or nullptr
     const scalar_t* __restrict__ y_target,         // [D]
     scalar_t* __restrict__ out_rmse,               // [B]
-    int B, int D, int L, int K, int num_vars,
-    int PAD_ID,
-    int id_x_start,
+    int B, int D, int L, int K,
+    RpnOpIds ids
+) {
+    extern __shared__ __align__(16) unsigned char fused_smem[];
+    constexpr scalar_t INVALID_RMSE = std::is_same<scalar_t, double>::value
+        ? (scalar_t)1e100 : (scalar_t)1e15;
+    constexpr scalar_t MAX_METRIC_DIFF = std::is_same<scalar_t, double>::value
+        ? (scalar_t)1e150 : (scalar_t)4e18;
+
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const int64_t b = WARP_MODE ? ((int64_t)blockIdx.x * FUSED_WARPS_PER_BLOCK + warp)
+                                : (int64_t)blockIdx.x;
+    const int slot = WARP_MODE ? warp : 0;
+    const int n_slots = WARP_MODE ? FUSED_WARPS_PER_BLOCK : 1;
+
+    scalar_t* imm = reinterpret_cast<scalar_t*>(fused_smem) + (size_t)slot * L;
+    unsigned char* code = fused_smem + (size_t)n_slots * L * sizeof(scalar_t) + (size_t)slot * 2 * L;
+    unsigned char* aux = code + L;
+    DecodedProgram<scalar_t> prog{code, aux, imm};
+
+    __shared__ int s_len;
+    __shared__ scalar_t s_sq[FUSED_BLOCK_THREADS / 32];
+    __shared__ int s_flags[FUSED_BLOCK_THREADS / 32];
+
+    int len;
+    if (WARP_MODE) {
+        if (b >= B) return;  // the whole warp leaves together
+        len = rpn_decode_program_warp<scalar_t, true>(
+            population + b * (int64_t)L, L, ids,
+            (K > 0 && constants != nullptr) ? constants + b * (int64_t)K : nullptr, K,
+            prog, lane);
+        __syncwarp();
+    } else {
+        if (warp == 0) {
+            int l = rpn_decode_program_warp<scalar_t, true>(
+                population + b * (int64_t)L, L, ids,
+                (K > 0 && constants != nullptr) ? constants + b * (int64_t)K : nullptr, K,
+                prog, lane);
+            if (lane == 0) s_len = l;
+        }
+        __syncthreads();
+        len = s_len;
+    }
+
+    if (len == 0) {
+        if ((WARP_MODE ? lane : threadIdx.x) == 0) out_rmse[b] = INVALID_RMSE;
+        return;
+    }
+
+    const int nthreads = WARP_MODE ? 32 : blockDim.x;
+    const int tid = WARP_MODE ? lane : threadIdx.x;
+    scalar_t sq = (scalar_t)0.0;
+    bool invalid = false;
+    bool overflow = false;
+
+    for (int d0 = 0; d0 < D; d0 += nthreads) {
+        const int d = d0 + tid;
+        if (d < D) {
+            scalar_t pred;
+            bool ok = rpn_run_program<scalar_t, STRICT>(code, aux, imm, len, x, D, d, nullptr, pred);
+            if (!ok || isnan(pred) || isinf(pred)) {
+                invalid = true;
+            } else {
+                scalar_t diff = pred - y_target[d];
+                scalar_t ad = fabs(diff);
+                if (isnan(diff) || isinf(diff) || ad > MAX_METRIC_DIFF) {
+                    overflow = true;
+                } else {
+                    scalar_t s2 = diff * diff;
+                    if (isinf(s2)) overflow = true;
+                    else sq += s2;
+                }
+            }
+        }
+        // Any invalid sample invalidates the whole individual: stop early.
+        bool any_invalid;
+        if (WARP_MODE) any_invalid = __any_sync(RPN_FULL_MASK, invalid);
+        else any_invalid = __syncthreads_or(invalid) != 0;
+        if (any_invalid) { invalid = true; break; }
+    }
+
+    // Reduction.
+    unsigned int flags = (invalid ? 1u : 0u) | (overflow ? 2u : 0u);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        sq += __shfl_xor_sync(RPN_FULL_MASK, sq, off);
+        flags |= __shfl_xor_sync(RPN_FULL_MASK, flags, off);
+    }
+    if (!WARP_MODE) {
+        if (lane == 0) { s_sq[warp] = sq; s_flags[warp] = (int)flags; }
+        __syncthreads();
+        if (warp == 0) {
+            const int nw = blockDim.x / 32;
+            sq = (lane < nw) ? s_sq[lane] : (scalar_t)0.0;
+            flags = (lane < nw) ? (unsigned int)s_flags[lane] : 0u;
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) {
+                sq += __shfl_xor_sync(RPN_FULL_MASK, sq, off);
+                flags |= __shfl_xor_sync(RPN_FULL_MASK, flags, off);
+            }
+        }
+    }
+    if ((WARP_MODE ? lane : threadIdx.x) == 0) {
+        scalar_t rmse;
+        if (flags & 1u) {
+            rmse = INVALID_RMSE;
+        } else if (flags & 2u) {
+            rmse = sqrt(INVALID_RMSE);
+        } else {
+            rmse = sqrt(sq / (scalar_t)D);
+            if (isnan(rmse) || isinf(rmse)) rmse = INVALID_RMSE;
+        }
+        out_rmse[b] = rmse;
+    }
+}
+
+static RpnOpIds make_op_ids(
+    int PAD_ID, int id_x_start, int num_vars,
     int id_C, int id_pi, int id_e,
     int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
     int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
@@ -2273,232 +2163,21 @@ __global__ void rpn_eval_fused_kernel(
     int op_sqrt, int op_abs, int op_neg,
     int op_fact, int op_floor, int op_ceil, int op_sign,
     int op_gamma, int op_lgamma,
-    int op_asin, int op_acos, int op_atan,
-    double pi_val, double e_val,
-    int strict_mode
+    int op_asin, int op_acos, int op_atan
 ) {
-    constexpr int WARPS_PER_SMALL_BLOCK = 8;
-    const int lane_id = threadIdx.x & 31;
-    const int warp_id = threadIdx.x >> 5;
-    const int b_idx = WARP_MODE ? (blockIdx.x * WARPS_PER_SMALL_BLOCK + warp_id) : blockIdx.x;
-    const int d_idx = WARP_MODE ? lane_id : threadIdx.x;
-
-    if (b_idx >= B) return;
-
-    // ── 1. Load program into shared memory (strided: each thread loads multiple bytes) ──
-    // BUG FIX: With blockDim=32 and L=112, a single `if (d_idx < L)` only loads bytes 0..31!
-    // Use a strided loop so all L bytes are covered, regardless of blockDim.
-    __shared__ unsigned char shared_prog[FUSED_MAX_L * (WARP_MODE ? WARPS_PER_SMALL_BLOCK : 1)];
-    unsigned char* prog = shared_prog + (WARP_MODE ? warp_id * FUSED_MAX_L : 0);
-    const int load_stride = WARP_MODE ? 32 : blockDim.x;
-    const int load_start = WARP_MODE ? lane_id : threadIdx.x;
-    #pragma unroll 4
-    for (int i = load_start; i < L && i < FUSED_MAX_L; i += load_stride) {
-        prog[i] = population[b_idx * L + i];
-    }
-    if constexpr (WARP_MODE) {
-        __syncwarp();
-    } else {
-        __syncthreads();
-    }
-
-    // ── 2. Preload x values for this thread's data point ──
-    const bool active = (d_idx < D);
-    scalar_t xv[FUSED_MAX_VARS];
-    if (active) {
-        for (int v = 0; v < num_vars && v < FUSED_MAX_VARS; ++v) {
-            xv[v] = x[v * D + d_idx];
-        }
-    }
-
-    // ── 3. Execute RPN program (no warp divergence – same program for all threads) ──
-    scalar_t stack[STACK_SIZE];
-    int sp = 0;
-    bool error = false;
-    int c_idx = 0;
-
-    constexpr scalar_t INVALID_RMSE = std::is_same<scalar_t, double>::value
-        ? (scalar_t)1e100 : (scalar_t)1e15;
-    constexpr scalar_t MAX_METRIC_DIFF = std::is_same<scalar_t, double>::value
-        ? (scalar_t)1e150 : (scalar_t)4e18;
-    const scalar_t ERROR_VAL = INVALID_RMSE;
-
-    if (active) {
-    for (int pc = 0; pc < L && pc < FUSED_MAX_L; ++pc) {
-        int64_t token = (int64_t)prog[pc];
-        if (token == PAD_ID) break;
-
-        scalar_t val = (scalar_t)0.0;
-        bool is_push = true;
-
-        // Terminal dispatch
-        if (token >= id_x_start && token < id_x_start + num_vars) {
-            int vi = token - id_x_start;
-            val = active ? (vi < FUSED_MAX_VARS ? xv[vi] : (scalar_t)0.0) : (scalar_t)0.0;
-        } else if (token == id_C) {
-            int r = (c_idx < K) ? c_idx : K - 1;
-            val = (K > 0) ? constants[b_idx * K + r] : (scalar_t)1.0;
-            c_idx++;
-        } else if (token == id_0)  val = (scalar_t)0.0;
-        else if (token == id_1)    val = (scalar_t)1.0;
-        else if (token == id_2)    val = (scalar_t)2.0;
-        else if (token == id_3)    val = (scalar_t)3.0;
-        else if (token == id_4)    val = (scalar_t)4.0;
-        else if (token == id_5)    val = (scalar_t)5.0;
-        else if (token == id_6)    val = (scalar_t)6.0;
-        else if (token == id_10)   val = (scalar_t)10.0;
-        else if (token == id_pi)   val = (scalar_t)pi_val;
-        else if (token == id_e)    val = (scalar_t)e_val;
-        else is_push = false;
-
-        if (is_push) {
-            if (sp < STACK_SIZE) stack[sp++] = val;
-            continue;
-        }
-
-        // ── Binary operators (hot path first) ──
-        if (__builtin_expect(token == op_add || token == op_sub || token == op_mul
-                             || token == op_div || token == op_pow || token == op_mod, 1)) {
-            if (__builtin_expect(sp < 2, 0)) { error = true; break; }
-            scalar_t op2 = stack[--sp];
-            scalar_t op1 = stack[--sp];
-            scalar_t res;
-            if      (__builtin_expect(token == op_add, 1)) res = op1 + op2;
-            else if (__builtin_expect(token == op_sub, 1)) res = op1 - op2;
-            else if (__builtin_expect(token == op_mul, 1)) res = op1 * op2;
-            else if (token == op_div) res = strict_mode ? strict_div(op1, op2, error) : safe_div(op1, op2, error);
-            else if (token == op_pow) res = strict_mode ? strict_pow(op1, op2, error) : safe_pow(op1, op2, error);
-            else                      res = strict_mode ? strict_mod(op1, op2, error) : safe_mod(op1, op2, error);
-            if (__builtin_expect(error, 0)) break;
-            stack[sp++] = res;
-            continue;
-        }
-
-        // ── Unary operators (hot path ordered by evaluator cost) ──
-        if (__builtin_expect(sp < 1, 0)) { error = true; break; }
-        scalar_t op1 = stack[--sp];
-        scalar_t res;
-        if      (__builtin_expect(token == op_lgamma, 1)) res = strict_mode ? strict_lgamma(op1, error)                             : safe_lgamma(op1, error);
-        else if (__builtin_expect(token == op_fact,   1)) res = strict_mode ? strict_tgamma(op1 + (scalar_t)1.0, error)             : safe_tgamma(op1 + (scalar_t)1.0, error);
-        else if (__builtin_expect(token == op_sqrt,   1)) res = strict_mode ? strict_sqrt(op1, error)                               : safe_sqrt(op1, error);
-        else if (__builtin_expect(token == op_exp,    1)) res = strict_mode ? strict_exp(op1, error)                                : safe_exp(op1, error);
-        else if (__builtin_expect(token == op_log,    1)) res = strict_mode ? strict_log(op1, error)                                : safe_log(op1, error);
-        else if (token == op_sin)    res = sin(op1);
-        else if (token == op_cos)    res = cos(op1);
-        else if (token == op_tan)    res = tan(op1);
-        else if (token == op_abs)    res = abs(op1);
-        else if (token == op_neg)    res = -op1;
-        else if (token == op_gamma)  res = strict_mode ? strict_tgamma(op1, error)  : safe_tgamma(op1, error);
-        else if (token == op_asin)   res = strict_mode ? strict_asin(op1, error)    : safe_asin(op1, error);
-        else if (token == op_acos)   res = strict_mode ? strict_acos(op1, error)    : safe_acos(op1, error);
-        else if (token == op_atan)   res = atan(op1);
-        else if (token == op_floor)  res = floor(op1);
-        else if (token == op_ceil)   res = ceil(op1);
-        else if (token == op_sign)   res = (op1 > (scalar_t)0.0) ? (scalar_t)1.0 : ((op1 < (scalar_t)0.0) ? (scalar_t)-1.0 : (scalar_t)0.0);
-        else { error = true; break; }
-
-        if (__builtin_expect(error, 0)) break;
-        stack[sp++] = res;
-    }
-    }
-
-    // ── 4. Compute this thread's squared error ──
-    // Invalid = any math error, stack broken, NaN/Inf pred
-    scalar_t sq_err;
-    bool this_invalid;
-    bool metric_overflow;
-    if (active) {
-        bool valid = (!error) && (sp == 1);
-        scalar_t pred = valid ? stack[sp - 1] : ERROR_VAL;
-        valid = valid && !isnan(pred) && !isinf(pred);
-        this_invalid = !valid;
-        if (valid) {
-            scalar_t diff = pred - y_target[d_idx];
-            scalar_t abs_diff = (diff < (scalar_t)0.0) ? -diff : diff;
-            metric_overflow = isnan(diff) || isinf(diff) || abs_diff > MAX_METRIC_DIFF;
-            sq_err = metric_overflow ? (scalar_t)0.0 : (diff * diff);
-            metric_overflow = metric_overflow || isnan(sq_err) || isinf(sq_err);
-            if (metric_overflow) sq_err = (scalar_t)0.0;
-        } else {
-            sq_err = ERROR_VAL;
-            metric_overflow = false;
-        }
-    } else {
-        sq_err = (scalar_t)0.0;   // Idle threads contribute nothing
-        this_invalid = false;
-        metric_overflow = false;
-    }
-
-    // ── 5. Warp-shuffle reduction: sum sq_err and OR any_invalid ──
-    // All 32 threads in the warp participate. Idle threads (d_idx >= D) have sq_err=0.
-    unsigned int full_mask = 0xFFFFFFFF;
-    uint32_t any_invalid_u = (uint32_t)this_invalid;
-    uint32_t any_metric_overflow_u = (uint32_t)metric_overflow;
-
-    // Butterfly reduction (warp level)
-    for (int off = 16; off > 0; off >>= 1) {
-        sq_err      += __shfl_xor_sync(full_mask, sq_err, off);
-        any_invalid_u |= __shfl_xor_sync(full_mask, any_invalid_u, off);
-        any_metric_overflow_u |= __shfl_xor_sync(full_mask, any_metric_overflow_u, off);
-    }
-
-    // ── 6. Block-level reduction (for multi-warp blocks) ──
-    if constexpr (WARP_MODE) {
-        // Single warp: Lane 0 of Warp 0 writes output directly
-        if (d_idx == 0) {
-            scalar_t rmse;
-            if (any_invalid_u) {
-                rmse = INVALID_RMSE;
-            } else if (any_metric_overflow_u) {
-                rmse = sqrt(INVALID_RMSE);
-            } else {
-                scalar_t mse = sq_err / (scalar_t)D;
-                rmse = sqrt(mse);
-                if (isnan(rmse) || isinf(rmse)) rmse = INVALID_RMSE;
-            }
-            out_rmse[b_idx] = rmse;
-        }
-    } else {
-        // Multi-warp: Block reduction using shared memory
-        __shared__ scalar_t shared_sq_err[32];
-        __shared__ uint32_t shared_invalid[32];
-        __shared__ uint32_t shared_metric_overflow[32];
-
-        if (lane_id == 0) {
-            shared_sq_err[warp_id] = sq_err;
-            shared_invalid[warp_id] = any_invalid_u;
-            shared_metric_overflow[warp_id] = any_metric_overflow_u;
-        }
-        __syncthreads();
-
-        // Warp 0 reduces the warp sums
-        if (warp_id == 0) {
-            int num_warps = blockDim.x / 32;
-            scalar_t block_sq_err = (lane_id < num_warps) ? shared_sq_err[lane_id] : (scalar_t)0.0;
-            uint32_t block_invalid = (lane_id < num_warps) ? shared_invalid[lane_id] : 0;
-            uint32_t block_metric_overflow = (lane_id < num_warps) ? shared_metric_overflow[lane_id] : 0;
-
-            for (int off = 16; off > 0; off >>= 1) {
-                block_sq_err  += __shfl_xor_sync(full_mask, block_sq_err, off);
-                block_invalid |= __shfl_xor_sync(full_mask, block_invalid, off);
-                block_metric_overflow |= __shfl_xor_sync(full_mask, block_metric_overflow, off);
-            }
-
-            if (lane_id == 0) {
-                scalar_t rmse;
-                if (block_invalid) {
-                    rmse = INVALID_RMSE;
-                } else if (block_metric_overflow) {
-                    rmse = sqrt(INVALID_RMSE);
-                } else {
-                    scalar_t mse = block_sq_err / (scalar_t)D;
-                    rmse = sqrt(mse);
-                    if (isnan(rmse) || isinf(rmse)) rmse = INVALID_RMSE;
-                }
-                out_rmse[b_idx] = rmse;
-            }
-        }
-    }
+    RpnOpIds ids;
+    ids.pad = PAD_ID; ids.x_start = id_x_start; ids.num_vars = num_vars;
+    ids.c = id_C; ids.pi = id_pi; ids.e = id_e;
+    ids.l0 = id_0; ids.l1 = id_1; ids.l2 = id_2; ids.l3 = id_3;
+    ids.l4 = id_4; ids.l5 = id_5; ids.l6 = id_6; ids.l10 = id_10;
+    ids.add = op_add; ids.sub = op_sub; ids.mul = op_mul; ids.div = op_div;
+    ids.pow = op_pow; ids.mod = op_mod;
+    ids.sin = op_sin; ids.cos = op_cos; ids.tan = op_tan; ids.log = op_log; ids.exp = op_exp;
+    ids.sqrt = op_sqrt; ids.abs = op_abs; ids.neg = op_neg;
+    ids.fact = op_fact; ids.floor = op_floor; ids.ceil = op_ceil; ids.sign = op_sign;
+    ids.gamma = op_gamma; ids.lgamma = op_lgamma;
+    ids.asin = op_asin; ids.acos = op_acos; ids.atan = op_atan;
+    return ids;
 }
 
 // ── Launcher ──
@@ -2537,12 +2216,9 @@ void launch_rpn_eval_fused(
     TORCH_CHECK(population.scalar_type() == torch::kUInt8, "population must use uint8 tokens");
     TORCH_CHECK(x.dim() == 2, "x must have shape [Vars, D]");
     TORCH_CHECK(B > 0 && L > 0, "population must be non-empty");
-    TORCH_CHECK(num_vars > 0 && num_vars <= FUSED_MAX_VARS,
-                "fused evaluator supports 1..", FUSED_MAX_VARS, " variables");
-    TORCH_CHECK(L <= FUSED_MAX_L,
-                "fused evaluator program length exceeds ", FUSED_MAX_L);
-    TORCH_CHECK(D > 0 && D <= FUSED_MAX_D,
-                "fused evaluator supports 1..", FUSED_MAX_D, " samples");
+    TORCH_CHECK(num_vars > 0 && num_vars <= 255, "fused evaluator supports 1..255 variables");
+    TORCH_CHECK(L <= FUSED_MAX_L, "fused evaluator program length exceeds ", FUSED_MAX_L);
+    TORCH_CHECK(D > 0, "fused evaluator needs at least one sample");
     TORCH_CHECK(constants.dim() == 2 && constants.size(0) == B,
                 "constants must have shape [B, K]");
     TORCH_CHECK(y_target.dim() == 1 && y_target.numel() == D,
@@ -2556,37 +2232,50 @@ void launch_rpn_eval_fused(
     TORCH_CHECK(out_rmse.scalar_type() == x.scalar_type(),
                 "out_rmse dtype must match x");
 
-    // launch_mode: 0 = block per individual, 1 = eight individuals per block.
-    // Keeping both variants lets the Python VM autotune for the actual GPU and
-    // workload instead of relying on an architecture-specific heuristic.
-    const bool use_warp_mode = (launch_mode == 1 && D <= 32);
-    const int block_dim = use_warp_mode ? 256 : ((D + 31) / 32) * 32;
-    const int grid_dim = use_warp_mode ? ((B + 7) / 8) : B;
+    RpnOpIds ids = make_op_ids(
+        PAD_ID, id_x_start, num_vars, id_C, id_pi, id_e,
+        id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
+        op_add, op_sub, op_mul, op_div, op_pow, op_mod,
+        op_sin, op_cos, op_tan, op_log, op_exp,
+        op_sqrt, op_abs, op_neg,
+        op_fact, op_floor, op_ceil, op_sign,
+        op_gamma, op_lgamma, op_asin, op_acos, op_atan);
+
+    // launch_mode: 0 = block per individual, 1 = one warp per individual.
+    const bool use_warp_mode = (launch_mode == 1);
+    int block_dim;
+    int64_t grid_dim;
+    if (use_warp_mode) {
+        block_dim = FUSED_BLOCK_THREADS;
+        grid_dim = ((int64_t)B + FUSED_WARPS_PER_BLOCK - 1) / FUSED_WARPS_PER_BLOCK;
+    } else {
+        block_dim = ((D + 31) / 32) * 32;
+        if (block_dim > FUSED_BLOCK_THREADS) block_dim = FUSED_BLOCK_THREADS;
+        grid_dim = B;
+    }
+    TORCH_CHECK(grid_dim <= 2147483647LL, "fused evaluator: population too large for one launch");
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_fused_kernel", ([&] {
-        auto launch = [&](auto warp_mode_tag) {
-            constexpr bool warp_mode = decltype(warp_mode_tag)::value;
-            rpn_eval_fused_kernel<scalar_t, warp_mode><<<grid_dim, block_dim>>>(
+        const int n_slots = use_warp_mode ? FUSED_WARPS_PER_BLOCK : 1;
+        size_t smem = (size_t)n_slots * L * (sizeof(scalar_t) + 2);
+        auto launch = [&](auto warp_tag, auto strict_tag) {
+            constexpr bool warp_mode = decltype(warp_tag)::value;
+            constexpr bool strict = decltype(strict_tag)::value;
+            rpn_eval_fused_kernel<scalar_t, warp_mode, strict><<<(unsigned int)grid_dim, block_dim, smem>>>(
                 population.data_ptr<unsigned char>(),
                 x.data_ptr<scalar_t>(),
                 (constants.numel() > 0) ? constants.data_ptr<scalar_t>() : nullptr,
                 y_target.data_ptr<scalar_t>(),
                 out_rmse.data_ptr<scalar_t>(),
-                B, D, L, K, num_vars,
-                PAD_ID, id_x_start,
-                id_C, id_pi, id_e,
-                id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
-                op_add, op_sub, op_mul, op_div, op_pow, op_mod,
-                op_sin, op_cos, op_tan, op_log, op_exp,
-                op_sqrt, op_abs, op_neg,
-                op_fact, op_floor, op_ceil, op_sign,
-                op_gamma, op_lgamma, op_asin, op_acos, op_atan,
-                pi_val, e_val,
-                strict_mode
-            );
+                B, D, L, K, ids);
         };
-        if (use_warp_mode) launch(std::true_type{});
-        else launch(std::false_type{});
+        if (use_warp_mode) {
+            if (strict_mode) launch(std::true_type{}, std::true_type{});
+            else launch(std::true_type{}, std::false_type{});
+        } else {
+            if (strict_mode) launch(std::false_type{}, std::true_type{});
+            else launch(std::false_type{}, std::false_type{});
+        }
     }));
 
     cudaError_t err = cudaGetLastError();

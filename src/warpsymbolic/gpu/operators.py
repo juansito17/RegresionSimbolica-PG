@@ -133,6 +133,14 @@ class GPUOperators:
         self.arity_1_ids = weighted_ids(uniform_arity_1_ids)
         self.arity_2_ids = weighted_ids(uniform_arity_2_ids)
 
+        # Terminal prior. A uniform pool over {x_i, C, 0..10, pi, e} made only
+        # 1 leaf in 12 a variable for one-variable problems, so ~75% of random
+        # formulas were constant expressions. The configured masses are split
+        # between variables (shared equally), the optimisable constant C and
+        # the fixed literals; repeated ids implement the categorical draw.
+        self.arity_0_ids = self._weighted_terminal_ids(self.arity_0_ids)
+        self.terminal_ids = torch.tensor(self.arity_0_ids, device=self.device, dtype=self.pop_dtype)
+
         self.arity_0_ids = torch.tensor(self.arity_0_ids, device=self.device, dtype=self.pop_dtype)
         self.arity_1_ids = torch.tensor(self.arity_1_ids, device=self.device, dtype=self.pop_dtype)
         self.arity_2_ids = torch.tensor(self.arity_2_ids, device=self.device, dtype=self.pop_dtype)
@@ -147,6 +155,51 @@ class GPUOperators:
         
         # Cache int32 arities for CUDA
         self.token_arity_int = self.token_arity.to(dtype=torch.int32)
+
+    def _weighted_terminal_ids(self, ids):
+        var_mass = float(getattr(GpuGlobals, 'TERMINAL_VARIABLE_WEIGHT', 0.5))
+        const_mass = float(getattr(GpuGlobals, 'TERMINAL_CONSTANT_WEIGHT', 0.3))
+        lit_mass = float(getattr(GpuGlobals, 'TERMINAL_LITERAL_WEIGHT', 0.2))
+        resolution = 120.0
+        var_names = set(self.grammar.active_variables)
+        var_ids = [t for t in ids if self.grammar.id_to_token[int(t)] in var_names]
+        const_ids = [t for t in ids if self.grammar.id_to_token[int(t)] == 'C']
+        lit_ids = [t for t in ids if t not in var_ids and t not in const_ids]
+        expanded = []
+        for group, mass in ((var_ids, var_mass), (const_ids, const_mass), (lit_ids, lit_mass)):
+            if not group or mass <= 0.0:
+                continue
+            each = max(1, int(round(mass / len(group) * resolution)))
+            for tid in group:
+                expanded.extend([tid] * each)
+        return expanded if expanded else list(ids)
+
+    def mutation_terminal_ids(self) -> torch.Tensor:
+        """Terminal pool for point mutation: the current prior without C.
+
+        A point mutation that turns a terminal into C (or C into a terminal)
+        shifts the slot of every later constant of the formula, so constants
+        are only explored by PSO/perturbation and C tokens are never mutated.
+        """
+        key = (getattr(self, '_sampling_profile', 'full'), getattr(self, '_sampling_profile_version', 0))
+        cached = getattr(self, '_mutation_terminal_cache', None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        id_c = self.grammar.token_to_id.get('C', -1)
+        pool = self.arity_0_ids[self.arity_0_ids != id_c].contiguous()
+        if pool.numel() == 0:
+            pool = self.arity_0_ids.contiguous()
+        self._mutation_terminal_cache = (key, pool)
+        return pool
+
+    def _target_length_range(self, max_len: int):
+        """Ramped size range for random formulas: (min_len, max_len_target)."""
+        lo = max(1, int(getattr(GpuGlobals, 'INIT_MIN_LENGTH', 1)))
+        hi = int(getattr(GpuGlobals, 'INIT_MAX_LENGTH', 0))
+        if hi <= 0:
+            return 0, 0  # legacy kernel behaviour
+        hi = max(lo, min(hi, max_len))
+        return lo, hi
 
     def set_sampling_profile(self, profile: str = "full") -> None:
         """
@@ -290,9 +343,7 @@ class GPUOperators:
                     missing_pop = subset[missing_idx]
                     
                     # Find terminal positions (arity-0 tokens, non-PAD)
-                    is_term = torch.zeros_like(missing_pop, dtype=torch.bool)
-                    for tid in self.arity_0_ids:
-                        is_term |= (missing_pop == tid.item())
+                    is_term = torch.isin(missing_pop, self.arity_0_ids.unique())
                     
                     has_any = is_term.any(dim=1)
                     if not has_any.any():
@@ -307,6 +358,8 @@ class GPUOperators:
                     valid_pop[torch.arange(valid_idx.shape[0], device=device), pos] = vid
                     
                     missing_pop[valid_idx] = valid_pop
+                    # Advanced indexing returned copies: write the rows back.
+                    subset[missing_idx] = missing_pop
                     
                     # Update var_presence for newly added variable
                     var_presence[missing_idx[valid_idx]] |= var_bit
@@ -334,9 +387,7 @@ class GPUOperators:
             missing_pop = subset[missing_idx]  # [n_missing, max_len]
             
             # Find terminal positions (arity-0 tokens, non-PAD)
-            is_term = torch.zeros_like(missing_pop, dtype=torch.bool)
-            for tid in self.arity_0_ids:
-                is_term |= (missing_pop == tid.item())
+            is_term = torch.isin(missing_pop, self.arity_0_ids.unique())
             
             # Each row: pick a random terminal position to replace
             has_any = is_term.any(dim=1)  # [n_missing]
@@ -399,10 +450,12 @@ class GPUOperators:
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
                 
                 _gen_term_w, _gen_unary_w, _gen_bin_w = self._sampling_category_weights()
+                min_len, max_target = self._target_length_range(max_len)
 
                 rpn_cuda_native.generate_random_rpn(
                     population, t_ids, u_ids, b_ids, seed,
-                    _gen_term_w, _gen_unary_w, _gen_bin_w
+                    _gen_term_w, _gen_unary_w, _gen_bin_w,
+                    min_len, max_target
                 )
                 
                 # Debug guard only: the native generator is validity-preserving in normal runs.
@@ -585,9 +638,11 @@ class GPUOperators:
                 u_ids = self.arity_1_ids.contiguous() if self.arity_1_ids.numel() > 0 else self._empty_token_ids
                 b_ids = self.arity_2_ids.contiguous() if self.arity_2_ids.numel() > 0 else self._empty_token_ids
                 _gen_term_w, _gen_unary_w, _gen_bin_w = self._sampling_category_weights()
+                min_len, max_target = self._target_length_range(max_len)
                 rpn_cuda_native.generate_random_rpn(
                     population, t_ids, u_ids, b_ids, seed,
-                    _gen_term_w, _gen_unary_w, _gen_bin_w
+                    _gen_term_w, _gen_unary_w, _gen_bin_w,
+                    min_len, max_target
                 )
                 valid = self._validate_rpn_batch_custom(population, max_len)
                 invalid = ~valid
@@ -1236,9 +1291,11 @@ class GPUOperators:
                     PAD_ID, id_x_start, self.num_variables
                 )
                 
-                # 2. Structural dedup on GPU (atomic hash table)
-                # Hash table size: 2^20 = 1M entries
-                HASH_TABLE_SIZE = 1 << 20
+                # 2. Structural dedup on GPU (atomic hash table). The table has
+                # at least 2x as many slots as individuals (a fixed 2^20 table
+                # overflowed for multi-million populations), and hash matches
+                # are confirmed by comparing the token rows.
+                HASH_TABLE_SIZE = 1 << max(20, int(2 * B - 1).bit_length())
                 if self._dedup_hash_table is None or self._dedup_hash_table.numel() != HASH_TABLE_SIZE:
                     self._dedup_hash_table = torch.empty(HASH_TABLE_SIZE, dtype=torch.long, device=self.device)
                 hash_table = self._dedup_hash_table
@@ -1251,7 +1308,9 @@ class GPUOperators:
                 duplicate_mask = self._dedup_duplicate_mask[:B]
                 original_index = self._dedup_original_index[:B]
                 
-                rpn_cuda_native.structural_dedup(hashes, hash_table, duplicate_mask, original_index)
+                rpn_cuda_native.structural_dedup(
+                    hashes, hash_table, duplicate_mask, original_index,
+                    population.contiguous(), PAD_ID)
                 
                 # 3. Get replacement positions on GPU
                 if self._dedup_replacement_positions is None or self._dedup_replacement_positions.numel() < B:

@@ -15,17 +15,21 @@ def test_fused_shape_gate_matches_compiled_kernel_limits():
     x = torch.zeros((4, 1024), dtype=torch.float32)
     assert vm.supports_fused_shape(population, x)
 
+    # x must match the grammar's variables.
     assert not vm.supports_fused_shape(
         population, torch.zeros((5, 1024), dtype=torch.float32))
     assert not vm.supports_fused_shape(
         population, torch.zeros((3, 1024), dtype=torch.float32))
+    # The decoded program lives in shared memory: at most 256 tokens.
     assert not vm.supports_fused_shape(
         torch.zeros((2, 257), dtype=torch.uint8), x)
-    assert not vm.supports_fused_shape(
-        population, torch.zeros((4, 1025), dtype=torch.float32))
+    # Threads stride over samples, so any number of samples is supported.
+    assert vm.supports_fused_shape(
+        population, torch.zeros((4, 100_000), dtype=torch.float32))
 
     vm.num_vars = 5
-    assert not vm.supports_fused_shape(population, x)
+    assert vm.supports_fused_shape(
+        population, torch.zeros((5, 1024), dtype=torch.float32))
 
     vm.num_vars = 4
     assert not vm.supports_fused_shape(
@@ -46,7 +50,7 @@ def test_direct_fused_launcher_rejects_grammar_variable_mismatch():
 
 @pytest.mark.skipif(not torch.cuda.is_available() or rpn_cuda is None,
                     reason="CUDA extension is required")
-@pytest.mark.parametrize("samples", [1, 17, 32])
+@pytest.mark.parametrize("samples", [1, 17, 32, 33, 200, 1500])
 @pytest.mark.parametrize("strict_mode", [0, 1])
 def test_block_and_warp_eval_agree(samples, strict_mode):
     grammar = GPUGrammar(num_variables=1)
@@ -92,7 +96,7 @@ def test_block_and_warp_eval_agree(samples, strict_mode):
 
 @pytest.mark.skipif(not torch.cuda.is_available() or rpn_cuda is None,
                     reason="CUDA extension is required")
-@pytest.mark.parametrize("samples", [33, 200, 1024])
+@pytest.mark.parametrize("samples", [33, 200, 1024, 3000])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("strict_mode", [0, 1])
 def test_fused_and_classic_eval_agree(samples, dtype, strict_mode):
@@ -134,22 +138,27 @@ def test_fused_and_classic_eval_agree(samples, dtype, strict_mode):
 
 @pytest.mark.skipif(not torch.cuda.is_available() or rpn_cuda is None,
                     reason="CUDA extension is required")
-def test_more_than_four_variables_uses_classic_path_without_substitution():
-    """x4 must be evaluated as x4, never silently replaced with zero."""
-    grammar = GPUGrammar(num_variables=5)
+@pytest.mark.parametrize("n_vars", [5, 9])
+def test_many_variables_use_fused_path_without_substitution(n_vars):
+    """x_k (k >= 4) must be evaluated as x_k, never silently replaced with zero."""
+    grammar = GPUGrammar(num_variables=n_vars)
     evaluator = GPUEvaluator(grammar, torch.device("cuda"), dtype=torch.float32)
     batch, length, samples = 16, 64, 41
     pop = torch.full((batch, length), PAD_ID, dtype=torch.uint8, device="cuda")
-    pop[:, 0] = grammar.token_to_id["x4"]
+    pop[:, 0] = grammar.token_to_id[f"x{n_vars - 1}"]
 
-    x = torch.randn(5, samples, dtype=torch.float32, device="cuda")
-    y = x[4].clone()
+    x = torch.randn(n_vars, samples, dtype=torch.float32, device="cuda")
+    y = x[n_vars - 1].clone()
     constants = torch.empty(batch, 0, dtype=torch.float32, device="cuda")
 
-    def fused_must_not_run(*args, **kwargs):
-        raise AssertionError("five-variable workloads must use the classic evaluator")
+    calls = []
+    original = evaluator.vm.eval_fused
 
-    evaluator.vm.eval_fused = fused_must_not_run
+    def tracking_fused(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    evaluator.vm.eval_fused = tracking_fused
     old_flag = GpuGlobals.CUDA_FUSED_EVOLVE_SCORE
     try:
         GpuGlobals.CUDA_FUSED_EVOLVE_SCORE = True
@@ -157,25 +166,27 @@ def test_more_than_four_variables_uses_classic_path_without_substitution():
     finally:
         GpuGlobals.CUDA_FUSED_EVOLVE_SCORE = old_flag
 
+    assert calls, "many-variable workloads must use the fused evaluator"
     assert torch.allclose(rmse, torch.zeros_like(rmse), atol=1e-7, rtol=0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or rpn_cuda is None,
                     reason="CUDA extension is required")
-def test_direct_fused_call_rejects_more_than_four_variables():
+def test_direct_fused_call_rejects_variable_mismatch_and_long_programs():
     grammar = GPUGrammar(num_variables=5)
     vm = CudaRPNVM(grammar, torch.device("cuda"))
     pop = torch.full((1, 8), PAD_ID, dtype=torch.uint8, device="cuda")
-    x = torch.zeros(5, 4, dtype=torch.float32, device="cuda")
     y = torch.zeros(4, dtype=torch.float32, device="cuda")
     constants = torch.empty(1, 0, dtype=torch.float32, device="cuda")
 
-    with pytest.raises(ValueError, match="at most 4 variables"):
-        vm.eval_fused(pop, x, constants, y)
+    with pytest.raises(ValueError, match="x shaped"):
+        vm.eval_fused(pop, torch.zeros(4, 4, dtype=torch.float32, device="cuda"), constants, y)
 
+    long_pop = torch.full((1, 300), PAD_ID, dtype=torch.uint8, device="cuda")
+    x = torch.zeros(5, 4, dtype=torch.float32, device="cuda")
     out = torch.empty(1, dtype=torch.float32, device="cuda")
-    with pytest.raises(RuntimeError, match="supports 1\\.\\.4 variables"):
-        vm._launch_fused(pop, x, constants, y, out, 0, 0)
+    with pytest.raises(RuntimeError, match="program length exceeds"):
+        vm._launch_fused(long_pop, x, constants, y, out, 0, 0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or rpn_cuda is None,

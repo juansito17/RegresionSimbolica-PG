@@ -8,8 +8,9 @@ class GpuGlobals:
     # ============================================================
     #                  1. SYSTEM & HARDWARE
     # ============================================================
-    # RTX 3050 Laptop: ~40 TFLOPS FP32 vs ~2.5 TFLOPS FP64 (ratio 1/16).
-    # Float32 gives 4-8x speedup and activates the fused PSO kernel.
+    # RTX 3050 Laptop (GA107, 16 SMs): ~8.6 TFLOPS FP32 peak at 2.1 GHz and
+    # FP64 at 1/64 of that. Float32 is the only sensible search precision and
+    # activates the fused PSO kernel.
     USE_FLOAT32 = True             # OPTIMIZED: Float32 (4-8x speedup on consumer GPUs)
     FORCE_CPU_MODE = False         # Force CPU even if CUDA is available
     USE_CUDA_ORCHESTRATOR = True   # Use C++ Orchestrator for evolution loop
@@ -35,7 +36,9 @@ class GpuGlobals:
     #                  3. SEARCH STRATEGY (ISLAND MODEL)
     # ============================================================
     # Population Size
-    # Recommended: 100k (Fast) | 1M (Standard) | 4M (Hard/RTX 3050 limit)
+    # RTX 3050 4 GB: 100k (~100 gen/s) | 1M (~30 gen/s, default) | 4M (~7 gen/s)
+    # | ~6M practical limit (~560 B per individual at L=48, K=10). 2M was not
+    # better than 1M in the paired 15 s convergence ablation.
     POP_SIZE = 1_000_000
     GENERATIONS = 1_000_000
     
@@ -97,6 +100,18 @@ class GpuGlobals:
     LOGSPACE_FREE_CONST_TERMINAL_WEIGHT = 4    # Balanced C weight; benchmarked exact on log-quadratic exponential
     LOGSPACE_BINARY_OPERATOR_WEIGHTS = (('+', 4), ('-', 4), ('*', 8))
     LOGSPACE_TERMINAL_PROB = 0.40       # Keep default tree density; lower values were worse on log-cubic
+
+    # Random formula prior (initial population, restarts, mutation bank and
+    # duplicate replacement). Formulas are generated with a ramped target size
+    # drawn uniformly in [INIT_MIN_LENGTH, INIT_MAX_LENGTH] tokens
+    # (INIT_MAX_LENGTH <= 0 restores the legacy "stop at first completion"
+    # rule, which produced mostly 2-token formulas).
+    INIT_MIN_LENGTH = 1
+    INIT_MAX_LENGTH = 12              # paired 6-problem x 6-seed ablation vs 24/36
+    # Probability mass of each terminal class (variables share theirs equally).
+    TERMINAL_VARIABLE_WEIGHT = 0.5
+    TERMINAL_CONSTANT_WEIGHT = 0.3
+    TERMINAL_LITERAL_WEIGHT = 0.2
 
     # Tree Constraints
     MAX_FORMULA_LENGTH = 48            # CONVERGENCE FIX: 16 was too short for competitive formulas (seed is 128 tokens, random needs ≥30)
@@ -181,7 +196,10 @@ class GpuGlobals:
     #                  5. GENETIC OPERATORS
     # ============================================================
     # Rates
-    BASE_MUTATION_RATE = 0.22      # REVERTED: 22% (was 0.30) to reduce structural noise.
+    # Per-token point-mutation probability (also scales the bank/hoist shares).
+    # 0.10 beat 0.22 in the paired convergence ablation once point mutation
+    # stopped breaking constant slots.
+    BASE_MUTATION_RATE = 0.10
     DEFAULT_CROSSOVER_RATE = 0.50  # INCREASED: 50% (was 0.40) to drive convergence via SBX and structural exchange.
     
     # Adaptive Mutation
@@ -205,6 +223,13 @@ class GpuGlobals:
     DEDUPLICATION_INTERVAL = 100   # SPEED: menos overhead de escaneo (era 50)
     REPAIR_INVALID_INTERVAL = 5    # SPEED: strict eval penalizes invalids; repair periodically to refresh diversity
     
+    # Constant recombination. Copies keep their parent's constants; SBX only
+    # blends constant vectors of two parents with identical structure.
+    SBX_ETA = 2.0
+    SBX_PROBABILITY = 0.5
+    # Value range for the C tokens introduced by structural (bank) mutation.
+    GRAFT_CONSTANT_RANGE = (-5.0, 5.0)
+
     # --- Exploratory diversity: Headless Chicken Crossover ---
     # Con esta probabilidad, uno de los padres se reemplaza con un individuo 100% aleatorio.
     # Fuerza exploración estructural radical cuando la población converge hacia un super-elite.
@@ -389,7 +414,10 @@ class GpuGlobals:
     #                  9. REPORTING & EXIT
     # ============================================================
     PROGRESS_REPORT_INTERVAL = 100
-    BEST_SYNC_INTERVAL = 10        # SPEED: sync GPU best tracker less often; progress still reports every interval
+    # Read the GPU best tracker every generation: exact solutions are detected
+    # up to 9 generations earlier and the paired 1M benchmark showed no
+    # throughput cost (the reduction runs on the GPU; only one float is copied).
+    BEST_SYNC_INTERVAL = 1
     # Console table forces preds.detach().cpu().numpy() on every new best.
     # Disable to avoid frequent GPU->CPU synchronization and CPU spikes.
     CONSOLE_SHOW_PREDICTION_TABLE = False

@@ -172,67 +172,6 @@ __global__ void check_improvement_kernel(
 // ===================== Batch Update Best Kernel =====================
 // For use within evolve_generation - updates best after each gen
 
-__global__ void batch_update_best_kernel(
-    const uint8_t* __restrict__ population,   // [B, L] - uint8_t para matching con Python
-    const float* __restrict__ constants,      // [B, K]
-    const float* __restrict__ fitness,        // [B]
-    uint8_t* __restrict__ best_rpn,           // [L] - uint8_t para matching con Python
-    float* __restrict__ best_consts,          // [K]
-    float* __restrict__ best_rmse,            // [1]
-    int32_t* __restrict__ best_idx,           // [1] - new parameter to return index
-    int B, int L, int K,
-    float tolerance
-) {
-    __shared__ float s_min_val[256];
-    __shared__ int s_min_idx[256];
-    
-    int tid = threadIdx.x;
-    
-    s_min_val[tid] = 1e30f;
-    s_min_idx[tid] = -1;
-    
-    // Strided load
-    for (int i = tid; i < B; i += blockDim.x) {
-        float f = fitness[i];
-        if (f < s_min_val[tid]) {
-            s_min_val[tid] = f;
-            s_min_idx[tid] = i;
-        }
-    }
-    __syncthreads();
-    
-    // Reduction
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            if (s_min_val[tid + s] < s_min_val[tid]) {
-                s_min_val[tid] = s_min_val[tid + s];
-                s_min_idx[tid] = s_min_idx[tid + s];
-            }
-        }
-        __syncthreads();
-    }
-    
-    // Update global best
-    if (tid == 0) {
-        float candidate = s_min_val[0];
-        float current = best_rmse[0];
-        
-        if (candidate < current - tolerance && s_min_idx[0] >= 0) {
-            best_rmse[0] = candidate;
-            
-            int idx = s_min_idx[0];
-            best_idx[0] = idx;
-            for (int j = 0; j < L; j++) {
-                best_rpn[j] = population[idx * L + j];
-            }
-            for (int k = 0; k < K; k++) {
-                best_consts[k] = constants[idx * K + k];
-            }
-        }
-    }
-}
-
-
 // ===================== C++ Wrappers =====================
 
 void launch_update_best(
@@ -304,6 +243,82 @@ void launch_check_improvement(
     );
 }
 
+// Order-preserving map from float to uint32 (NaN sorts after +inf).
+__device__ __forceinline__ uint32_t bt_float_key(float f) {
+    if (f != f) return 0xFFFFFFFFu;
+    uint32_t u = __float_as_uint(f);
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+__device__ __forceinline__ float bt_key_float(uint32_t k) {
+    uint32_t u = (k & 0x80000000u) ? (k & 0x7FFFFFFFu) : ~k;
+    return __uint_as_float(u);
+}
+
+// Grid-wide argmin: every block reduces a slice and publishes its candidate
+// with one 64-bit atomicMin of (fitness key << 32 | index).
+__global__ void argmin_packed_kernel(
+    const float* __restrict__ fitness, int B,
+    unsigned long long* __restrict__ packed_out
+) {
+    unsigned long long best = 0xFFFFFFFFFFFFFFFFull;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < B; i += gridDim.x * blockDim.x) {
+        unsigned long long v = ((unsigned long long)bt_float_key(fitness[i]) << 32) | (unsigned int)i;
+        best = v < best ? v : best;
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        unsigned long long o = __shfl_xor_sync(0xFFFFFFFFu, best, off);
+        best = o < best ? o : best;
+    }
+    __shared__ unsigned long long s_best[32];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    if (lane == 0) s_best[warp] = best;
+    __syncthreads();
+    if (warp == 0) {
+        const int nw = blockDim.x / 32;
+        best = lane < nw ? s_best[lane] : 0xFFFFFFFFFFFFFFFFull;
+#pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            unsigned long long o = __shfl_xor_sync(0xFFFFFFFFu, best, off);
+            best = o < best ? o : best;
+        }
+        if (lane == 0) atomicMin(packed_out, best);
+    }
+}
+
+// Copies the winning individual into the tracker when it improves on it.
+__global__ void apply_best_kernel(
+    const unsigned long long* __restrict__ packed,
+    const uint8_t* __restrict__ population,
+    const float* __restrict__ constants,
+    uint8_t* __restrict__ best_rpn,
+    float* __restrict__ best_consts,
+    float* __restrict__ best_rmse,
+    int32_t* __restrict__ best_idx,
+    int L, int K, float tolerance
+) {
+    __shared__ int s_take;
+    __shared__ int s_idx;
+    if (threadIdx.x == 0) {
+        unsigned long long v = *packed;
+        int idx = (int)(v & 0xFFFFFFFFull);
+        float cand = bt_key_float((uint32_t)(v >> 32));
+        int take = (v != 0xFFFFFFFFFFFFFFFFull) && (cand == cand) && (cand < best_rmse[0] - tolerance);
+        s_take = take;
+        s_idx = idx;
+        if (take) {
+            best_rmse[0] = cand;
+            best_idx[0] = idx;
+        }
+    }
+    __syncthreads();
+    if (!s_take) return;
+    const int64_t idx = s_idx;
+    for (int j = threadIdx.x; j < L; j += blockDim.x) best_rpn[j] = population[idx * L + j];
+    for (int k = threadIdx.x; k < K; k += blockDim.x) best_consts[k] = constants[idx * K + k];
+}
+
 void launch_batch_update_best(
     const torch::Tensor& population,
     const torch::Tensor& constants,
@@ -317,25 +332,36 @@ void launch_batch_update_best(
     CHECK_INPUT(population);
     CHECK_INPUT(constants);
     CHECK_INPUT(fitness);
-    
+    CHECK_INPUT(best_rpn);
+    CHECK_INPUT(best_consts);
+    CHECK_INPUT(best_rmse);
+    CHECK_INPUT(best_idx);
+    TORCH_CHECK(fitness.scalar_type() == torch::kFloat32, "fitness must be float32");
+    TORCH_CHECK(constants.scalar_type() == torch::kFloat32, "constants must be float32");
+
     int B = population.size(0);
     int L = population.size(1);
     int K = constants.size(1);
-    
-    int threads = 256;
-    
-    batch_update_best_kernel<<<1, threads>>>(
+    if (B == 0) return;
+
+    auto packed = torch::full({1}, -1, population.options().dtype(torch::kInt64));
+    const int threads = 256;
+    int blocks = (B + threads * 4 - 1) / (threads * 4);
+    if (blocks > 1024) blocks = 1024;
+    if (blocks < 1) blocks = 1;
+    argmin_packed_kernel<<<blocks, threads>>>(
+        fitness.data_ptr<float>(), B,
+        reinterpret_cast<unsigned long long*>(packed.data_ptr<int64_t>()));
+    apply_best_kernel<<<1, 128>>>(
+        reinterpret_cast<const unsigned long long*>(packed.data_ptr<int64_t>()),
         population.data_ptr<uint8_t>(),
         constants.data_ptr<float>(),
-        fitness.data_ptr<float>(),
         best_rpn.data_ptr<uint8_t>(),
         best_consts.data_ptr<float>(),
         best_rmse.data_ptr<float>(),
         best_idx.data_ptr<int32_t>(),
-        B, L, K,
-        tolerance
-    );
-    
+        L, K, tolerance);
+
     cudaError_t err = cudaGetLastError();
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in batch_update_best: ", cudaGetErrorString(err));
 }

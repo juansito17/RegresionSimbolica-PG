@@ -1,429 +1,219 @@
-/**
- * fused_pso_kernels.cu — Fused PSO kernel that runs the entire
- * PSO loop (eval + update_bests + pso_update) inside a single kernel launch.
+/*
+ * Fused PSO for constant optimisation.
  *
- * One thread-block per individual (B blocks).
- * Each block has P*D threads where P=num_particles, D=num_data_samples.
- * Since D is small (17) and P is small (20), we use P*D = ~340 threads/block.
- *
- * The key optimization: zero Python overhead, zero kernel-launch overhead
- * for the inner PSO loop (was: 3-5 launches × 15 steps = 45-75 launches).
+ * One block per individual and one warp per particle. The formula is decoded
+ * once per block (same decoder and operator semantics as the fused RMSE
+ * evaluator); every warp then evaluates its particle on all samples with the
+ * lanes striding over the data, so the work is parallel over samples instead of
+ * serial per thread. Personal/global bests, velocities and positions live in
+ * shared memory, and randomness comes from a counter-based Philox stream.
  */
 
 #include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <math.h>
 #include <cstdint>
-#include <curand_kernel.h>
+#include <type_traits>
+
+#include "eval_core.cuh"
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
-#define PSO_STACK_SIZE 32
 #define PSO_MAX_L 256
 #define PSO_MAX_K 16
-#define PSO_MAX_D 1024      // max data samples
-#define PSO_MAX_PARTICLES 64
-
-// ===================== Device: Inline RPN Evaluator =====================
-// Evaluates a single formula on a single data point, with given constants.
-// Returns RMSE contribution (squared error) for that sample, or INF on error.
+#define PSO_MAX_PARTICLES 32
 
 template <typename scalar_t>
-__device__ __forceinline__ scalar_t safe_pow_fused(scalar_t a, scalar_t b) {
-    if (a != a || b != b) return (scalar_t)1e30;
-    // Native integer Check
-    bool is_int = (floorf(b) == b);
-    if (a < 0.0f && !is_int) {
-        // More permissive: if very close to int
-        if (fabsf(b - roundf(b)) < 1e-4f) {
-            b = roundf(b);
-        } else {
-            return (scalar_t)1e30;
-        }
-    }
-    if (a == 0.0f && b < 0.0f) return (scalar_t)1e30;
-    scalar_t res = powf(a, b);
-    if (res != res || isinf(res)) return (scalar_t)1e30;
-    // Clamp extreme values
-    if (fabsf(res) > 1e18f) return (scalar_t)1e30;
-    return res;
+__device__ __forceinline__ scalar_t pso_normal(uint4 r) {
+    float u1 = rpn_u01(r.x);
+    float u2 = rpn_u01(r.y);
+    return (scalar_t)(sqrtf(-2.0f * logf(u1)) * cosf(6.283185307179586f * u2));
 }
 
-template <typename scalar_t>
-__device__ __forceinline__ scalar_t eval_rpn_single(
-    const unsigned char* prog, int L,
-    const scalar_t* x_vars, int num_vars, int d_idx, int D,
-    const scalar_t* consts, int K,
-    int PAD_ID, int id_x_start,
-    int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
-    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
-    int op_sin, int op_cos, int op_tan,
-    int op_log, int op_exp,
-    int op_sqrt, int op_abs, int op_neg,
-    int op_fact, int op_floor, int op_ceil, int op_sign,
-    int op_gamma, int op_lgamma,
-    int op_asin, int op_acos, int op_atan,
-    scalar_t pi_val, scalar_t e_val
-) {
-    scalar_t stack[PSO_STACK_SIZE];
-    int sp = 0;
-    bool error = false;
-    int c_idx = 0;
-
-    for (int pc = 0; pc < L; ++pc) {
-        int64_t token = (int64_t)prog[pc];
-        if (token == PAD_ID) break;
-
-        scalar_t val = (scalar_t)0.0;
-        bool is_push = true;
-
-        if (token >= id_x_start && token < id_x_start + num_vars) {
-            val = x_vars[(token - id_x_start) * D + d_idx];
-        }
-        else if (token == id_0) val = (scalar_t)0.0;
-        else if (token == id_1) val = (scalar_t)1.0;
-        else if (token == id_2) val = (scalar_t)2.0;
-        else if (token == id_3) val = (scalar_t)3.0;
-        else if (token == id_4) val = (scalar_t)4.0;
-        else if (token == id_5) val = (scalar_t)5.0;
-        else if (token == id_6) val = (scalar_t)6.0;
-        else if (token == id_10) val = (scalar_t)10.0;
-        else if (token == id_pi) val = pi_val;
-        else if (token == id_e) val = e_val;
-        else if (token == id_C) {
-            int r = c_idx < K ? c_idx : K - 1;
-            val = consts[r];
-            c_idx++;
-        }
-        else { is_push = false; }
-
-        if (is_push) {
-            if (sp < PSO_STACK_SIZE) stack[sp++] = val;
-            continue;
-        }
-
-        // Binary ops
-        if (token == op_add || token == op_sub || token == op_mul ||
-            token == op_div || token == op_pow || token == op_mod) {
-            if (sp < 2) { error = true; break; }
-            scalar_t b = stack[--sp];
-            scalar_t a = stack[--sp];
-            scalar_t res = (scalar_t)0.0;
-
-            if (token == op_add) res = a + b;
-            else if (token == op_sub) res = a - b;
-            else if (token == op_mul) res = a * b;
-            else if (token == op_div) {
-                if (fabsf(b) < 1e-12f) { error = true; break; }
-                res = a / b;
-            }
-            else if (token == op_pow) {
-                res = safe_pow_fused<scalar_t>(a, b);
-                if (res >= (scalar_t)1e29) { error = true; break; }
-            }
-            else if (token == op_mod) {
-                if (fabsf(b) < 1e-12f) { error = true; break; }
-                res = fmodf(a, b);
-            }
-            stack[sp++] = res;
-            continue;
-        }
-
-        // Unary ops
-        if (sp < 1) { error = true; break; }
-        scalar_t a = stack[--sp];
-        scalar_t res = (scalar_t)0.0;
-
-        if (token == op_sin) res = sinf(a);
-        else if (token == op_cos) res = cosf(a);
-        else if (token == op_tan) res = tanf(a);
-        else if (token == op_abs) res = fabsf(a);
-        else if (token == op_neg) res = -a;
-        else if (token == op_sqrt) {
-            if (a < 0.0f) { error = true; break; }
-            res = sqrtf(a);
-        }
-        else if (token == op_log) {
-            if (a <= 1e-12f) { error = true; break; }
-            res = logf(a);
-        }
-        else if (token == op_exp) {
-            if (a > 80.0f) { error = true; break; } // Clamp exp range
-            if (a < -80.0f) res = 0.0f;
-            else res = expf(a);
-        }
-        else if (token == op_floor) res = floorf(a);
-        else if (token == op_ceil) res = ceilf(a);
-        else if (token == op_sign) res = (a > 0.0f) ? 1.0f : ((a < 0.0f) ? -1.0f : 0.0f);
-        else if (token == op_asin) {
-            if (a < -1.0f || a > 1.0f) { error = true; break; }
-            res = asinf(a);
-        }
-        else if (token == op_acos) {
-            if (a < -1.0f || a > 1.0f) { error = true; break; }
-            res = acosf(a);
-        }
-        else if (token == op_atan) res = atanf(a);
-        else if (token == op_fact) {
-            if (a <= -1.0f && floorf(a + 1.0f) == (a + 1.0f)) { error = true; break; }
-            if (a > 50.0f) { error = true; break; }
-            res = tgammaf(a + 1.0f);
-            if (res != res || isinf(res)) { error = true; break; }
-        }
-        else if (token == op_gamma) {
-            if (a <= 0.0f && floorf(a) == a) { error = true; break; }
-            if (a > 50.0f) { error = true; break; }
-            res = tgammaf(a);
-            if (res != res || isinf(res)) { error = true; break; }
-        }
-        else if (token == op_lgamma) {
-            if (a <= 0.0f && floorf(a) == a) { error = true; break; }
-            res = lgammaf(a);
-            if (res != res || isinf(res)) { error = true; break; }
-        }
-
-        if (error || res != res || isinf(res)) { error = true; break; }
-        stack[sp++] = res;
-    }
-
-    if (error || sp != 1) return (scalar_t)1e30;
-    scalar_t result = stack[0];
-    if (result != result || isinf(result)) return (scalar_t)1e30;
-    return result;
-}
-
-// ===================== Fused PSO Kernel =====================
-// One block per individual. Threads within block handle particles × samples.
-// Shared memory holds the formula program (read-once), PSO state, and partial RMSE.
-//
-// Grid: B blocks (one per individual to optimize)
-// Threads per block: P (particles), each thread evaluates ALL D samples serially
-// (D is small ~17, so serial is fine and avoids complex reductions)
-
-template <typename scalar_t>
-__global__ void fused_pso_kernel(
+template <typename scalar_t, bool STRICT>
+__global__ void __launch_bounds__(1024)
+fused_pso_kernel(
     const unsigned char* __restrict__ population,  // [B, L]
-    const scalar_t* __restrict__ init_consts, // [B, K] initial guess
-    const scalar_t* __restrict__ x,          // [Vars, D]
-    const scalar_t* __restrict__ y_target,   // [D]
-    scalar_t* __restrict__ out_gbest_pos,    // [B, K]
-    scalar_t* __restrict__ out_gbest_err,    // [B]
-    int B, int L, int K, int D, int num_vars,
-    int num_particles, int num_steps,
+    const scalar_t* __restrict__ init_consts,      // [B, K]
+    const scalar_t* __restrict__ x,                // [Vars, D]
+    const scalar_t* __restrict__ y_target,         // [D]
+    scalar_t* __restrict__ out_gbest_pos,          // [B, K]
+    scalar_t* __restrict__ out_gbest_err,          // [B]
+    int B, int L, int K, int D,
+    int P, int num_steps,
     float w, float c1, float c2,
     float const_min, float const_max,
     uint64_t rng_seed,
-    // OpCode IDs (same as eval kernel)
-    int PAD_ID, int id_x_start,
-    int id_C, int id_pi, int id_e,
-    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
-    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
-    int op_sin, int op_cos, int op_tan,
-    int op_log, int op_exp,
-    int op_sqrt, int op_abs, int op_neg,
-    int op_fact, int op_floor, int op_ceil, int op_sign,
-    int op_gamma, int op_lgamma,
-    int op_asin, int op_acos, int op_atan,
-    scalar_t pi_val, scalar_t e_val
+    RpnOpIds ids
 ) {
-    // b = individual index (one block per individual)
-    int b = blockIdx.x;
-    if (b >= B) return;
+    extern __shared__ __align__(16) unsigned char pso_smem[];
+    const scalar_t BIG = (scalar_t)1e30;
+    const int b = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int lane = tid & 31;
+    const int p_warp = tid >> 5;
+    const int nthreads = blockDim.x;
 
-    // p = particle index (one thread per particle)
-    int p = threadIdx.x;
-    if (p >= num_particles) return;
+    scalar_t* imm = reinterpret_cast<scalar_t*>(pso_smem);
+    scalar_t* pos = imm + L;
+    scalar_t* vel = pos + P * K;
+    scalar_t* pbest = vel + P * K;
+    scalar_t* pbest_err = pbest + P * K;
+    scalar_t* cur_err = pbest_err + P;
+    scalar_t* gbest = cur_err + P;
+    unsigned char* code = reinterpret_cast<unsigned char*>(gbest + K);
+    unsigned char* aux = code + L;
 
-    // === Load formula into shared memory (all threads cooperate) ===
-    __shared__ unsigned char s_prog[PSO_MAX_L];
-    // Cooperative load
-    for (int i = p; i < L; i += num_particles) {
-        s_prog[i] = population[b * L + i];
-    }
-    __syncthreads();
+    __shared__ int s_len;
+    __shared__ int s_nconst;
+    __shared__ int s_best_p;
+    __shared__ scalar_t s_gbest_err;
 
-    // === Count active constants (how many 'C' tokens appear) ===
-    // Only thread 0 does this, broadcasts via shared mem
-    __shared__ int s_n_active;
-    __shared__ int s_c_positions[PSO_MAX_K]; // which positions in K-dim are active
-    if (p == 0) {
-        int count = 0;
-        for (int i = 0; i < L; i++) {
-            if (s_prog[i] == PAD_ID) break;
-            if (s_prog[i] == id_C && count < K) {
-                s_c_positions[count] = count; // map active dim i → const index i
-                count++;
-            }
+    const scalar_t* init = init_consts + (int64_t)b * K;
+
+    if (p_warp == 0) {
+        int n_const = 0;
+        DecodedProgram<scalar_t> prog{code, aux, imm};
+        int l = rpn_decode_program_warp<scalar_t, false>(
+            population + (int64_t)b * L, L, ids, nullptr, K, prog, lane, &n_const);
+        if (lane == 0) {
+            s_len = l;
+            s_nconst = n_const;
+            s_gbest_err = BIG;
         }
-        s_n_active = count > 0 ? count : 1; // At least 1 to avoid div-by-zero
     }
     __syncthreads();
+    const int len = s_len;
+    const int n_active = s_nconst < K ? s_nconst : K;
 
-    int n_active = s_n_active;
+    if (len == 0) {
+        for (int k = tid; k < K; k += nthreads) out_gbest_pos[(int64_t)b * K + k] = init[k];
+        if (tid == 0) out_gbest_err[b] = BIG;
+        return;
+    }
 
-    // === RNG state per thread ===
-    curandState rng;
-    curand_init(rng_seed + (uint64_t)b * num_particles + p, 0, 0, &rng);
-
-    // === PSO State in registers (per particle p) ===
-    scalar_t pos[PSO_MAX_K];
-    scalar_t vel[PSO_MAX_K];
-    scalar_t pbest_pos[PSO_MAX_K];
-    scalar_t pbest_err = (scalar_t)1e30;
-
-    // Init position: particle 0 gets exact initial guess, others get jittered
-    // BUG-PSO-2 FIX: scale jitter to 15% of const range (was fixed σ=1, exploring <2% of space)
     const scalar_t range = (scalar_t)(const_max - const_min);
-    const scalar_t jitter_sigma = range * (scalar_t)0.15f;   // 15% of range
-    const scalar_t vel_sigma    = range * (scalar_t)0.02f;   // 2% of range for velocity
-    const scalar_t* init = &init_consts[b * K];
-    for (int k = 0; k < K; k++) {
-        pos[k] = init[k];
-        if (p > 0 && k < n_active) {
-            pos[k] += curand_normal(&rng) * jitter_sigma;
-            // Clamp to bounds immediately after jitter
-            if (pos[k] < const_min) pos[k] = const_min;
-            if (pos[k] > const_max) pos[k] = const_max;
+    const scalar_t jitter_sigma = range * (scalar_t)0.15;
+    const scalar_t vel_sigma = range * (scalar_t)0.02;
+    for (int idx = tid; idx < P * K; idx += nthreads) {
+        const int p = idx / K;
+        const int k = idx - p * K;
+        scalar_t v0 = init[k];
+        scalar_t vv = (scalar_t)0.0;
+        if (k < n_active) {
+            uint4 r = rpn_random4(rng_seed, (uint64_t)b, (uint64_t)idx, 0xFFFFFFFFULL);
+            if (p > 0) {
+                v0 += pso_normal<scalar_t>(r) * jitter_sigma;
+                if (v0 < (scalar_t)const_min) v0 = (scalar_t)const_min;
+                if (v0 > (scalar_t)const_max) v0 = (scalar_t)const_max;
+            }
+            uint4 r2 = make_uint4(r.z, r.w, r.x ^ 0xA5A5A5A5u, r.y);
+            vv = pso_normal<scalar_t>(r2) * vel_sigma;
         }
-        vel[k] = curand_normal(&rng) * vel_sigma;
-        pbest_pos[k] = pos[k];
+        pos[idx] = v0;
+        vel[idx] = vv;
+        pbest[idx] = v0;
     }
-
-    // === Shared memory for global best (per block = per individual) ===
-    extern __shared__ char smem[];
-    scalar_t* s_gbest_pos = (scalar_t*)smem;            // [K]
-    scalar_t* s_gbest_err = s_gbest_pos + K;            // [1]
-    scalar_t* s_particle_errs = s_gbest_err + 1;        // [num_particles] for reduction
-
-    if (p == 0) {
-        s_gbest_err[0] = (scalar_t)1e30;
-        for (int k = 0; k < K; k++) s_gbest_pos[k] = init[k];
-    }
+    for (int p = tid; p < P; p += nthreads) pbest_err[p] = BIG;
+    for (int k = tid; k < K; k += nthreads) gbest[k] = init[k];
     __syncthreads();
 
-    // === PSO Loop ===
-    for (int step = 0; step < num_steps; step++) {
+    // Formulas without constants: a single evaluation is all there is to do.
+    const int steps = (n_active == 0) ? 1 : num_steps;
+    const int active_particles = (n_active == 0) ? 1 : P;
 
-        // --- 1. Evaluate: Each particle evaluates formula on ALL D samples ---
-        scalar_t mse_sum = (scalar_t)0.0;
-        bool any_error = false;
-
-        for (int d = 0; d < D; d++) {
-            scalar_t pred = eval_rpn_single<scalar_t>(
-                s_prog, L,
-                x, num_vars, d, D,
-                pos, K,
-                PAD_ID, id_x_start,
-                id_C, id_pi, id_e,
-                id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
-                op_add, op_sub, op_mul, op_div, op_pow, op_mod,
-                op_sin, op_cos, op_tan,
-                op_log, op_exp,
-                op_sqrt, op_abs, op_neg,
-                op_fact, op_floor, op_ceil, op_sign,
-                op_gamma, op_lgamma,
-                op_asin, op_acos, op_atan,
-                pi_val, e_val
-            );
-            if (pred >= (scalar_t)1e29) { any_error = true; break; }
-            scalar_t diff = pred - y_target[d];
-            mse_sum += diff * diff;
-        }
-
-        scalar_t rmse = any_error ? (scalar_t)1e30 : sqrtf(mse_sum / (scalar_t)D);
-
-        // --- 2. Update personal best ---
-        if (rmse < pbest_err) {
-            pbest_err = rmse;
-            for (int k = 0; k < K; k++) pbest_pos[k] = pos[k];
-        }
-
-        // --- 3. Update global best (need reduction across particles) ---
-        // We need a different approach: use shared memory for all pbest positions
-        // For small P (20), we can use shared memory to communicate
-
-        // Alternative: all particles atomicMin on shared, then winner writes.
-        // Simplest correct approach: thread 0 already found best_p.
-        // We store best_p in shared, the winning thread p == best_p writes.
-
-        // Actually, let's use a simpler two-phase approach:
-        // Phase A: all write their pbest_err to shared
-        // Phase B: thread 0 finds min, stores idx
-        // Phase C: winner thread writes pbest_pos to shared gbest_pos
-
-        // We already did Phase A and B above. Need to store best_p:
-        // Reuse s_particle_errs[num_particles] as int storage for best_p
-        // Actually, let's just use a separate shared variable.
-
-        __shared__ int s_best_particle;
-
-        // Re-do the reduction cleanly:
-        s_particle_errs[p] = pbest_err;
-        __syncthreads();
-
-        if (p == 0) {
-            int bp = -1;
-            scalar_t old_be = s_gbest_err[0];
-            scalar_t be = old_be;
-            for (int pp = 0; pp < num_particles; pp++) {
-                if (s_particle_errs[pp] < be) {
-                    be = s_particle_errs[pp];
-                    bp = pp;
+    for (int step = 0; step < steps; ++step) {
+        // --- 1. Evaluate: warp p evaluates particle p over all samples ---
+        if (p_warp < active_particles) {
+            const scalar_t* my_consts = pos + p_warp * K;
+            scalar_t sq = (scalar_t)0.0;
+            bool bad = false;
+            for (int d0 = 0; d0 < D; d0 += 32) {
+                const int d = d0 + lane;
+                if (d < D) {
+                    scalar_t pred;
+                    bool ok = rpn_run_program<scalar_t, STRICT>(code, aux, imm, len, x, D, d, my_consts, pred);
+                    if (!ok || isnan(pred) || isinf(pred)) {
+                        bad = true;
+                    } else {
+                        scalar_t diff = pred - y_target[d];
+                        scalar_t s2 = diff * diff;
+                        if (isnan(s2) || isinf(s2)) bad = true;
+                        else sq += s2;
+                    }
                 }
+                if (__any_sync(RPN_FULL_MASK, bad)) { bad = true; break; }
             }
-            s_best_particle = bp;
-            if (bp >= 0) {
-                s_gbest_err[0] = be;
-                /*
-                if (be < old_be && step % 10 == 0) {
-                     printf("[Fused PSO] Block %d: Step %d, New Best RMSE: %f\n", b, step, (float)be);
-                }
-                */
-            }
-        }
-        __syncthreads();
-
-        // Winner writes its pbest_pos to shared
-        if (s_best_particle >= 0 && p == s_best_particle) {
-            for (int k = 0; k < K; k++) {
-                s_gbest_pos[k] = pbest_pos[k];
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) sq += __shfl_xor_sync(RPN_FULL_MASK, sq, off);
+            if (lane == 0) {
+                scalar_t rmse = bad ? BIG : sqrt(sq / (scalar_t)D);
+                if (isnan(rmse) || isinf(rmse)) rmse = BIG;
+                cur_err[p_warp] = rmse;
             }
         }
         __syncthreads();
 
-        // --- 4. PSO velocity/position update ---
-        // OPTIMIZED: inercia adaptativa lineal w_max → w_min.
-        // 'w' se usa como w_max; w_min = 0.4 (IPSO estándar).
-        // Mejora convergencia ~15-20%: exploración amplia al inicio,
-        // explotación fina al final — equivale a lo que PySR hace.
-        scalar_t w_curr = w - (w - (scalar_t)0.4) *
-                          (scalar_t)step / (scalar_t)(num_steps > 1 ? num_steps - 1 : 1);
-        for (int k = 0; k < n_active; k++) {
-            scalar_t r1 = curand_uniform(&rng);
-            scalar_t r2 = curand_uniform(&rng);
-            vel[k] = w_curr * vel[k]
-                    + c1 * r1 * (pbest_pos[k] - pos[k])
-                    + c2 * r2 * (s_gbest_pos[k] - pos[k]);
-            pos[k] += vel[k];
-            // Clamp
-            if (pos[k] < const_min) pos[k] = const_min;
-            if (pos[k] > const_max) pos[k] = const_max;
+        // --- 2. Personal bests (copy first, then update the error) ---
+        for (int idx = tid; idx < active_particles * K; idx += nthreads) {
+            const int p = idx / K;
+            if (cur_err[p] < pbest_err[p]) pbest[idx] = pos[idx];
+        }
+        __syncthreads();
+        for (int p = tid; p < active_particles; p += nthreads) {
+            if (cur_err[p] < pbest_err[p]) pbest_err[p] = cur_err[p];
+        }
+        __syncthreads();
+
+        // --- 3. Global best (argmin over particles by warp 0) ---
+        if (p_warp == 0) {
+            scalar_t v = (lane < active_particles) ? pbest_err[lane] : BIG;
+            int bi = (lane < active_particles) ? lane : -1;
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) {
+                scalar_t ov = __shfl_xor_sync(RPN_FULL_MASK, v, off);
+                int oi = __shfl_xor_sync(RPN_FULL_MASK, bi, off);
+                if (ov < v || (ov == v && oi >= 0 && (bi < 0 || oi < bi))) { v = ov; bi = oi; }
+            }
+            if (lane == 0) {
+                if (bi >= 0 && v < s_gbest_err) { s_gbest_err = v; s_best_p = bi; }
+                else s_best_p = -1;
+            }
+        }
+        __syncthreads();
+        if (s_best_p >= 0) {
+            for (int k = tid; k < K; k += nthreads) gbest[k] = pbest[s_best_p * K + k];
+        }
+        __syncthreads();
+
+        if (step + 1 >= steps) break;
+
+        // --- 4. Velocity / position update (linear inertia decay w -> 0.4) ---
+        const scalar_t w_curr = (scalar_t)w - ((scalar_t)w - (scalar_t)0.4) *
+            (scalar_t)step / (scalar_t)(steps > 1 ? steps - 1 : 1);
+        for (int idx = tid; idx < P * K; idx += nthreads) {
+            const int p = idx / K;
+            const int k = idx - p * K;
+            if (k >= n_active) continue;
+            uint4 r = rpn_random4(rng_seed, (uint64_t)b, (uint64_t)idx, (uint64_t)step);
+            const scalar_t r1 = (scalar_t)rpn_u01(r.x);
+            const scalar_t r2 = (scalar_t)rpn_u01(r.y);
+            scalar_t vnew = w_curr * vel[idx]
+                + (scalar_t)c1 * r1 * (pbest[idx] - pos[idx])
+                + (scalar_t)c2 * r2 * (gbest[k] - pos[idx]);
+            scalar_t pnew = pos[idx] + vnew;
+            if (pnew < (scalar_t)const_min) pnew = (scalar_t)const_min;
+            if (pnew > (scalar_t)const_max) pnew = (scalar_t)const_max;
+            vel[idx] = vnew;
+            pos[idx] = pnew;
         }
         __syncthreads();
     }
 
-    // === Write final global best to output ===
-    if (p == 0) {
-        // printf("[Fused PSO] Final Block %d: RMSE=%f\n", b, (float)s_gbest_err[0]);
-        out_gbest_err[b] = s_gbest_err[0];
-        for (int k = 0; k < K; k++) {
-            out_gbest_pos[b * K + k] = s_gbest_pos[k];
-        }
-    }
+    for (int k = tid; k < K; k += nthreads) out_gbest_pos[(int64_t)b * K + k] = gbest[k];
+    if (tid == 0) out_gbest_err[b] = s_gbest_err;
 }
 
 
@@ -450,12 +240,15 @@ void launch_fused_pso(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    uint64_t rng_seed
+    uint64_t rng_seed,
+    int strict_mode
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(init_consts);
     CHECK_INPUT(x);
     CHECK_INPUT(y_target);
+    CHECK_INPUT(out_gbest_pos);
+    CHECK_INPUT(out_gbest_err);
 
     int B = population.size(0);
     int L = population.size(1);
@@ -465,49 +258,52 @@ void launch_fused_pso(
 
     TORCH_CHECK(L <= PSO_MAX_L, "Formula length exceeds PSO_MAX_L");
     TORCH_CHECK(K <= PSO_MAX_K, "Constants exceed PSO_MAX_K");
-    TORCH_CHECK(D <= PSO_MAX_D, "Data samples exceed PSO_MAX_D");
-    TORCH_CHECK(num_particles <= PSO_MAX_PARTICLES, "Particles exceed PSO_MAX_PARTICLES");
-    TORCH_CHECK(
-        x.scalar_type() == torch::kFloat32,
-        "fused_pso currently supports float32 only; use the multi-kernel fallback for float64");
+    TORCH_CHECK(D > 0, "fused_pso needs at least one sample");
+    TORCH_CHECK(num_particles >= 1 && num_particles <= PSO_MAX_PARTICLES,
+                "num_particles must be in 1..", PSO_MAX_PARTICLES);
     TORCH_CHECK(init_consts.scalar_type() == x.scalar_type(), "init_consts dtype must match x");
     TORCH_CHECK(y_target.scalar_type() == x.scalar_type(), "y_target dtype must match x");
     TORCH_CHECK(out_gbest_pos.scalar_type() == x.scalar_type(), "out_gbest_pos dtype must match x");
     TORCH_CHECK(out_gbest_err.scalar_type() == x.scalar_type(), "out_gbest_err dtype must match x");
+    if (B == 0) return;
 
-    // Grid: B blocks, each with num_particles threads
-    int threads = num_particles;
-    int blocks = B;
+    RpnOpIds ids;
+    ids.pad = PAD_ID; ids.x_start = id_x_start; ids.num_vars = num_vars;
+    ids.c = id_C; ids.pi = id_pi; ids.e = id_e;
+    ids.l0 = id_0; ids.l1 = id_1; ids.l2 = id_2; ids.l3 = id_3;
+    ids.l4 = id_4; ids.l5 = id_5; ids.l6 = id_6; ids.l10 = id_10;
+    ids.add = op_add; ids.sub = op_sub; ids.mul = op_mul; ids.div = op_div;
+    ids.pow = op_pow; ids.mod = op_mod;
+    ids.sin = op_sin; ids.cos = op_cos; ids.tan = op_tan; ids.log = op_log; ids.exp = op_exp;
+    ids.sqrt = op_sqrt; ids.abs = op_abs; ids.neg = op_neg;
+    ids.fact = op_fact; ids.floor = op_floor; ids.ceil = op_ceil; ids.sign = op_sign;
+    ids.gamma = op_gamma; ids.lgamma = op_lgamma;
+    ids.asin = op_asin; ids.acos = op_acos; ids.atan = op_atan;
 
+    const int threads = 32 * num_particles;
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "fused_pso_kernel", ([&] {
-        // Dynamic shared storage contains scalar_t values, not unconditionally
-        // float values. This also prevents future FP64 support from aliasing
-        // or writing beyond the allocated shared-memory region.
-        size_t smem_bytes = (K + 1 + num_particles) * sizeof(scalar_t);
-        fused_pso_kernel<scalar_t><<<blocks, threads, smem_bytes>>>(
-            population.data_ptr<unsigned char>(),
-            init_consts.data_ptr<scalar_t>(),
-            x.data_ptr<scalar_t>(),
-            y_target.data_ptr<scalar_t>(),
-            out_gbest_pos.data_ptr<scalar_t>(),
-            out_gbest_err.data_ptr<scalar_t>(),
-            B, L, K, D, num_vars,
-            num_particles, num_steps,
-            w, c1, c2,
-            const_min, const_max,
-            rng_seed,
-            PAD_ID, id_x_start,
-            id_C, id_pi, id_e,
-            id_0, id_1, id_2, id_3, id_4, id_5, id_6, id_10,
-            op_add, op_sub, op_mul, op_div, op_pow, op_mod,
-            op_sin, op_cos, op_tan,
-            op_log, op_exp,
-            op_sqrt, op_abs, op_neg,
-            op_fact, op_floor, op_ceil, op_sign,
-            op_gamma, op_lgamma,
-            op_asin, op_acos, op_atan,
-            (scalar_t)pi_val, (scalar_t)e_val
-        );
+        size_t smem = (size_t)L * sizeof(scalar_t)
+                    + (size_t)3 * num_particles * K * sizeof(scalar_t)
+                    + (size_t)2 * num_particles * sizeof(scalar_t)
+                    + (size_t)K * sizeof(scalar_t)
+                    + (size_t)2 * L;
+        auto launch = [&](auto strict_tag) {
+            constexpr bool strict = decltype(strict_tag)::value;
+            fused_pso_kernel<scalar_t, strict><<<B, threads, smem>>>(
+                population.data_ptr<unsigned char>(),
+                init_consts.data_ptr<scalar_t>(),
+                x.data_ptr<scalar_t>(),
+                y_target.data_ptr<scalar_t>(),
+                out_gbest_pos.data_ptr<scalar_t>(),
+                out_gbest_err.data_ptr<scalar_t>(),
+                B, L, K, D,
+                num_particles, num_steps,
+                w, c1, c2,
+                const_min, const_max,
+                rng_seed, ids);
+        };
+        if (strict_mode) launch(std::true_type{});
+        else launch(std::false_type{});
     }));
 
     cudaError_t err = cudaGetLastError();

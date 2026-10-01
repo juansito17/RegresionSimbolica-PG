@@ -170,10 +170,10 @@ class GPUOptimizer:
             self._has_fused_pso
             and population.ndim == 2
             and constants.ndim == 2
-            and y.numel() <= 1024
-            and population.shape[1] <= 63
+            and y.numel() >= 1
+            and population.shape[1] <= 256
             and constants.shape[1] <= 16
-            and num_particles <= 64
+            and 1 <= num_particles <= 32
             and population.is_cuda
             and constants.is_cuda
             and x.is_cuda
@@ -410,7 +410,8 @@ class GPUOptimizer:
             vm.op_gamma, vm.op_lgamma,
             vm.op_asin, vm.op_acos, vm.op_atan,
             math.pi, math.e,
-            rng_seed
+            rng_seed,
+            int(bool(getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False)))
         )
         
         return gbest_pos, gbest_err

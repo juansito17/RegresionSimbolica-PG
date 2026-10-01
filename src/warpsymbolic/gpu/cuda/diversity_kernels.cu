@@ -118,109 +118,106 @@ void launch_compute_population_hashes(
 #define FS_TABLE_SIZE (1 << 18)
 #define FS_TABLE_MASK (FS_TABLE_SIZE - 1)
 
+__device__ __forceinline__ uint64_t dedup_mix64(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
+__device__ __forceinline__ bool dedup_rows_equal(
+    const unsigned char* __restrict__ population, int64_t a, int64_t b, int L, int PAD_ID
+) {
+    const unsigned char* ra = population + a * (int64_t)L;
+    const unsigned char* rb = population + b * (int64_t)L;
+    for (int i = 0; i < L; ++i) {
+        if (ra[i] != rb[i]) return false;
+        if ((int)ra[i] == PAD_ID) return true;
+    }
+    return true;
+}
+
+// Open addressing with linear probing. A hash match is confirmed by comparing
+// the full token rows, so different formulas that collide are never treated as
+// duplicates. The table size is a power of two chosen by the caller.
 __global__ void structural_dedup_kernel(
     const int64_t* __restrict__ hashes,        // [B]
-    int64_t* __restrict__ hash_table,          // [HASH_TABLE_SIZE] first occurrence indices
+    int64_t* __restrict__ hash_table,          // [table_size] first occurrence indices
     int32_t* __restrict__ duplicate_mask,      // [B] 1 if duplicate
     int64_t* __restrict__ original_index,      // [B] index of original (or self)
-    int B
+    int B,
+    const unsigned char* __restrict__ population,  // [B, L] or nullptr (hash-only)
+    int L, int PAD_ID, int64_t table_mask
 ) {
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     if (b >= B) return;
-    
-    int64_t my_hash = hashes[b];
-    int slot = (int)(my_hash & HASH_TABLE_MASK);  // Simple modulo via bitmask
-    
-    // Atomic: try to claim this slot
-    // hash_table[slot] = -1 initially (empty)
-    // We use atomicCAS to atomically check-and-set
-    
-    int64_t expected = -1;
-    int64_t my_idx = (int64_t)b;
-    
-    // Try to claim the slot
-    int64_t old_val = atomicCAS((unsigned long long*)&hash_table[slot], 
-                                 (unsigned long long)expected, 
-                                 (unsigned long long)my_idx);
-    
-    if (old_val == -1) {
-        // We claimed the slot -> this is the first occurrence
-        duplicate_mask[b] = 0;
-        original_index[b] = my_idx;
-    } else {
-        // Slot already occupied -> check if same hash (collision vs duplicate)
-        // Note: Different hashes can map to same slot (collision)
-        // We need to check if the hash at old_val equals our hash
-        
-        // Linear probing to handle collisions
-        int attempts = 0;
-        int found_original = -1;
-        
-        while (attempts < 16) {  // Limit probing attempts
-            int64_t other_idx = hash_table[slot];
-            
-            if (other_idx >= 0 && other_idx < B) {
-                if (hashes[other_idx] == my_hash) {
-                    // Found a match!
-                    found_original = (int)other_idx;
-                    break;
-                }
-            }
-            
-            // Collision with different hash -> probe next slot
-            slot = (slot + 1) & HASH_TABLE_MASK;
-            
-            // Try to claim this new slot
-            old_val = atomicCAS((unsigned long long*)&hash_table[slot],
-                               (unsigned long long)expected,
-                               (unsigned long long)my_idx);
-            
-            if (old_val == -1) {
-                // Claimed new slot -> first occurrence (just had collision)
-                duplicate_mask[b] = 0;
-                original_index[b] = my_idx;
-                return;
-            }
-            
-            attempts++;
-        }
-        
-        if (found_original >= 0) {
-            // This is a duplicate
-            duplicate_mask[b] = 1;
-            original_index[b] = found_original;
-        } else {
-            // Too many collisions or probe failed -> treat as unique (safe fallback)
+
+    const int64_t my_hash = hashes[b];
+    int64_t slot = (int64_t)(dedup_mix64((uint64_t)my_hash) & (uint64_t)table_mask);
+    const unsigned long long empty = (unsigned long long)(-1LL);
+
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        unsigned long long old_val = atomicCAS(
+            (unsigned long long*)&hash_table[slot], empty, (unsigned long long)b);
+        if (old_val == empty) {
             duplicate_mask[b] = 0;
-            original_index[b] = my_idx;
+            original_index[b] = b;
+            return;
         }
+        int64_t other = (int64_t)old_val;
+        if (other >= 0 && other < B && hashes[other] == my_hash &&
+            (population == nullptr || dedup_rows_equal(population, other, b, L, PAD_ID))) {
+            duplicate_mask[b] = 1;
+            original_index[b] = other;
+            return;
+        }
+        slot = (slot + 1) & table_mask;
     }
+    // Table too crowded: keep the individual (safe fallback).
+    duplicate_mask[b] = 0;
+    original_index[b] = b;
 }
 
 void launch_structural_dedup(
     const torch::Tensor& hashes,
-    torch::Tensor& hash_table,      // Pre-allocated, initialized to -1
+    torch::Tensor& hash_table,      // Pre-allocated power-of-two table, initialized to -1
     torch::Tensor& duplicate_mask,
-    torch::Tensor& original_index
+    torch::Tensor& original_index,
+    const torch::Tensor& population,
+    int PAD_ID
 ) {
     CHECK_INPUT(hashes);
     CHECK_INPUT(hash_table);
     CHECK_INPUT(duplicate_mask);
     CHECK_INPUT(original_index);
-    
+
     int B = hashes.size(0);
-    
+    int64_t table_size = hash_table.size(0);
+    TORCH_CHECK(table_size > 0 && (table_size & (table_size - 1)) == 0,
+                "hash_table size must be a power of two");
+    const unsigned char* pop_ptr = nullptr;
+    int L = 0;
+    if (population.defined() && population.numel() > 0) {
+        CHECK_INPUT(population);
+        TORCH_CHECK(population.size(0) == B, "population rows must match hashes");
+        pop_ptr = population.data_ptr<unsigned char>();
+        L = population.size(1);
+    }
+    if (B == 0) return;
+
     int threads = 256;
     int blocks = (B + threads - 1) / threads;
-    
+
     structural_dedup_kernel<<<blocks, threads>>>(
         hashes.data_ptr<int64_t>(),
         hash_table.data_ptr<int64_t>(),
         duplicate_mask.data_ptr<int32_t>(),
         original_index.data_ptr<int64_t>(),
-        B
+        B, pop_ptr, L, PAD_ID, table_size - 1
     );
-    
+
     cudaError_t err = cudaGetLastError();
     TORCH_CHECK(err == cudaSuccess, "CUDA Error in structural_dedup: ", cudaGetErrorString(err));
 }
