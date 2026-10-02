@@ -208,6 +208,12 @@ class TensorGeneticEngine:
         self._run_best_curve = []
         self._stage_events = []
         self._stage_timing_installed = False
+        # Parents of the current offspring for fitness reuse, and the in-loop
+        # SymPy budget (both reset by run()).
+        self._fitness_reuse_state = None
+        self._sympy_inloop_spent = 0.0
+        self._sympy_inloop_last_struct = None
+        self.last_run_linear_scaling_generation = None
         if bool(getattr(GpuGlobals, 'CUDA_STAGE_TIMING', False)) and self.device.type == 'cuda':
             self._install_stage_timing()
 
@@ -396,6 +402,8 @@ class TensorGeneticEngine:
             'stopped': bool(getattr(self, 'last_run_stopped', False)),
             'used_log_transform': bool(
                 getattr(self, 'last_run_used_log_transform', False)),
+            # Generation at which linear scaling became active (None: never).
+            'linear_scaling_generation': getattr(self, 'last_run_linear_scaling_generation', None),
             'eval_mode': getattr(vm, 'last_eval_mode', None),
             'stage_ms': stage_ms,
             'peak_memory_allocated_bytes': peak_allocated,
@@ -573,6 +581,8 @@ class TensorGeneticEngine:
         if not GpuGlobals.USE_SNIPER:
             return None, None, None, None
         try:
+             # Residuals are those of the fitted a + b*f in a scaled run.
+             best_rpn, best_consts = self._materialize_scaling(best_rpn, best_consts, x_t, y_t)
              # 1. Get current predictions
              y_pred = self.predict_individual(best_rpn, best_consts, x_t)
              
@@ -726,7 +736,10 @@ class TensorGeneticEngine:
                      
                      if t in self.grammar.terminals:
                          if t == 'C':
+                             # Constant slots are positional: a placeholder keeps
+                             # its slot (0.0) so later numeric literals stay aligned.
                              clean_tokens.append('C')
+                             const_values.append(0.0)
                          elif t.startswith('x'):
                              clean_tokens.append(t)
                          else:
@@ -860,49 +873,56 @@ class TensorGeneticEngine:
 
         return None
 
-    def migrate_islands(self, population, constants, fitness):
+    def migrate_islands(self, population, constants, fitness, carry_fitness=False, extra_rows=()):
+        """Copy each island's best `MIGRATION_SIZE` individuals over the worst ones
+        of a neighbouring island. `fitness` must describe `population`. With
+        carry_fitness the migrants' fitness is copied along (in place), and so
+        are the rows of every tensor in extra_rows (e.g. per-case errors)."""
         if self.n_islands <= 1: return population, constants
-        
+
         island_size = self.island_size
         mig_size = min(GpuGlobals.MIGRATION_SIZE, island_size // 2)
-        
+
         # Track migration count for topology alternation
         if not hasattr(self, '_migration_count'):
             self._migration_count = 0
         self._migration_count += 1
-        
+
         # 1. Reshape fitness to [n_islands, island_size]
         fit_view = fitness.view(self.n_islands, island_size)
-        
+
         # 2. Find best and worst indices in each island (Vectorized)
         _, best_local_idx = torch.topk(fit_view, mig_size, dim=1, largest=False)
         _, worst_local_idx = torch.topk(fit_view, mig_size, dim=1, largest=True)
-        
+
         # 3. Convert to global indices (reuse cached tensor)
-        best_global_idx = (best_local_idx + self._island_offsets).view(-1)
+        best_global_idx = (best_local_idx + self._island_offsets)
         worst_global_idx = (worst_local_idx + self._island_offsets).view(-1)
-        
-        # 4. Extract Migrants
-        migrants_pop = population[best_global_idx].view(self.n_islands, mig_size, self.max_len)
-        migrants_const = constants[best_global_idx].view(self.n_islands, mig_size, self.max_constants)
-        
-        # 5. CONVERGENCE FIX: Topology-Aware Migration
+
+        # 4. CONVERGENCE FIX: Topology-Aware Migration
         # Every 3rd migration, use random permutation instead of circular shift.
         # This cross-pollinates non-adjacent islands, breaking structural monocultures.
         if self._migration_count % 3 == 0:
             # Random topology: shuffle island order
             perm = torch.randperm(self.n_islands, device=self.device)
-            shifted_migrants_pop = migrants_pop[perm].view(-1, self.max_len)
-            shifted_migrants_const = migrants_const[perm].view(-1, self.max_constants)
+            source_idx = best_global_idx[perm].view(-1)
         else:
             # Standard circular shift: Island i -> Island (i+1)%N
-            shifted_migrants_pop = torch.roll(migrants_pop, shifts=1, dims=0).view(-1, self.max_len)
-            shifted_migrants_const = torch.roll(migrants_const, shifts=1, dims=0).view(-1, self.max_constants)
-        
-        # 6. Apply in-place (no full clone needed - only ~200 individuals change)
-        population[worst_global_idx] = shifted_migrants_pop
-        constants[worst_global_idx] = shifted_migrants_const
-        
+            source_idx = torch.roll(best_global_idx, shifts=1, dims=0).view(-1)
+
+        # 5. Gather every source row before writing (sources and destinations
+        # can only overlap on ties), then apply in place.
+        migrants_pop = population[source_idx]
+        migrants_const = constants[source_idx]
+        moved = [(t, t[source_idx]) for t in extra_rows if t is not None] if carry_fitness else []
+        migrants_fit = fitness[source_idx] if carry_fitness else None
+        population[worst_global_idx] = migrants_pop
+        constants[worst_global_idx] = migrants_const
+        if carry_fitness:
+            fitness[worst_global_idx] = migrants_fit
+            for t, rows in moved:
+                t[worst_global_idx] = rows
+
         return population, constants
 
     def tournament_selection_island(self, population, fitness, n_islands, tournament_size=3):
@@ -1420,7 +1440,7 @@ class TensorGeneticEngine:
         if y_orig_pred is None:
             return formula_str  # Can't eval original, don't try to simplify
         
-        rmse_orig = float(np.sqrt(np.mean((y_np - y_orig_pred) ** 2)))
+        rmse_orig = self._fit_rmse_np(y_np, y_orig_pred)
 
         # Strategy 0: Numeric snapping (cheap) before heavy algebra.
         try:
@@ -1428,7 +1448,7 @@ class TensorGeneticEngine:
             if snapped and snapped != formula_str and len(snapped) <= best_len:
                 y_snap = self._eval_formula_safe(snapped, x_np)
                 if y_snap is not None:
-                    rmse_snap = float(np.sqrt(np.mean((y_np - y_snap) ** 2)))
+                    rmse_snap = self._fit_rmse_np(y_np, y_snap)
                     if rmse_snap <= rmse_orig * 1.001 + 1e-9:
                         best = snapped
                         best_len = len(snapped)
@@ -1445,7 +1465,7 @@ class TensorGeneticEngine:
                 if sniper_clean and len(sniper_clean) < best_len:
                     y_clean = self._eval_formula_safe(sniper_clean, x_np)
                     if y_clean is not None:
-                        rmse_clean = float(np.sqrt(np.mean((y_np - y_clean) ** 2)))
+                        rmse_clean = self._fit_rmse_np(y_np, y_clean)
                         if rmse_clean <= rmse_orig * 1.1 + 1e-6:
                             best = sniper_clean
                             best_len = len(sniper_clean)
@@ -1458,7 +1478,7 @@ class TensorGeneticEngine:
             if sympy_result and sympy_result != best and len(sympy_result) < best_len:
                 y_sympy = self._eval_formula_safe(sympy_result, x_np)
                 if y_sympy is not None:
-                    rmse_sympy = float(np.sqrt(np.mean((y_np - y_sympy) ** 2)))
+                    rmse_sympy = self._fit_rmse_np(y_np, y_sympy)
                     if rmse_sympy <= rmse_orig * 1.001 + 1e-9:
                         best = sympy_result
                         best_len = len(sympy_result)
@@ -1553,6 +1573,125 @@ class TensorGeneticEngine:
 
     @torch.no_grad()
     def run(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
+        # Linear scaling is a property of the search: it is active only while
+        # the run evaluates candidates. Final formulas carry their a and b
+        # explicitly, so evaluators used after the run see plain RMSE.
+        self.evaluator.linear_scaling = self._linear_scaling_mode() == 'on'
+        self._fitness_reuse_state = None
+        self._sympy_inloop_spent = 0.0
+        self._sympy_inloop_last_struct = None
+        try:
+            return self._run_impl(x_values, y_values, seeds=seeds, timeout_sec=timeout_sec,
+                                  callback=callback, use_log=use_log)
+        finally:
+            self.evaluator.linear_scaling = False
+            self._fitness_reuse_state = None
+
+    @staticmethod
+    def _linear_scaling_mode() -> str:
+        """'on', 'off' or 'adaptive' from GpuGlobals.USE_LINEAR_SCALING."""
+        mode = getattr(GpuGlobals, 'USE_LINEAR_SCALING', False)
+        if isinstance(mode, str):
+            mode = mode.strip().lower()
+            if mode == 'adaptive':
+                return 'adaptive'
+            return 'on' if mode in ('true', 'on', '1', 'yes') else 'off'
+        return 'on' if bool(mode) else 'off'
+
+    def _should_enable_adaptive_scaling(self, elapsed: float, timeout_sec, generations: int,
+                                        global_stagnation: int, best_rmse: float = float('inf'),
+                                        y_std: float = 0.0) -> bool:
+        # A run that is already closing in on an exact fit keeps its objective:
+        # switching would reshuffle the ranking right before convergence.
+        min_nrmse = float(getattr(GpuGlobals, 'LINEAR_SCALING_MIN_NRMSE', 1e-4))
+        if y_std > 0.0 and best_rmse <= min_nrmse * y_std:
+            return False
+        frac = float(getattr(GpuGlobals, 'LINEAR_SCALING_TIME_FRACTION', 0.2))
+        if timeout_sec and elapsed >= frac * float(timeout_sec):
+            return True
+        max_gens = GpuGlobals.GENERATIONS
+        if not timeout_sec and max_gens is not None and generations >= frac * float(max_gens):
+            return True
+        trigger = int(getattr(GpuGlobals, 'LINEAR_SCALING_STAGNATION_TRIGGER', 40))
+        return trigger > 0 and global_stagnation >= trigger
+
+    def _materialize_scaling(self, rpn: torch.Tensor, consts: torch.Tensor, x_t: torch.Tensor, y_t: torch.Tensor):
+        """Return (rpn, consts) of a + b*f with the linear-scaling fit written out.
+
+        During a scaled run the stored programs are the unscaled f; anything
+        handed to the outside (final formula, callbacks, best_global_*) must be
+        the fitted a + b*f. The result can be longer than max_len / max_constants.
+        """
+        if rpn is None or consts is None or not self.evaluator.scaled_search():
+            return rpn, consts
+        id_c = self.grammar.token_to_id.get('C')
+        id_mul = self.grammar.token_to_id.get('*')
+        id_add = self.grammar.token_to_id.get('+')
+        if id_c is None or id_mul is None or id_add is None:
+            return rpn, consts
+        consts_row = consts.reshape(-1).to(self.dtype)
+        _, ab = self.evaluator.evaluate_batch(
+            rpn.reshape(1, -1), x_t, y_t, consts_row.unsqueeze(0),
+            strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION), return_scale=True)
+        a, b = (float(v) for v in ab[0].double().cpu().tolist())
+        if not (math.isfinite(a) and math.isfinite(b)):
+            return rpn, consts
+
+        tokens = [int(t) for t in rpn.reshape(-1).cpu().tolist() if int(t) != PAD_ID]
+        K = int(consts_row.numel())
+        n_c = sum(1 for t in tokens if t == id_c)
+        # Decoders map the i-th C token to slot min(i, K-1); expand those shared
+        # slots so the appended constants get slots of their own.
+        values = consts_row.double().cpu().tolist()
+        used = [values[min(i, K - 1)] if K > 0 else 1.0 for i in range(n_c)]
+        if b == 0.0:
+            new_tokens, new_consts = [id_c], [a]
+        else:
+            new_tokens, new_consts = list(tokens), list(used)
+            if b != 1.0:
+                new_tokens += [id_c, id_mul]
+                new_consts.append(b)
+            if a != 0.0:
+                new_tokens += [id_c, id_add]
+                new_consts.append(a)
+        L_new = max(int(rpn.numel()), len(new_tokens))
+        K_new = max(K, len(new_consts))
+        out_rpn = torch.full((L_new,), PAD_ID, dtype=rpn.dtype, device=rpn.device)
+        out_rpn[:len(new_tokens)] = torch.tensor(new_tokens, dtype=rpn.dtype, device=rpn.device)
+        out_c = torch.zeros(K_new, dtype=self.dtype, device=consts_row.device)
+        out_c[:len(new_consts)] = torch.tensor(new_consts, dtype=self.dtype, device=consts_row.device)
+        return out_rpn, out_c
+
+    def _sympy_inloop_allowed(self, best_rpn: torch.Tensor, elapsed: float) -> bool:
+        """Budget for the in-loop SymPy cleanup (see SYMPY_INLOOP_BUDGET_FRACTION)."""
+        key = bytes(best_rpn.reshape(-1).to(torch.uint8).cpu().numpy().tobytes())
+        if key == getattr(self, '_sympy_inloop_last_struct', None):
+            return False
+        frac = float(getattr(GpuGlobals, 'SYMPY_INLOOP_BUDGET_FRACTION', 0.05))
+        grace = float(getattr(GpuGlobals, 'SYMPY_INLOOP_BUDGET_GRACE_SEC', 0.25))
+        if getattr(self, '_sympy_inloop_spent', 0.0) > frac * max(0.0, elapsed) + grace:
+            return False
+        self._sympy_inloop_last_struct = key
+        return True
+
+    def _fit_rmse_np(self, y_np, pred_np) -> float:
+        """Training RMSE in the search's sense (least squares a + b*f when scaled)."""
+        import numpy as np
+        y = np.asarray(y_np, dtype=np.float64).reshape(-1)
+        p = np.asarray(pred_np, dtype=np.float64).reshape(-1)
+        if self.evaluator.scaled_search():
+            mf = p.mean()
+            df = p - mf
+            m2f = float(df @ df)
+            b = 0.0
+            if m2f > p.size * (1e-10 * mf * mf + 1e-30):
+                b = float(df @ (y - y.mean())) / m2f
+                if not math.isfinite(b):
+                    b = 0.0
+            p = (y.mean() - b * mf) + b * p
+        return float(np.sqrt(np.mean((y - p) ** 2)))
+
+    def _run_impl(self, x_values, y_values, seeds: List[str] = None, timeout_sec: int = 10, callback=None, use_log: bool = None):
         self._reset_run_state()
         self._begin_run_metrics()
 
@@ -1802,7 +1941,7 @@ class TensorGeneticEngine:
                         # General early exit: any seed (structural or Sniper) with near-exact PSO fit
                         if best_seed_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD * 10:  # Relaxed: 1e-5
                             best_si = seed_fit.argmin().item()
-                            formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
+                            formula_early = self.rpn_to_infix(*self._materialize_scaling(population[best_si], pop_constants[best_si], x_t, y_t))
                             formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
                             if self.last_run_used_log_transform:
                                 formula_early = f"exp({formula_early})"
@@ -1832,7 +1971,7 @@ class TensorGeneticEngine:
                                 seed_r2 = 1.0 - (best_seed_rmse**2 / y_var)
                                 if seed_r2 > 0.995:
                                     best_si = seed_fit.argmin().item()
-                                    formula_early = self.rpn_to_infix(population[best_si], pop_constants[best_si])
+                                    formula_early = self.rpn_to_infix(*self._materialize_scaling(population[best_si], pop_constants[best_si], x_t, y_t))
                                     formula_early = self._post_simplify_formula(formula_early, x_t, y_t)
                                     if self.last_run_used_log_transform:
                                         formula_early = f"exp({formula_early})"
@@ -1920,6 +2059,8 @@ class TensorGeneticEngine:
 
         start_time = time.time()
         y_var_value = torch.var(y_t).item() if y_t.numel() > 1 else 0.0
+        _ls_adaptive_pending = self._linear_scaling_mode() == 'adaptive'
+        self.last_run_linear_scaling_generation = 0 if self.evaluator.linear_scaling else None
         while True:
             if self.stop_flag:
                 self.last_run_stopped = True
@@ -1979,11 +2120,11 @@ class TensorGeneticEngine:
                 mig_interval = GpuGlobals.MIGRATION_INTERVAL_STAGNATION
             else:
                 mig_interval = GpuGlobals.MIGRATION_INTERVAL
-            if self.n_islands > 1 and generations % mig_interval == 0:
-                 population, pop_constants = self.migrate_islands(population, pop_constants, 
-                     fitness_rmse if cached_next_fit is None else cached_next_fit)
-                 all_modified = True
-            
+            # Migration needs the fitness of *this* population, so it runs right
+            # after the evaluation below and carries the migrants' fitness along
+            # (the previous generation's fitness indexed the new offspring).
+            _migrate_now = self.n_islands > 1 and generations % mig_interval == 0
+
             # Deduplication — Remove clones to maintain diversity
             if generations % GpuGlobals.DEDUPLICATION_INTERVAL == 0:
                 population, pop_constants, n_dups = self.operators.deduplicate_population(population, pop_constants)
@@ -2030,6 +2171,18 @@ class TensorGeneticEngine:
                              modified_indices = inject_positions
                          else:
                              modified_indices = torch.cat([modified_indices, inject_positions])
+
+            # Adaptive linear scaling: switch the fitness to the scaled RMSE once
+            # the run did not converge early. Scaled RMSE <= plain RMSE for every
+            # individual, so the tracked best stays valid; parents' fitness was
+            # computed with the other objective, hence no reuse this generation.
+            if _ls_adaptive_pending and self._should_enable_adaptive_scaling(
+                    elapsed, timeout_sec, generations, global_stagnation,
+                    best_rmse, math.sqrt(max(y_var_value, 0.0))):
+                _ls_adaptive_pending = False
+                self.evaluator.linear_scaling = True
+                self._fitness_reuse_state = None
+                self.last_run_linear_scaling_generation = generations
 
             # Eval — P0-1: Reuse cached fitness from C++ orchestrator when possible
 
@@ -2078,9 +2231,22 @@ class TensorGeneticEngine:
                     population, x_t, y_t, pop_constants,
                     strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
             else:
-                fitness_rmse = self.evaluator.evaluate_batch(population, x_t, y_t, pop_constants, strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
+                # Children bit-identical to their parent (same tokens and
+                # constants) copy the parent's fitness inside the kernel. Rows
+                # changed by migration, deduplication or injections after the
+                # orchestrator simply no longer match and are evaluated.
+                fitness_rmse = self.evaluator.evaluate_batch(
+                    population, x_t, y_t, pop_constants,
+                    strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION),
+                    reuse=self._fitness_reuse_state)
                 abs_errors = None
             cached_next_fit = None  # Consumed
+            self._fitness_reuse_state = None
+
+            if _migrate_now:
+                population, pop_constants = self.migrate_islands(
+                    population, pop_constants, fitness_rmse, carry_fitness=True,
+                    extra_rows=(abs_errors,))
 
             # ── BUG-1 FIX: Per-gen variable presence cache ────────────────────────────────────────
             # `.any(dim=1)` over [1M, 128] + implicit CPU sync ≈ 2-3ms per call.
@@ -2151,12 +2317,64 @@ class TensorGeneticEngine:
                      min_size=GpuGlobals.PATTERN_MIN_SIZE, max_size=GpuGlobals.PATTERN_MAX_SIZE
                  )
             
+            # Constant optimisation of the top-K individuals.
+            # 'lm': native Levenberg-Marquardt (exact derivatives, few dozen
+            # evaluations per individual) on structurally distinct candidates
+            # that contain at least one free constant. USE_NANO_PSO remains the
+            # master switch for constant optimisation in the main loop.
+            _const_opt = str(getattr(GpuGlobals, 'CONSTANT_OPTIMIZER', 'pso')).lower()
+            _lm_interval = max(1, int(getattr(GpuGlobals, 'LM_INTERVAL', 2)))
+            if _const_opt == 'lm' and GpuGlobals.USE_NANO_PSO and generations % _lm_interval == 0:
+                _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
+                k_opt = int(GpuGlobals.LM_K_STAGNATION if _in_stagnation else GpuGlobals.LM_K_NORMAL)
+                k_opt = max(1, min(self.pop_size, k_opt))
+                _rank = fitness_rmse.clone()
+                if _cached_var_pen is not None:
+                    _rank.add_(_cached_var_pen.to(_rank.dtype), alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
+                _excluded = None
+                if getattr(GpuGlobals, 'LM_UNIQUE_CANDIDATES', True):
+                    _excluded = ~(population == self.grammar.token_to_id.get('C', -1)).any(dim=1)
+                    _dup_mask = self.operators.structural_duplicate_mask(population)
+                    if _dup_mask is not None:
+                        _excluded |= _dup_mask
+                    _rank.masked_fill_(_excluded, float('inf'))
+                if _in_stagnation:
+                    # Half exploit (best), half explore (random candidates).
+                    k_top = k_opt // 2
+                    _, _top_part = torch.topk(_rank, k_top, largest=False, sorted=False)
+                    _rand_rank = torch.rand(self.pop_size, device=self.device)
+                    if _excluded is not None:
+                        _rand_rank.masked_fill_(_excluded, 2.0)
+                    _, _rand_part = torch.topk(_rand_rank, k_opt - k_top, largest=False, sorted=False)
+                    lm_idx = torch.cat([_top_part, _rand_part])
+                else:
+                    _, lm_idx = torch.topk(_rank, k_opt, largest=False, sorted=False)
+
+                opt_pop = population[lm_idx]
+                opt_consts = pop_constants[lm_idx]
+                _pre_fit = fitness_rmse[lm_idx].clone()
+                refined_consts, refined_fit = self.optimizer.levenberg_marquardt(
+                    opt_pop, opt_consts, x_t, y_t,
+                    max_iter=int(getattr(GpuGlobals, 'LM_ITERATIONS', 10)))
+                if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                    refined_consts = refined_consts.round()
+                if getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False) or GpuGlobals.FORCE_INTEGER_CONSTANTS:
+                    refined_fit = self.evaluator.evaluate_batch(
+                        opt_pop, x_t, y_t, refined_consts,
+                        strict_mode=int(GpuGlobals.FORCE_STRICT_VALIDATION))
+                # A local polish step never makes an individual worse.
+                _lm_improved = torch.isfinite(refined_fit) & (refined_fit < _pre_fit)
+                pop_constants[lm_idx] = torch.where(
+                    _lm_improved.unsqueeze(1), refined_consts.to(pop_constants.dtype), opt_consts)
+                fitness_rmse[lm_idx] = torch.where(
+                    _lm_improved, refined_fit.to(fitness_rmse.dtype), _pre_fit)
+
             # Optimize Top K — focus PSO on multi-variable formulas
             # ANTI-STAG: PSO adaptativo. Si el best no cambió estructuralmente,
             # saltar PSO_SKIP_GENS generaciones para liberar GPU a exploración.
             _pso_adaptive = getattr(GpuGlobals, 'PSO_ADAPTIVE', False)
             _pso_skip_gens = getattr(GpuGlobals, 'PSO_SKIP_GENS', 6)
-            if GpuGlobals.USE_NANO_PSO and generations % _pso_interval_runtime == 0:
+            if _const_opt == 'pso' and GpuGlobals.USE_NANO_PSO and generations % _pso_interval_runtime == 0:
                 # El método de hash polinomial y la comparación `torch.equal` causaban costosas sincronizaciones CPU-GPU
                 # que ralentizaban el bucle principal. Se eliminó `_struct_changed` para confiar puramente en `_in_stagnation`.
                 
@@ -2428,9 +2646,15 @@ class TensorGeneticEngine:
                     try:
                         candidate_size_now = self.get_tree_size(best_rpn).item()
                         self._cached_best_tree_size = candidate_size_now
-                        if candidate_size_now >= 18 and best_rmse < max(0.2, GpuGlobals.GOOD_ENOUGH_RMSE * 4.0):
+                        # SymPy runs on the CPU while the GPU idles: try each
+                        # structure once and stay within the time budget.
+                        if (candidate_size_now >= 18
+                                and best_rmse < max(0.2, GpuGlobals.GOOD_ENOUGH_RMSE * 4.0)
+                                and self._sympy_inloop_allowed(best_rpn, time.time() - start_time)):
+                            _sympy_t0 = time.perf_counter()
                             cand_formula = self.rpn_to_infix(best_rpn, best_consts_vec)
                             simp_formula = self._post_simplify_formula(cand_formula, x_t, y_t)
+                            self._sympy_inloop_spent += time.perf_counter() - _sympy_t0
                             if simp_formula and simp_formula != cand_formula:
                                 simp_pop, simp_const = self.load_population_from_strings([simp_formula])
                                 if simp_pop is not None and simp_pop.shape[0] > 0:
@@ -2487,10 +2711,14 @@ class TensorGeneticEngine:
                 if best_rmse < GpuGlobals.EXACT_SOLUTION_THRESHOLD:
                     print(f"\n[Engine] Exact solution found! RMSE: {best_rmse:.9e}")
                     if callback:
-                        callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
+                        callback(generations, best_rmse, *self._materialize_scaling(best_rpn, best_consts_vec, x_t, y_t), True, island_idx)
                     self.stop_flag = True
                     
-                    # Convert to string to match expected return type
+                    # Convert to string to match expected return type. A scaled
+                    # run reports the fitted a + b*f, never the bare f.
+                    best_rpn, best_consts_vec = self._materialize_scaling(best_rpn, best_consts_vec, x_t, y_t)
+                    self.best_global_rpn = best_rpn
+                    self.best_global_consts = best_consts_vec
                     formula = self.rpn_to_infix(best_rpn, best_consts_vec)
                     # Handle Log Transform Inverse if needed
                     if self.last_run_used_log_transform:
@@ -2512,7 +2740,7 @@ class TensorGeneticEngine:
                     # Only report to user if fitness is within a reasonable range (not a penalty value)
                     if best_rmse < 1e100:
                         last_reported_fitness = best_rmse
-                        callback(generations, best_rmse, best_rpn, best_consts_vec, True, island_idx)
+                        callback(generations, best_rmse, *self._materialize_scaling(best_rpn, best_consts_vec, x_t, y_t), True, island_idx)
             elif _best_check_fresh and min_rmse_val == min_rmse_val and best_rpn is not None and min_rmse_val <= (best_rmse + GpuGlobals.FITNESS_EQUALITY_TOLERANCE):
                 # Tie-break by simplicity for equivalent fitness.
                 # BUG FIX: Use _gpu_best_rpn instead of population[min_idx_val]
@@ -2549,7 +2777,7 @@ class TensorGeneticEngine:
                 # print(f"[DEBUG] Gen {generations}: Stagnation {stagnation} (Best {best_rmse:.6f}, Current Min {min_rmse.item():.6f})")
                 
             if callback and generations % GpuGlobals.PROGRESS_REPORT_INTERVAL == 0:
-                callback(generations, best_rmse, best_rpn, best_consts_vec, False, -1)
+                callback(generations, best_rmse, *self._materialize_scaling(best_rpn, best_consts_vec, x_t, y_t), False, -1)
 
             # Cataclysm / Reset — use penalized metric to preserve multi-variable formulas
             # print(f"[DEBUG] check cataclysm {stagnation} >= {GpuGlobals.STAGNATION_LIMIT}")
@@ -3122,6 +3350,15 @@ class TensorGeneticEngine:
                     mad_eps=None,   # Let it calculate MAD inside or pass if available
                     generation=generations
                 )
+                # Parents (tokens, constants, fitness) of the offspring: the next
+                # evaluation copies the fitness of every bit-identical child.
+                # The orchestrator returns fresh tensors, so these stay intact.
+                if (next_pop is not None and getattr(GpuGlobals, 'USE_FITNESS_REUSE', False)
+                        and not GpuGlobals.USE_LEXICASE_SELECTION
+                        and getattr(self, '_last_parent_idx', None) is not None
+                        and fitness_rmse.numel() == population.shape[0]):
+                    self._fitness_reuse_state = (
+                        self._last_parent_idx[:self.pop_size], population, pop_constants, fitness_rmse)
                 
                 if next_pop is not None:
                     # Update local refs for next generation
@@ -3439,6 +3676,9 @@ class TensorGeneticEngine:
             pass
 
         if getattr(GpuGlobals, 'SKIP_FINAL_FORMULA_BUILD', False):
+            if best_rpn is not None:
+                self.best_global_rpn, self.best_global_consts = self._materialize_scaling(
+                    best_rpn, best_consts_vec, x_t, y_t)
             self.last_run_best_rmse = best_rmse
             self.last_run_generations = generations
             self.last_run_best_formula = None
@@ -3467,7 +3707,12 @@ class TensorGeneticEngine:
                          best_rmse = min(best_rmse, sim_rmse_val)
              except Exception:
                  pass  # Non-fatal
-             
+
+             # A scaled run returns the fitted a + b*f (with a and b explicit).
+             best_rpn, best_consts_vec = self._materialize_scaling(best_rpn, best_consts_vec, x_t, y_t)
+             self.best_global_rpn = best_rpn
+             self.best_global_consts = best_consts_vec
+
              # --- GPU Strict Math Validation ---
              try:
                  strict_result = self.evaluator.validate_strict(

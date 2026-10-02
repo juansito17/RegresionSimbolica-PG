@@ -153,14 +153,9 @@ class CudaRPNVM:
         
         return out_preds, out_sp, out_error
 
-    def _launch_fused(self, population, x, constants, y_target, out_rmse, strict_mode, launch_mode):
-        """Launch one native evaluator variant. launch_mode: 0=block, 1=warp."""
-        if x.ndim != 2 or int(x.shape[0]) != self.num_vars:
-            raise ValueError(
-                f"x must have shape [{self.num_vars}, D] for this grammar"
-            )
-        rpn_cuda.eval_rpn_fused(
-            population, x, constants, y_target, out_rmse,
+    def op_id_args(self):
+        """Token ids in the positional order shared by the native kernels."""
+        return (
             self.PAD_ID, self.id_x_start,
             self.id_C, self.id_pi, self.id_e,
             self.id_0, self.id_1, self.id_2, self.id_3, self.id_4, self.id_5, self.id_6, self.id_10,
@@ -171,7 +166,28 @@ class CudaRPNVM:
             self.op_gamma, self.op_lgamma,
             self.op_asin, self.op_acos, self.op_atan,
             math.pi, math.e,
-            strict_mode, launch_mode
+        )
+
+    def _launch_fused(self, population, x, constants, y_target, out_rmse, strict_mode, launch_mode,
+                      scaled=False, out_ab=None, reuse=None):
+        """Launch one native evaluator variant. launch_mode: 0=block, 1=warp."""
+        if x.ndim != 2 or int(x.shape[0]) != self.num_vars:
+            raise ValueError(
+                f"x must have shape [{self.num_vars}, D] for this grammar"
+            )
+        extra = {}
+        if scaled:
+            extra['scaled'] = 1
+        if out_ab is not None:
+            extra['out_ab'] = out_ab
+        if reuse is not None:
+            parent, old_pop, old_consts, old_fit = reuse
+            extra.update(reuse_parent=parent, reuse_pop=old_pop,
+                         reuse_consts=old_consts, reuse_fit=old_fit)
+        rpn_cuda.eval_rpn_fused(
+            population, x, constants, y_target, out_rmse,
+            *self.op_id_args(),
+            strict_mode, launch_mode, **extra
         )
 
     def supports_fused_shape(self, population: torch.Tensor, x: torch.Tensor) -> bool:
@@ -188,7 +204,7 @@ class CudaRPNVM:
             and int(population.shape[1]) <= self.FUSED_MAX_L
         )
 
-    def _select_eval_mode(self, population, x, constants, y_target, out_rmse, strict_mode):
+    def _select_eval_mode(self, population, x, constants, y_target, out_rmse, strict_mode, scaled=False):
         """Autotune once per representative workload and cache the fastest safe variant."""
         from .config import GpuGlobals
 
@@ -206,7 +222,8 @@ class CudaRPNVM:
         # Launch behavior changes at broad population scales, but exact B values
         # should not create an unbounded cache during partial evaluations.
         b_bucket = 1 << max(0, int(B - 1).bit_length())
-        key = (population.device.index, str(x.dtype), b_bucket, int(D), int(L), int(K), int(strict_mode))
+        key = (population.device.index, str(x.dtype), b_bucket, int(D), int(L), int(K),
+               int(strict_mode), bool(scaled))
         cached = self._eval_mode_cache.get(key)
         if cached is not None:
             return cached
@@ -222,12 +239,12 @@ class CudaRPNVM:
         reference = None
         candidate = None
         for mode in (0, 1):
-            self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, mode)
+            self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, mode, scaled)
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
             start.record()
             for _ in range(3):
-                self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, mode)
+                self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, mode, scaled)
             end.record()
             end.synchronize()
             timings[mode] = start.elapsed_time(end)
@@ -245,7 +262,8 @@ class CudaRPNVM:
         return selected
 
     def eval_fused(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor,
-                   y_target: torch.Tensor, strict_mode: int = 0) -> torch.Tensor:
+                   y_target: torch.Tensor, strict_mode: int = 0, scaled: bool = False,
+                   return_ab: bool = False, reuse=None):
         """
         Fused eval — returns [B] RMSE directly.
 
@@ -258,7 +276,12 @@ class CudaRPNVM:
         x:          [Vars, D]
         constants:  [B, K]
         y_target:   [D]
-        Returns:    [B] RMSE float32
+        scaled:     RMSE of the least squares fit a + b*f (linear scaling)
+        return_ab:  also return the [B, 2] (a, b) coefficients (1, 0 when not scaled)
+        reuse:      optional (parent_idx [B] int64, parent_pop [P, L], parent_consts [P, K],
+                    parent_fitness [P]); a row bit-identical to its parent's row copies
+                    the parent's fitness instead of being evaluated
+        Returns:    [B] RMSE (and [B, 2] coefficients when return_ab)
         """
         if rpn_cuda is None or not hasattr(rpn_cuda, 'eval_rpn_fused'):
             raise RuntimeError("eval_rpn_fused not available — recompile CUDA extension.")
@@ -286,13 +309,59 @@ class CudaRPNVM:
             if not constants.is_contiguous(): constants = constants.contiguous()
             if constants.dtype != dtype:      constants = constants.to(dtype)
 
+        if reuse is not None:
+            if return_ab:
+                raise ValueError("return_ab cannot be combined with fitness reuse")
+            parent, old_pop, old_consts, old_fit = reuse
+            parent = parent.to(device=population.device, dtype=torch.long).contiguous()
+            old_pop = old_pop.contiguous()
+            old_fit = old_fit.to(dtype).contiguous()
+            if constants.shape[1] > 0:
+                old_consts = old_consts.to(dtype).contiguous()
+            else:
+                old_consts = constants
+            if (parent.numel() != B or old_pop.shape[1] != population.shape[1]
+                    or old_fit.numel() != old_pop.shape[0]
+                    or (constants.shape[1] > 0 and tuple(old_consts.shape) != (old_pop.shape[0], constants.shape[1]))):
+                reuse = None
+            else:
+                reuse = (parent, old_pop, old_consts, old_fit)
+
         # A fresh output per call: callers keep fitness tensors across later
         # evaluations, so a shared cached buffer would be silently overwritten.
         # The caching allocator makes this allocation essentially free.
         out_rmse = torch.empty(B, dtype=dtype, device=self.device)
+        out_ab = torch.empty((B, 2), dtype=dtype, device=self.device) if return_ab else None
 
         launch_mode = self._select_eval_mode(
-            population, x, constants, y_target, out_rmse, strict_mode)
+            population, x, constants, y_target, out_rmse, strict_mode, scaled)
         self.last_eval_mode = 'warp' if launch_mode == 1 else 'block'
-        self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, launch_mode)
+        self._launch_fused(population, x, constants, y_target, out_rmse, strict_mode, launch_mode,
+                           scaled=scaled, out_ab=out_ab, reuse=reuse)
+        if return_ab:
+            return out_rmse, out_ab
         return out_rmse
+
+    def lm_optimize(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor,
+                    y_target: torch.Tensor, max_iter: int, const_min: float, const_max: float,
+                    strict_mode: int = 1, scaled: bool = False):
+        """Levenberg-Marquardt refinement of the constants of every row.
+
+        Returns (constants [B, K], rmse [B]); invalid programs keep their constants
+        and report 1e30.
+        """
+        if rpn_cuda is None or not hasattr(rpn_cuda, 'lm_optimize'):
+            raise RuntimeError("lm_optimize not available — recompile CUDA extension.")
+        dtype = x.dtype
+        population = population.contiguous()
+        x = x.contiguous()
+        y_target = y_target.reshape(-1).to(dtype).contiguous()
+        constants = constants.to(dtype).contiguous()
+        out_consts = torch.empty_like(constants)
+        out_rmse = torch.empty(population.shape[0], dtype=dtype, device=self.device)
+        rpn_cuda.lm_optimize(
+            population, constants, x, y_target, out_consts, out_rmse,
+            int(max_iter), float(const_min), float(const_max),
+            *self.op_id_args(),
+            int(strict_mode), int(bool(scaled)))
+        return out_consts, out_rmse

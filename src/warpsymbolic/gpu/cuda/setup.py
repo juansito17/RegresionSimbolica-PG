@@ -22,6 +22,7 @@ setup(
                 'backward_kernels.cu',
                 'diversity_kernels.cu',
                 'lbfgs_kernels.cu',       # L-BFGS-B optimizer kernel
+                'lm_kernels.cu',          # Levenberg-Marquardt constant optimizer
                 'best_tracker_kernels.cu'  # Best tracking kernel
             ],
             depends=['eval_core.cuh'],

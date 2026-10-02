@@ -32,7 +32,7 @@ __device__ __forceinline__ scalar_t pso_normal(uint4 r) {
     return (scalar_t)(sqrtf(-2.0f * logf(u1)) * cosf(6.283185307179586f * u2));
 }
 
-template <typename scalar_t, bool STRICT>
+template <typename scalar_t, bool STRICT, bool SCALED>
 __global__ void __launch_bounds__(1024)
 fused_pso_kernel(
     const unsigned char* __restrict__ population,  // [B, L]
@@ -126,30 +126,15 @@ fused_pso_kernel(
 
     for (int step = 0; step < steps; ++step) {
         // --- 1. Evaluate: warp p evaluates particle p over all samples ---
+        // With SCALED the error is the RMSE of the least squares fit a + b*f,
+        // i.e. the same linear-scaling objective as the fused evaluator.
         if (p_warp < active_particles) {
             const scalar_t* my_consts = pos + p_warp * K;
-            scalar_t sq = (scalar_t)0.0;
-            bool bad = false;
-            for (int d0 = 0; d0 < D; d0 += 32) {
-                const int d = d0 + lane;
-                if (d < D) {
-                    scalar_t pred;
-                    bool ok = rpn_run_program<scalar_t, STRICT>(code, aux, imm, len, x, D, d, my_consts, pred);
-                    if (!ok || isnan(pred) || isinf(pred)) {
-                        bad = true;
-                    } else {
-                        scalar_t diff = pred - y_target[d];
-                        scalar_t s2 = diff * diff;
-                        if (isnan(s2) || isinf(s2)) bad = true;
-                        else sq += s2;
-                    }
-                }
-                if (__any_sync(RPN_FULL_MASK, bad)) { bad = true; break; }
-            }
-#pragma unroll
-            for (int off = 16; off > 0; off >>= 1) sq += __shfl_xor_sync(RPN_FULL_MASK, sq, off);
+            scalar_t sq, sa, sb;
+            const bool ok = rpn_warp_sse<scalar_t, STRICT, SCALED>(
+                code, aux, imm, len, x, D, y_target, my_consts, lane, sq, sa, sb);
             if (lane == 0) {
-                scalar_t rmse = bad ? BIG : sqrt(sq / (scalar_t)D);
+                scalar_t rmse = ok ? sqrt(sq / (scalar_t)D) : BIG;
                 if (isnan(rmse) || isinf(rmse)) rmse = BIG;
                 cur_err[p_warp] = rmse;
             }
@@ -241,7 +226,8 @@ void launch_fused_pso(
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
     uint64_t rng_seed,
-    int strict_mode
+    int strict_mode,
+    int scaled
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(init_consts);
@@ -287,9 +273,10 @@ void launch_fused_pso(
                     + (size_t)2 * num_particles * sizeof(scalar_t)
                     + (size_t)K * sizeof(scalar_t)
                     + (size_t)2 * L;
-        auto launch = [&](auto strict_tag) {
+        auto launch = [&](auto strict_tag, auto scaled_tag) {
             constexpr bool strict = decltype(strict_tag)::value;
-            fused_pso_kernel<scalar_t, strict><<<B, threads, smem>>>(
+            constexpr bool sc = decltype(scaled_tag)::value;
+            fused_pso_kernel<scalar_t, strict, sc><<<B, threads, smem>>>(
                 population.data_ptr<unsigned char>(),
                 init_consts.data_ptr<scalar_t>(),
                 x.data_ptr<scalar_t>(),
@@ -302,8 +289,13 @@ void launch_fused_pso(
                 const_min, const_max,
                 rng_seed, ids);
         };
-        if (strict_mode) launch(std::true_type{});
-        else launch(std::false_type{});
+        if (strict_mode) {
+            if (scaled) launch(std::true_type{}, std::true_type{});
+            else launch(std::true_type{}, std::false_type{});
+        } else {
+            if (scaled) launch(std::false_type{}, std::true_type{});
+            else launch(std::false_type{}, std::false_type{});
+        }
     }));
 
     cudaError_t err = cudaGetLastError();

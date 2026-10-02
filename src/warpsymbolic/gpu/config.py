@@ -221,6 +221,12 @@ class GpuGlobals:
     # Generation
     TERMINAL_VS_VARIABLE_PROB = 0.40   # OPTIMIZED: más tokens C en árboles aleatorios (was 0.50→0.40)
     DEDUPLICATION_INTERVAL = 100   # SPEED: menos overhead de escaneo (era 50)
+    # How structural duplicates are replaced: 'random' draws fresh random
+    # formulas; 'mutate' applies a subtree mutation to the duplicate, exploring
+    # next to structures that selection already favoured. In the 2026-10-01
+    # ablation (9 hard problems x 3 seeds, 50k) neither 'mutate' nor a 25-gen
+    # interval beat 'random' every 100 generations.
+    DEDUP_REPLACEMENT = 'random'
     REPAIR_INVALID_INTERVAL = 5    # SPEED: strict eval penalizes invalids; repair periodically to refresh diversity
     
     # Constant recombination. Copies keep their parent's constants; SBX only
@@ -297,7 +303,28 @@ class GpuGlobals:
     #                  6. EVALUATION & FITNESS
     # ============================================================
     LOSS_FUNCTION = 'RMSE'
-    
+
+    # Linear scaling (Keijzer, 2003): the search fitness is the RMSE of the
+    # least squares fit a + b*f(x), computed in the fused kernel. Selection
+    # then judges the shape of a formula, not its offset and scale. The final
+    # formula is returned with a and b written out explicitly.
+    # True: from the start. False: never. 'adaptive': start unscaled (exact
+    # symbolic recovery such as Nguyen-3 is found faster without it) and switch
+    # it on once the run has used LINEAR_SCALING_TIME_FRACTION of its time
+    # budget (or of GENERATIONS) or after LINEAR_SCALING_STAGNATION_TRIGGER
+    # generations of global stagnation, where it helps most (Vladislavleva-1,
+    # Pagie-1: 8-16x lower test error). It never switches while the best
+    # training RMSE is below LINEAR_SCALING_MIN_NRMSE * std(y): such a run is
+    # converging to an exact fit and keeps its objective.
+    USE_LINEAR_SCALING = 'adaptive'
+    LINEAR_SCALING_TIME_FRACTION = 0.2
+    LINEAR_SCALING_STAGNATION_TRIGGER = 40
+    LINEAR_SCALING_MIN_NRMSE = 1e-4
+
+    # A child that is bit-identical to its parent (tokens and constants) takes
+    # the parent's fitness instead of being re-evaluated (~30 % of children).
+    USE_FITNESS_REUSE = True
+
     # Validations & Penalties
     FORCE_STRICT_VALIDATION = True     # Strict math Mode (No protected operators)
     
@@ -331,7 +358,20 @@ class GpuGlobals:
     # ============================================================
     #                  7. OPTIMIZATION (PSO & SIMPLIFICATION)
     # ============================================================
-    # Particle Swarm Optimization (PSO)
+    # Constant optimiser used in the main loop: 'lm' (native Levenberg-Marquardt
+    # with exact forward-mode derivatives, ~40-100 evaluations per individual)
+    # or 'pso' (fused particle swarm, 30 particles x 40 steps = 1200).
+    CONSTANT_OPTIMIZER = 'lm'
+    LM_INTERVAL = 2
+    LM_ITERATIONS = 10
+    LM_K_NORMAL = 4096
+    LM_K_STAGNATION = 16384
+    # Choose LM candidates among structurally distinct programs that contain
+    # at least one free constant (top-K by fitness is otherwise mostly clones).
+    LM_UNIQUE_CANDIDATES = True
+
+    # Particle Swarm Optimization (PSO). USE_NANO_PSO is also the master switch
+    # for constant optimisation in the main loop, whichever optimiser is used.
     USE_NANO_PSO = True
     PSO_INTERVAL = 4               # SPEED: cada 4 gens libera más GPU al GA; benchmark-validated vs 3/5
     PSO_PARTICLES = 30
@@ -376,6 +416,12 @@ class GpuGlobals:
     K_SIMPLIFY = 50
     SIMPLIFY_NEAR_ZERO_TOLERANCE = 1e-9
     SIMPLIFY_NEAR_ONE_TOLERANCE = 1e-9
+    # SymPy cleanup of a bloated new best inside the loop runs on the CPU and
+    # stalls the GPU (it took 20-43 % of the wall time on some problems). It is
+    # skipped when the structure was already tried and capped to this fraction
+    # of the elapsed time (plus a small grace allowance).
+    SYMPY_INLOOP_BUDGET_FRACTION = 0.05
+    SYMPY_INLOOP_BUDGET_GRACE_SEC = 0.25
     
     # Residual Boosting
     USE_RESIDUAL_BOOSTING = False     # DISABLED: Algorithm must find formulas on its own (no shortcuts)

@@ -1268,6 +1268,67 @@ class GPUOperators:
         return parents if legacy_no_constants else (parents, constants)
 
 
+    def structural_duplicate_mask(self, population: torch.Tensor):
+        """Boolean [B] mask of rows whose token sequence already appears earlier
+        in the population (one representative per structure stays False).
+
+        Native hash table + row comparison, no host synchronisation. Returns
+        None when the native kernels are unavailable.
+        """
+        if not (RPN_CUDA_AVAILABLE and population.is_cuda
+                and hasattr(rpn_cuda_native, 'compute_population_hashes')
+                and hasattr(rpn_cuda_native, 'structural_dedup')):
+            return None
+        B = population.shape[0]
+        population = population.contiguous()
+        hashes = torch.empty(B, dtype=torch.long, device=self.device)
+        var_presence = torch.empty(B, dtype=torch.int32, device=self.device)
+        id_x_start = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
+        rpn_cuda_native.compute_population_hashes(
+            population, hashes, var_presence, PAD_ID, id_x_start, self.num_variables)
+        table_size = 1 << max(20, int(2 * B - 1).bit_length())
+        if self._dedup_hash_table is None or self._dedup_hash_table.numel() != table_size:
+            self._dedup_hash_table = torch.empty(table_size, dtype=torch.long, device=self.device)
+        self._dedup_hash_table.fill_(-1)
+        dup = torch.empty(B, dtype=torch.int32, device=self.device)
+        original = torch.empty(B, dtype=torch.long, device=self.device)
+        rpn_cuda_native.structural_dedup(
+            hashes, self._dedup_hash_table, dup, original, population, PAD_ID)
+        return dup != 0
+
+    def _dedup_replacements(self, population: torch.Tensor, constants: torch.Tensor, dup_indices: torch.Tensor):
+        """Rows that replace the duplicates at dup_indices (see DEDUP_REPLACEMENT)."""
+        n_dups = int(dup_indices.numel())
+        curr_L = population.shape[1]
+        K = constants.shape[1]
+        if str(getattr(GpuGlobals, 'DEDUP_REPLACEMENT', 'random')).lower() == 'mutate':
+            # Subtree mutation of the duplicate itself: a structural neighbour of
+            # a formula that selection already favoured, with its constants kept.
+            mutated, mutated_c = self.subtree_mutation(
+                population[dup_indices], constants[dup_indices], 1.0)
+            return mutated, mutated_c.to(constants.dtype)
+        fresh_pop = self.generate_random_population(n_dups)
+        if fresh_pop.shape[1] != curr_L:
+            if fresh_pop.shape[1] < curr_L:
+                pad = torch.full(
+                    (n_dups, curr_L - fresh_pop.shape[1]), PAD_ID,
+                    dtype=fresh_pop.dtype, device=self.device
+                )
+                fresh_pop = torch.cat([fresh_pop, pad], dim=1)
+            else:
+                fresh_pop = fresh_pop[:, :curr_L]
+        if GpuGlobals.FORCE_INTEGER_CONSTANTS:
+            fresh_consts = torch.randint(
+                GpuGlobals.CONSTANT_INT_MIN_VALUE,
+                GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
+                (n_dups, K), device=self.device, dtype=torch.long
+            ).to(constants.dtype)
+        else:
+            fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=constants.dtype).uniform_(
+                GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE
+            )
+        return fresh_pop, fresh_consts
+
     def deduplicate_population(self, population: torch.Tensor, constants: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, int]:
         if not GpuGlobals.PREVENT_DUPLICATES:
             return population, constants, 0
@@ -1329,35 +1390,10 @@ class GPUOperators:
                 
                 # 4. Generate replacements
                 dup_indices = replacement_positions[:n_dups]
-                fresh_pop = self.generate_random_population(n_dups)
-
-                # Handle shape mismatch
-                if fresh_pop.shape[1] != curr_L:
-                    if fresh_pop.shape[1] < curr_L:
-                        pad = torch.full(
-                            (n_dups, curr_L - fresh_pop.shape[1]), PAD_ID,
-                            dtype=fresh_pop.dtype, device=self.device
-                        )
-                        fresh_pop = torch.cat([fresh_pop, pad], dim=1)
-                    else:
-                        fresh_pop = fresh_pop[:, :curr_L]
-
-                # Constants for replacements
-                K = constants.shape[1]
-                if GpuGlobals.FORCE_INTEGER_CONSTANTS:
-                    fresh_consts = torch.randint(
-                        GpuGlobals.CONSTANT_INT_MIN_VALUE, 
-                        GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
-                        (n_dups, K), device=self.device, dtype=torch.long
-                    ).to(self.dtype)
-                else:
-                    fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=self.dtype).uniform_(
-                        GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE
-                    )
-                
+                fresh_pop, fresh_consts = self._dedup_replacements(population, constants, dup_indices)
                 population[dup_indices] = fresh_pop
                 constants[dup_indices] = fresh_consts
-                
+
                 return population, constants, n_dups
                 
             except Exception as e:
@@ -1376,28 +1412,8 @@ class GPUOperators:
         
         if n_dups == 0:
             return population, constants, 0
-            
-        fresh_pop = self.generate_random_population(n_dups)
-        if fresh_pop.shape[1] != curr_L:
-            if fresh_pop.shape[1] < curr_L:
-                pad = torch.full(
-                    (n_dups, curr_L - fresh_pop.shape[1]), PAD_ID,
-                    dtype=fresh_pop.dtype, device=self.device
-                )
-                fresh_pop = torch.cat([fresh_pop, pad], dim=1)
-            else:
-                fresh_pop = fresh_pop[:, :curr_L]
 
-        K = constants.shape[1]
-        if GpuGlobals.FORCE_INTEGER_CONSTANTS:
-            fresh_consts = torch.randint(
-                GpuGlobals.CONSTANT_INT_MIN_VALUE, 
-                GpuGlobals.CONSTANT_INT_MAX_VALUE + 1,
-                (n_dups, K), device=self.device, dtype=torch.long
-            ).to(self.dtype)
-        else:
-            fresh_consts = torch.empty(n_dups, K, device=self.device, dtype=self.dtype).uniform_(GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE)
-        
+        fresh_pop, fresh_consts = self._dedup_replacements(population, constants, dup_indices)
         population[dup_indices] = fresh_pop
         constants[dup_indices] = fresh_consts
         

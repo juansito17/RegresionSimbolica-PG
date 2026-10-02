@@ -2022,14 +2022,23 @@ std::vector<torch::Tensor> evolve_generation(
 //     is a dense switch over pre-decoded opcodes, top of stack in a register.
 //  3. RMSE is reduced in-kernel (warp shuffles); only [B] values are written.
 //  4. Strict-mode domain errors stop the whole individual early.
+//  5. SCALED: the fitness is the RMSE of the least squares fit a + b*f
+//     (linear scaling). Pass 1 accumulates Welford statistics and caches the
+//     predictions in shared memory (when they fit); pass 2 sums the residuals.
+//  6. Fitness reuse: when reuse_parent is given, an individual whose tokens and
+//     constants are bit-identical to its parent's copies the parent's fitness
+//     and is not evaluated at all.
 //
 // ============================================================
 
 #define FUSED_MAX_L   256    // Max formula length (decoded program in shared memory)
 #define FUSED_WARPS_PER_BLOCK 8
 #define FUSED_BLOCK_THREADS 256
+// Shared memory budget for cached predictions of the scaled evaluator. Larger
+// datasets re-evaluate the program in pass 2 instead of lowering occupancy.
+#define FUSED_SCALE_CACHE_BYTES (16 * 1024)
 
-template <typename scalar_t, bool WARP_MODE, bool STRICT>
+template <typename scalar_t, bool WARP_MODE, bool STRICT, bool SCALED>
 __global__ void __launch_bounds__(256)
 rpn_eval_fused_kernel(
     const unsigned char* __restrict__ population,  // [B, L]
@@ -2037,7 +2046,12 @@ rpn_eval_fused_kernel(
     const scalar_t* __restrict__ constants,        // [B, K] or nullptr
     const scalar_t* __restrict__ y_target,         // [D]
     scalar_t* __restrict__ out_rmse,               // [B]
-    int B, int D, int L, int K,
+    scalar_t* __restrict__ out_ab,                 // [B, 2] (a, b) or nullptr
+    const int64_t* __restrict__ reuse_parent,      // [B] or nullptr
+    const unsigned char* __restrict__ reuse_pop,   // [B_old, L]
+    const scalar_t* __restrict__ reuse_consts,     // [B_old, K] or nullptr
+    const scalar_t* __restrict__ reuse_fit,        // [B_old]
+    int B, int D, int L, int K, int cache_D,
     RpnOpIds ids
 ) {
     extern __shared__ __align__(16) unsigned char fused_smem[];
@@ -2057,14 +2071,51 @@ rpn_eval_fused_kernel(
     unsigned char* code = fused_smem + (size_t)n_slots * L * sizeof(scalar_t) + (size_t)slot * 2 * L;
     unsigned char* aux = code + L;
     DecodedProgram<scalar_t> prog{code, aux, imm};
+    scalar_t* pred_cache = nullptr;
+    if (SCALED && cache_D > 0) {
+        size_t off = (size_t)n_slots * L * (sizeof(scalar_t) + 2);
+        off = (off + 15) & ~(size_t)15;
+        pred_cache = reinterpret_cast<scalar_t*>(fused_smem + off) + (size_t)slot * cache_D;
+    }
 
     __shared__ int s_len;
+    __shared__ int s_same;
     __shared__ scalar_t s_sq[FUSED_BLOCK_THREADS / 32];
     __shared__ int s_flags[FUSED_BLOCK_THREADS / 32];
+    __shared__ RpnScaleStats<scalar_t> s_stats[FUSED_BLOCK_THREADS / 32];
+
+    if (WARP_MODE && b >= B) return;  // the whole warp leaves together
+
+    // --- Fitness reuse: identical child of an already evaluated parent ---
+    if (reuse_parent != nullptr) {
+        const int64_t p = reuse_parent[b];
+        bool same = (p >= 0);
+        if (WARP_MODE || warp == 0) {
+            if (same) {
+                const unsigned char* row = population + b * (int64_t)L;
+                const unsigned char* prow = reuse_pop + p * (int64_t)L;
+                for (int i = lane; i < L; i += 32) same = same && (row[i] == prow[i]);
+                if (K > 0 && constants != nullptr) {
+                    const scalar_t* c = constants + b * (int64_t)K;
+                    const scalar_t* pc = reuse_consts + p * (int64_t)K;
+                    for (int k = lane; k < K; k += 32) same = same && rpn_bits_equal(c[k], pc[k]);
+                }
+            }
+            same = __all_sync(RPN_FULL_MASK, same);
+            if (!WARP_MODE && lane == 0) s_same = same ? 1 : 0;
+        }
+        if (!WARP_MODE) {
+            __syncthreads();
+            same = (s_same != 0);
+        }
+        if (same) {
+            if ((WARP_MODE ? lane : threadIdx.x) == 0) out_rmse[b] = reuse_fit[p];
+            return;
+        }
+    }
 
     int len;
     if (WARP_MODE) {
-        if (b >= B) return;  // the whole warp leaves together
         len = rpn_decode_program_warp<scalar_t, true>(
             population + b * (int64_t)L, L, ids,
             (K > 0 && constants != nullptr) ? constants + b * (int64_t)K : nullptr, K,
@@ -2083,7 +2134,10 @@ rpn_eval_fused_kernel(
     }
 
     if (len == 0) {
-        if ((WARP_MODE ? lane : threadIdx.x) == 0) out_rmse[b] = INVALID_RMSE;
+        if ((WARP_MODE ? lane : threadIdx.x) == 0) {
+            out_rmse[b] = INVALID_RMSE;
+            if (out_ab != nullptr) { out_ab[2 * b] = (scalar_t)0; out_ab[2 * b + 1] = (scalar_t)1; }
+        }
         return;
     }
 
@@ -2092,6 +2146,7 @@ rpn_eval_fused_kernel(
     scalar_t sq = (scalar_t)0.0;
     bool invalid = false;
     bool overflow = false;
+    RpnScaleStats<scalar_t> st = rpn_scale_empty<scalar_t>();
 
     for (int d0 = 0; d0 < D; d0 += nthreads) {
         const int d = d0 + tid;
@@ -2100,6 +2155,15 @@ rpn_eval_fused_kernel(
             bool ok = rpn_run_program<scalar_t, STRICT>(code, aux, imm, len, x, D, d, nullptr, pred);
             if (!ok || isnan(pred) || isinf(pred)) {
                 invalid = true;
+            } else if (SCALED) {
+                if (fabs(pred) > MAX_METRIC_DIFF) {
+                    overflow = true;
+                } else {
+                    rpn_scale_push(st, pred, y_target[d]);
+                    // Each thread reads back only the samples it wrote, so the
+                    // cache needs no synchronisation.
+                    if (pred_cache != nullptr) pred_cache[d] = pred;
+                }
             } else {
                 scalar_t diff = pred - y_target[d];
                 scalar_t ad = fabs(diff);
@@ -2117,6 +2181,51 @@ rpn_eval_fused_kernel(
         if (WARP_MODE) any_invalid = __any_sync(RPN_FULL_MASK, invalid);
         else any_invalid = __syncthreads_or(invalid) != 0;
         if (any_invalid) { invalid = true; break; }
+    }
+
+    scalar_t scale_a = (scalar_t)0;
+    scalar_t scale_b = (scalar_t)1;
+    if (SCALED) {
+        // Merge the statistics (and flags) of the whole individual.
+        unsigned int f1 = (invalid ? 1u : 0u) | (overflow ? 2u : 0u);
+#pragma unroll
+        for (int off = 16; off > 0; off >>= 1) f1 |= __shfl_xor_sync(RPN_FULL_MASK, f1, off);
+        st = rpn_scale_warp_reduce(st);
+        if (!WARP_MODE) {
+            if (lane == 0) { s_stats[warp] = st; s_flags[warp] = (int)f1; }
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                const int nw = blockDim.x / 32;
+                RpnScaleStats<scalar_t> m = rpn_scale_empty<scalar_t>();
+                unsigned int fm = 0u;
+                for (int w = 0; w < nw; ++w) {
+                    m = rpn_scale_merge(m, s_stats[w]);
+                    fm |= (unsigned int)s_flags[w];
+                }
+                s_stats[0] = m;
+                s_flags[0] = (int)fm;
+            }
+            __syncthreads();
+            st = s_stats[0];
+            f1 = (unsigned int)s_flags[0];
+        }
+        invalid = (f1 & 1u) != 0u;
+        overflow = (f1 & 2u) != 0u;
+        if (!invalid && !overflow && !rpn_scale_finite(st)) overflow = true;
+
+        // Pass 2: residuals of the least squares fit.
+        if (!invalid && !overflow) {
+            scale_b = rpn_scale_slope(st);
+            scale_a = st.my - scale_b * st.mf;
+            for (int d = tid; d < D; d += nthreads) {
+                scalar_t pred;
+                if (pred_cache != nullptr) pred = pred_cache[d];
+                else rpn_run_program<scalar_t, STRICT>(code, aux, imm, len, x, D, d, nullptr, pred);
+                const scalar_t r = (y_target[d] - st.my) - scale_b * (pred - st.mf);
+                sq += r * r;
+            }
+        }
+        if (!WARP_MODE) __syncthreads();  // s_stats/s_flags are reused below
     }
 
     // Reduction.
@@ -2151,6 +2260,10 @@ rpn_eval_fused_kernel(
             if (isnan(rmse) || isinf(rmse)) rmse = INVALID_RMSE;
         }
         out_rmse[b] = rmse;
+        if (out_ab != nullptr) {
+            out_ab[2 * b] = scale_a;
+            out_ab[2 * b + 1] = scale_b;
+        }
     }
 }
 
@@ -2198,7 +2311,13 @@ void launch_rpn_eval_fused(
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
     int strict_mode,
-    int launch_mode
+    int launch_mode,
+    int scaled,
+    const torch::Tensor& out_ab,
+    const torch::Tensor& reuse_parent,
+    const torch::Tensor& reuse_pop,
+    const torch::Tensor& reuse_consts,
+    const torch::Tensor& reuse_fit
 ) {
     CHECK_INPUT(population);
     CHECK_INPUT(x);
@@ -2211,6 +2330,34 @@ void launch_rpn_eval_fused(
     int num_vars = x.size(0);
     int D = x.size(1);
     int K = (constants.dim() > 1) ? constants.size(1) : 0;
+
+    const bool want_ab = out_ab.defined() && out_ab.numel() > 0;
+    if (want_ab) {
+        CHECK_INPUT(out_ab);
+        TORCH_CHECK(out_ab.numel() == 2 * (int64_t)B && out_ab.scalar_type() == x.scalar_type(),
+                    "out_ab must have shape [B, 2] and the dtype of x");
+    }
+    const bool reuse = reuse_parent.defined() && reuse_parent.numel() > 0;
+    if (reuse) {
+        CHECK_INPUT(reuse_parent);
+        CHECK_INPUT(reuse_pop);
+        CHECK_INPUT(reuse_fit);
+        TORCH_CHECK(!want_ab, "out_ab cannot be combined with fitness reuse");
+        TORCH_CHECK(reuse_parent.numel() == B && reuse_parent.scalar_type() == torch::kInt64,
+                    "reuse_parent must be an int64 tensor with one entry per individual");
+        TORCH_CHECK(reuse_pop.dim() == 2 && reuse_pop.size(1) == L &&
+                    reuse_pop.scalar_type() == torch::kUInt8,
+                    "reuse_pop must be uint8 with the same program length");
+        TORCH_CHECK(reuse_fit.dim() == 1 && reuse_fit.numel() == reuse_pop.size(0) &&
+                    reuse_fit.scalar_type() == x.scalar_type(),
+                    "reuse_fit must hold one fitness per reuse_pop row, in the dtype of x");
+        if (K > 0) {
+            CHECK_INPUT(reuse_consts);
+            TORCH_CHECK(reuse_consts.dim() == 2 && reuse_consts.size(0) == reuse_pop.size(0) &&
+                        reuse_consts.size(1) == K && reuse_consts.scalar_type() == x.scalar_type(),
+                        "reuse_consts must have shape [B_old, K] and the dtype of x");
+        }
+    }
 
     TORCH_CHECK(population.dim() == 2, "population must have shape [B, L]");
     TORCH_CHECK(population.scalar_type() == torch::kUInt8, "population must use uint8 tokens");
@@ -2258,23 +2405,38 @@ void launch_rpn_eval_fused(
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "rpn_eval_fused_kernel", ([&] {
         const int n_slots = use_warp_mode ? FUSED_WARPS_PER_BLOCK : 1;
         size_t smem = (size_t)n_slots * L * (sizeof(scalar_t) + 2);
-        auto launch = [&](auto warp_tag, auto strict_tag) {
+        int cache_D = 0;
+        if (scaled && (size_t)n_slots * D * sizeof(scalar_t) <= FUSED_SCALE_CACHE_BYTES) {
+            cache_D = D;
+            smem = ((smem + 15) & ~(size_t)15) + (size_t)n_slots * D * sizeof(scalar_t);
+        }
+        auto launch = [&](auto warp_tag, auto strict_tag, auto scaled_tag) {
             constexpr bool warp_mode = decltype(warp_tag)::value;
             constexpr bool strict = decltype(strict_tag)::value;
-            rpn_eval_fused_kernel<scalar_t, warp_mode, strict><<<(unsigned int)grid_dim, block_dim, smem>>>(
+            constexpr bool sc = decltype(scaled_tag)::value;
+            rpn_eval_fused_kernel<scalar_t, warp_mode, strict, sc><<<(unsigned int)grid_dim, block_dim, smem>>>(
                 population.data_ptr<unsigned char>(),
                 x.data_ptr<scalar_t>(),
                 (constants.numel() > 0) ? constants.data_ptr<scalar_t>() : nullptr,
                 y_target.data_ptr<scalar_t>(),
                 out_rmse.data_ptr<scalar_t>(),
-                B, D, L, K, ids);
+                want_ab ? out_ab.data_ptr<scalar_t>() : nullptr,
+                reuse ? reuse_parent.data_ptr<int64_t>() : nullptr,
+                reuse ? reuse_pop.data_ptr<unsigned char>() : nullptr,
+                (reuse && K > 0) ? reuse_consts.data_ptr<scalar_t>() : nullptr,
+                reuse ? reuse_fit.data_ptr<scalar_t>() : nullptr,
+                B, D, L, K, cache_D, ids);
+        };
+        auto with_scale = [&](auto warp_tag, auto strict_tag) {
+            if (scaled) launch(warp_tag, strict_tag, std::true_type{});
+            else launch(warp_tag, strict_tag, std::false_type{});
         };
         if (use_warp_mode) {
-            if (strict_mode) launch(std::true_type{}, std::true_type{});
-            else launch(std::true_type{}, std::false_type{});
+            if (strict_mode) with_scale(std::true_type{}, std::true_type{});
+            else with_scale(std::true_type{}, std::false_type{});
         } else {
-            if (strict_mode) launch(std::false_type{}, std::true_type{});
-            else launch(std::false_type{}, std::false_type{});
+            if (strict_mode) with_scale(std::false_type{}, std::true_type{});
+            else with_scale(std::false_type{}, std::false_type{});
         }
     }));
 

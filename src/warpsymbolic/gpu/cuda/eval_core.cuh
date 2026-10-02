@@ -417,3 +417,358 @@ __device__ __forceinline__ bool rpn_run_program(
 __device__ __forceinline__ unsigned long long rpn_shfl_xor_u64(unsigned long long v, int off) {
     return __shfl_xor_sync(RPN_FULL_MASK, v, off);
 }
+
+// Bitwise equality: constants are compared exactly (NaN == NaN, -0 != +0), so
+// a reused fitness always belongs to the very same program and constants.
+__device__ __forceinline__ bool rpn_bits_equal(float a, float b) {
+    return __float_as_uint(a) == __float_as_uint(b);
+}
+__device__ __forceinline__ bool rpn_bits_equal(double a, double b) {
+    return __double_as_longlong(a) == __double_as_longlong(b);
+}
+
+// ----------------------------------------------------------------------------
+// Linear scaling statistics
+// ----------------------------------------------------------------------------
+//
+// With linear scaling the fitness of a program f is the RMSE of the least
+// squares fit a + b*f, with b = cov(f, y) / var(f) and a = mean(y) - b*mean(f).
+// Means, second moments and the co-moment are accumulated with Welford's
+// update and merged with Chan's formula, which stays accurate in float32.
+// The residual itself is summed in a second pass: the one-pass identity
+// SSE = M2y - Cfy^2 / M2f cancels catastrophically for near-exact fits.
+
+template <typename T>
+struct RpnScaleStats {
+    T n, mf, my, m2f, m2y, cfy;
+};
+
+template <typename T>
+__device__ __forceinline__ RpnScaleStats<T> rpn_scale_empty() {
+    RpnScaleStats<T> s;
+    s.n = (T)0; s.mf = (T)0; s.my = (T)0; s.m2f = (T)0; s.m2y = (T)0; s.cfy = (T)0;
+    return s;
+}
+
+template <typename T>
+__device__ __forceinline__ void rpn_scale_push(RpnScaleStats<T> &s, T f, T y) {
+    s.n += (T)1;
+    const T inv = (T)1 / s.n;
+    const T df = f - s.mf;
+    const T dy = y - s.my;
+    s.mf += df * inv;
+    s.my += dy * inv;
+    const T dy2 = y - s.my;
+    s.m2f += df * (f - s.mf);
+    s.m2y += dy * dy2;
+    s.cfy += df * dy2;
+}
+
+template <typename T>
+__device__ __forceinline__ RpnScaleStats<T> rpn_scale_merge(const RpnScaleStats<T> &a, const RpnScaleStats<T> &b) {
+    if (b.n <= (T)0) return a;
+    if (a.n <= (T)0) return b;
+    RpnScaleStats<T> r;
+    r.n = a.n + b.n;
+    const T df = b.mf - a.mf;
+    const T dy = b.my - a.my;
+    const T wb = b.n / r.n;
+    const T w = a.n * wb;
+    r.mf = a.mf + df * wb;
+    r.my = a.my + dy * wb;
+    r.m2f = a.m2f + b.m2f + df * df * w;
+    r.m2y = a.m2y + b.m2y + dy * dy * w;
+    r.cfy = a.cfy + b.cfy + df * dy * w;
+    return r;
+}
+
+// Merge the statistics of the 32 lanes; every lane receives lane 0's result,
+// so all lanes use bit-identical coefficients.
+template <typename T>
+__device__ __forceinline__ RpnScaleStats<T> rpn_scale_warp_reduce(RpnScaleStats<T> s) {
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        RpnScaleStats<T> o;
+        o.n = __shfl_xor_sync(RPN_FULL_MASK, s.n, off);
+        o.mf = __shfl_xor_sync(RPN_FULL_MASK, s.mf, off);
+        o.my = __shfl_xor_sync(RPN_FULL_MASK, s.my, off);
+        o.m2f = __shfl_xor_sync(RPN_FULL_MASK, s.m2f, off);
+        o.m2y = __shfl_xor_sync(RPN_FULL_MASK, s.m2y, off);
+        o.cfy = __shfl_xor_sync(RPN_FULL_MASK, s.cfy, off);
+        s = rpn_scale_merge(s, o);
+    }
+    s.n = __shfl_sync(RPN_FULL_MASK, s.n, 0);
+    s.mf = __shfl_sync(RPN_FULL_MASK, s.mf, 0);
+    s.my = __shfl_sync(RPN_FULL_MASK, s.my, 0);
+    s.m2f = __shfl_sync(RPN_FULL_MASK, s.m2f, 0);
+    s.m2y = __shfl_sync(RPN_FULL_MASK, s.m2y, 0);
+    s.cfy = __shfl_sync(RPN_FULL_MASK, s.cfy, 0);
+    return s;
+}
+
+// Optimal slope; a (numerically) constant prediction gets b = 0, i.e. the
+// fit falls back to mean(y). The variance floor is relative to mean(f)^2
+// (1e-10 sits well above float32 rounding noise, ~1e-14), so predictions of
+// any magnitude keep their shape while constant noise is never amplified.
+template <typename T>
+__device__ __forceinline__ T rpn_scale_slope(const RpnScaleStats<T> &s) {
+    const T floor_var = s.n * ((T)1e-10 * s.mf * s.mf + (T)1e-30);
+    if (!(s.m2f > floor_var)) return (T)0;
+    const T b = s.cfy / s.m2f;
+    return isfinite(b) ? b : (T)0;
+}
+
+template <typename T>
+__device__ __forceinline__ bool rpn_scale_finite(const RpnScaleStats<T> &s) {
+    return isfinite(s.mf) && isfinite(s.my) && isfinite(s.m2f) && isfinite(s.m2y) && isfinite(s.cfy);
+}
+
+// Residual sum of squares of one program over all samples, computed by one
+// warp (lanes stride over the samples). With SCALED the residual is the one of
+// the least squares fit a + b*f (two passes); otherwise it is f - y.
+// Returns false when a sample is invalid or the error overflows. Every lane
+// receives the same sse/a/b.
+template <typename T, bool STRICT, bool SCALED>
+__device__ __forceinline__ bool rpn_warp_sse(
+    const unsigned char* __restrict__ code,
+    const unsigned char* __restrict__ aux,
+    const T* __restrict__ imm,
+    int len,
+    const T* __restrict__ x, int D,
+    const T* __restrict__ y,
+    const T* __restrict__ consts,
+    int lane,
+    T &sse, T &a_out, T &b_out
+) {
+    bool bad = false;
+    T sq = (T)0;
+    RpnScaleStats<T> st = rpn_scale_empty<T>();
+    for (int d0 = 0; d0 < D; d0 += 32) {
+        const int d = d0 + lane;
+        if (d < D) {
+            T pred;
+            bool ok = rpn_run_program<T, STRICT>(code, aux, imm, len, x, D, d, consts, pred);
+            if (!ok || !isfinite(pred)) {
+                bad = true;
+            } else if (SCALED) {
+                rpn_scale_push(st, pred, y[d]);
+            } else {
+                const T diff = pred - y[d];
+                const T s2 = diff * diff;
+                if (!isfinite(s2)) bad = true;
+                else sq += s2;
+            }
+        }
+        if (__any_sync(RPN_FULL_MASK, bad)) { bad = true; break; }
+    }
+    a_out = (T)0;
+    b_out = (T)1;
+    if (bad) { sse = (T)0; return false; }
+    if (SCALED) {
+        st = rpn_scale_warp_reduce(st);
+        if (!rpn_scale_finite(st)) { sse = (T)0; return false; }
+        const T b = rpn_scale_slope(st);
+        for (int d0 = 0; d0 < D; d0 += 32) {
+            const int d = d0 + lane;
+            if (d < D) {
+                T pred;
+                rpn_run_program<T, STRICT>(code, aux, imm, len, x, D, d, consts, pred);
+                const T r = (y[d] - st.my) - b * (pred - st.mf);
+                sq += r * r;
+            }
+        }
+        a_out = st.my - b * st.mf;
+        b_out = b;
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) sq += __shfl_xor_sync(RPN_FULL_MASK, sq, off);
+    sq = __shfl_sync(RPN_FULL_MASK, sq, 0);
+    sse = sq;
+    return isfinite(sq);
+}
+
+// ----------------------------------------------------------------------------
+// Forward-mode derivatives (dual numbers)
+// ----------------------------------------------------------------------------
+//
+// rpn_run_program_dual evaluates a program (decoded with RESOLVE_CONST=false,
+// so constant tokens keep their slot) together with the derivative of the
+// result with respect to constant slot `dir`. Values follow exactly the same
+// strict/protected semantics as rpn_run_program; derivatives are those of the
+// branch actually taken (clamped or protected branches have zero slope).
+
+template <typename T>
+__device__ __forceinline__ T rpn_digamma(T x) {
+    T acc = (T)0;
+    if (x < (T)0.5) {
+        // Reflection: psi(1 - x) - psi(x) = pi * cot(pi * x)
+        const T pix = (T)3.141592653589793 * x;
+        acc = -(T)3.141592653589793 / tan(pix);
+        x = (T)1 - x;
+    }
+    while (x < (T)6) { acc -= (T)1 / x; x += (T)1; }
+    const T f = (T)1 / (x * x);
+    acc += log(x) - (T)0.5 / x
+         - f * ((T)(1.0 / 12) - f * ((T)(1.0 / 120) - f * ((T)(1.0 / 252) - f * ((T)(1.0 / 240) - f * (T)(1.0 / 132)))));
+    return acc;
+}
+
+template <typename T>
+__device__ __forceinline__ T rpn_sign(T v) {
+    return (v > (T)0) ? (T)1 : ((v < (T)0) ? (T)-1 : (T)0);
+}
+
+// a^b with derivative; `b`/`db` hold the exponent on entry and the result on exit.
+template <typename T, bool STRICT>
+__device__ __forceinline__ void rpn_dual_pow(T a, T da, T &b, T &db, bool &err) {
+    const T res = STRICT ? strict_pow(a, b, err) : safe_pow(a, b, err);
+    if (err) return;
+    T d = (T)0;
+    if (!(fabs(a) < (T)1e-10 && fabs(b) < (T)1e-10)) {
+        T ea = a, eda = da, eb = b, edb = db;
+        if (ea < (T)0) {
+            const T ib = round(eb);
+            if (fabs(eb - ib) > (T)1e-3) { ea = -ea; eda = -eda; }  // protected: |a|
+            else { eb = ib; edb = (T)0; }
+        }
+        if (!STRICT) {
+            if (fabs(ea) > (T)1.0 && eb > (T)80.0) { eb = (T)80.0; edb = (T)0; }
+            if (fabs(ea) > (T)100.0 && eb > (T)10.0) { eb = (T)10.0; edb = (T)0; }
+        }
+        T t = (T)0;
+        if (eda != (T)0) t += eb * pow(ea, eb - (T)1) * eda;
+        if (edb != (T)0 && ea > (T)0) t += res * log(ea) * edb;
+        d = isfinite(t) ? t : (T)0;
+    }
+    b = res;
+    db = d;
+}
+
+template <typename T, bool STRICT>
+__device__ __forceinline__ bool rpn_run_program_dual(
+    const unsigned char* __restrict__ code,
+    const unsigned char* __restrict__ aux,
+    const T* __restrict__ imm,
+    int len,
+    const T* __restrict__ x, long long D, long long d,
+    const T* __restrict__ consts,
+    int dir,
+    T &out, T &dout
+) {
+    T sv[RPN_EVAL_STACK];
+    T sd[RPN_EVAL_STACK];
+    int sp = 0;
+    T v = (T)0, dv = (T)0;
+    bool err = false;
+    for (int pc = 0; pc < len; ++pc) {
+        switch (code[pc]) {
+            case RC_IMM: sv[sp] = v; sd[sp] = dv; ++sp; v = imm[pc]; dv = (T)0; break;
+            case RC_VAR: sv[sp] = v; sd[sp] = dv; ++sp; v = x[(long long)aux[pc] * D + d]; dv = (T)0; break;
+            case RC_CONST:
+                sv[sp] = v; sd[sp] = dv; ++sp;
+                v = consts[aux[pc]];
+                dv = ((int)aux[pc] == dir) ? (T)1 : (T)0;
+                break;
+            case RC_ADD: --sp; v = sv[sp] + v; dv = sd[sp] + dv; break;
+            case RC_SUB: --sp; v = sv[sp] - v; dv = sd[sp] - dv; break;
+            case RC_MUL: { --sp; const T a = sv[sp], da = sd[sp]; dv = da * v + a * dv; v = a * v; break; }
+            case RC_DIV: {
+                --sp;
+                const T a = sv[sp], da = sd[sp];
+                if (fabs(v) < (T)1e-9) {
+                    if (STRICT) err = true;
+                    else { v = a; dv = da; }
+                } else {
+                    const T r = a / v;
+                    dv = (da - r * dv) / v;
+                    v = r;
+                }
+                break;
+            }
+            case RC_POW: { --sp; rpn_dual_pow<T, STRICT>(sv[sp], sd[sp], v, dv, err); break; }
+            case RC_MOD: {
+                --sp;
+                const T a = sv[sp], da = sd[sp];
+                const T r = STRICT ? strict_mod(a, v, err) : safe_mod(a, v, err);
+                if (fabs(v) < (T)1e-9) dv = (T)0;
+                else dv = da - round((a - r) / v) * dv;
+                v = r;
+                break;
+            }
+            case RC_SIN: dv = cos(v) * dv; v = sin(v); break;
+            case RC_COS: dv = -sin(v) * dv; v = cos(v); break;
+            case RC_TAN: { const T t = tan(v); dv = ((T)1 + t * t) * dv; v = t; break; }
+            case RC_ASIN:
+            case RC_ACOS: {
+                const bool outside = (v < (T)-1.0 || v > (T)1.0);
+                const T r = (code[pc] == RC_ASIN)
+                    ? (STRICT ? strict_asin(v, err) : safe_asin(v, err))
+                    : (STRICT ? strict_acos(v, err) : safe_acos(v, err));
+                const T den = sqrt(fmax((T)0, (T)1 - v * v));
+                T g = (outside || den <= (T)0) ? (T)0 : dv / den;
+                dv = (code[pc] == RC_ASIN) ? g : -g;
+                v = r;
+                break;
+            }
+            case RC_ATAN: dv = dv / ((T)1 + v * v); v = atan(v); break;
+            case RC_LOG: {
+                if (STRICT) {
+                    const T r = strict_log(v, err);
+                    dv = dv / v;
+                    v = r;
+                } else {
+                    const T av = fabs(v) + (T)1e-9;
+                    dv = rpn_sign(v) * dv / av;
+                    v = log(av);
+                }
+                break;
+            }
+            case RC_EXP: {
+                if (STRICT) {
+                    const T r = strict_exp(v, err);
+                    dv = r * dv;
+                    v = r;
+                } else {
+                    const bool clamped = (v < (T)-80.0 || v > (T)80.0);
+                    const T r = safe_exp(v, err);
+                    dv = clamped ? (T)0 : r * dv;
+                    v = r;
+                }
+                break;
+            }
+            case RC_SQRT: {
+                const T r = STRICT ? strict_sqrt(v, err) : safe_sqrt(v, err);
+                const T s = STRICT ? (T)1 : rpn_sign(v);
+                dv = (r > (T)0) ? s * dv / ((T)2 * r) : (T)0;
+                v = r;
+                break;
+            }
+            case RC_ABS: dv = rpn_sign(v) * dv; v = fabs(v); break;
+            case RC_NEG: v = -v; dv = -dv; break;
+            case RC_FLOOR: v = floor(v); dv = (T)0; break;
+            case RC_CEIL: v = ceil(v); dv = (T)0; break;
+            case RC_SIGN: v = rpn_sign(v); dv = (T)0; break;
+            case RC_FACT:
+            case RC_GAMMA: {
+                const T arg = (code[pc] == RC_FACT) ? v + (T)1.0 : v;
+                const T r = STRICT ? strict_tgamma(arg, err) : safe_tgamma(arg, err);
+                dv = (r != (T)0) ? r * rpn_digamma(arg) * dv : (T)0;
+                v = r;
+                break;
+            }
+            case RC_LGAMMA: {
+                const T r = STRICT ? strict_lgamma(v, err) : safe_lgamma(v, err);
+                const bool pole = (v <= (T)0.0 && floor(v) == v);
+                dv = pole ? (T)0 : rpn_digamma(v) * dv;
+                v = r;
+                break;
+            }
+            default: err = true; break;
+        }
+        if (err) return false;
+    }
+    if (!isfinite(dv)) dv = (T)0;
+    out = v;
+    dout = dv;
+    return true;
+}

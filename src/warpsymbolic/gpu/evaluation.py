@@ -30,6 +30,37 @@ class GPUEvaluator:
         self.vm = CudaRPNVM(grammar, device)
         self._disable_fused_eval = False
 
+        # Linear scaling: while True, the RMSE-based search fitness is the RMSE
+        # of the least squares fit a + b*f instead of f itself. The engine
+        # switches it on for the duration of a run (validate_strict never
+        # scales: it validates final, already materialised formulas).
+        self.linear_scaling = False
+
+    def scaled_search(self) -> bool:
+        return bool(self.linear_scaling) and GpuGlobals.LOSS_FUNCTION == 'RMSE'
+
+    @staticmethod
+    def linear_scale_coefficients(preds: torch.Tensor, y_target: torch.Tensor):
+        """Least squares (a, b) of y ≈ a + b*preds for every row of preds [B, D].
+
+        Same rule as the native kernels: a (numerically) constant prediction gets
+        b = 0. Computed in float64.
+        """
+        p = preds.to(torch.float64)
+        yy = y_target.reshape(1, -1).to(torch.float64)
+        mf = p.mean(dim=1, keepdim=True)
+        my = yy.mean()
+        df = p - mf
+        m2f = (df * df).sum(dim=1)
+        cfy = (df * (yy - my)).sum(dim=1)
+        n = p.shape[1]
+        floor_var = n * (1e-10 * mf.squeeze(1) ** 2 + 1e-30)
+        b = torch.where(m2f > floor_var, cfy / torch.where(m2f > 0, m2f, torch.ones_like(m2f)),
+                        torch.zeros_like(m2f))
+        b = torch.where(torch.isfinite(b), b, torch.zeros_like(b))
+        a = my - b * mf.squeeze(1)
+        return a, b
+
     def _run_vm(self, population: torch.Tensor, x: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Internal VM interpreter using Native CUDA Extension.
@@ -42,12 +73,19 @@ class GPUEvaluator:
                     
 
 
-    def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0) -> torch.Tensor:
+    def evaluate_batch(self, population: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor, constants: torch.Tensor = None, strict_mode: int = 0,
+                       reuse=None, return_scale: bool = False):
         """
         Evaluates the RPN population on the GPU over multiple samples.
         Fast path: fused kernel (warp/block per individual, RMSE computed inside kernel).
         Fallback: original chunked path (RMSLE or fused kernel unavailable).
+
+        With ``linear_scaling`` on, the RMSE is the one of the least squares fit
+        a + b*f. ``reuse`` (parent_idx, parent_pop, parent_consts, parent_fitness)
+        lets rows that are bit-identical to their parent copy its fitness (fused
+        path only). ``return_scale`` also returns the [B, 2] (a, b) coefficients.
         """
+        scaled = self.scaled_search()
         B_pop, L = population.shape
 
         # ── Shape normalization ──
@@ -119,7 +157,12 @@ class GPUEvaluator:
             try:
                 y_in = y_target.flatten().to(x.dtype)
                 c_in = constants.to(x.dtype) if (constants is not None and constants.dtype != x.dtype) else constants
-                rmse = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode)
+                if return_scale:
+                    rmse, ab = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode,
+                                                  scaled=scaled, return_ab=True)
+                    return rmse.to(self.dtype), ab.to(self.dtype)
+                rmse = self.vm.eval_fused(population, x, c_in, y_in, strict_mode=strict_mode,
+                                          scaled=scaled, reuse=reuse)
                 return rmse.to(self.dtype)
             except Exception as exc:
                 # Avoid repeated exception overhead in hot loops, but never
@@ -133,7 +176,11 @@ class GPUEvaluator:
         
         # Pre-allocate output buffer (avoid torch.cat at the end)
         final_rmse = torch.full((B_pop,), self.INF_VAL, device=self.device, dtype=self.dtype)
-        
+        final_ab = None
+        if return_scale:
+            final_ab = torch.zeros((B_pop, 2), device=self.device, dtype=self.dtype)
+            final_ab[:, 1] = 1.0
+
         # Pre-process Target
         y_target_chunk = y_target.flatten().unsqueeze(0) # [1, N]
         if GpuGlobals.LOSS_FUNCTION == 'RMSLE':
@@ -180,13 +227,21 @@ class GPUEvaluator:
                                               self._inf_tensor, 
                                               mse))
             else:
-                # Standard RMSE
-                diff = preds_mat - y_target_chunk
+                # Standard RMSE (of the least squares fit a + b*f when scaled)
+                if scaled:
+                    a_s, b_s = self.linear_scale_coefficients(preds_mat, y_target_chunk)
+                    fitted = a_s.unsqueeze(1) + b_s.unsqueeze(1) * preds_mat.to(torch.float64)
+                    diff = (fitted - y_target_chunk.to(torch.float64)).to(self.dtype)
+                    if final_ab is not None:
+                        final_ab[i:end_i, 0] = a_s.to(self.dtype)
+                        final_ab[i:end_i, 1] = b_s.to(self.dtype)
+                else:
+                    diff = preds_mat - y_target_chunk
                 sq_diff = diff**2
                 mse = torch.mean(sq_diff, dim=1) # [current_B]
-                
-                metric_score = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse), 
-                                              self._inf_tensor, 
+
+                metric_score = torch.sqrt(torch.where(torch.isnan(mse) | torch.isinf(mse),
+                                              self._inf_tensor,
                                               mse))
                                           
             # Apply absolute penalty to completely invalid individuals AFTER log scale
@@ -197,8 +252,10 @@ class GPUEvaluator:
              
             # Cleanup
             del sub_pop, sub_c, f_preds, sp, err, preds_mat, diff, sq_diff, mse, metric_score
-            # torch.cuda.empty_cache() 
-            
+            # torch.cuda.empty_cache()
+
+        if return_scale:
+            return final_rmse, final_ab
         return final_rmse
 
     def evaluate_differentiable(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y_target: torch.Tensor) -> torch.Tensor:
@@ -323,7 +380,13 @@ class GPUEvaluator:
             
             # Broadcast Target
             # target is [1, D], preds is [cur_B, D] => Broadcast works automatically
-            abs_err = torch.abs(preds_matrix - target_matrix_chunk)
+            if self.scaled_search():
+                # Per-case errors of the same least squares fit used by the fitness.
+                a_s, b_s = self.linear_scale_coefficients(preds_matrix, target_matrix_chunk)
+                fitted = (a_s.unsqueeze(1) + b_s.unsqueeze(1) * preds_matrix.to(torch.float64))
+                abs_err = torch.abs(fitted - target_matrix_chunk.to(torch.float64)).to(preds_matrix.dtype)
+            else:
+                abs_err = torch.abs(preds_matrix - target_matrix_chunk)
             
             abs_err = torch.where(torch.isnan(abs_err) | torch.isinf(abs_err) | ~ind_is_valid, 
                                   torch.tensor(inf_val_out, device=self.device, dtype=out_dtype), 

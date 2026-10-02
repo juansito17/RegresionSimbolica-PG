@@ -43,8 +43,39 @@ void launch_rpn_eval_fused(
     int op_gamma, int op_lgamma,
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
-    int strict_mode = 0,
-    int launch_mode = 0
+    int strict_mode,
+    int launch_mode,
+    int scaled,
+    const torch::Tensor& out_ab,
+    const torch::Tensor& reuse_parent,
+    const torch::Tensor& reuse_pop,
+    const torch::Tensor& reuse_consts,
+    const torch::Tensor& reuse_fit
+);
+
+// Levenberg-Marquardt constant optimisation (lm_kernels.cu)
+void launch_lm_optimize(
+    const torch::Tensor& population,
+    const torch::Tensor& init_consts,
+    const torch::Tensor& x,
+    const torch::Tensor& y_target,
+    torch::Tensor& out_consts,
+    torch::Tensor& out_rmse,
+    int max_iter,
+    float const_min, float const_max,
+    int PAD_ID, int id_x_start,
+    int id_C, int id_pi, int id_e,
+    int id_0, int id_1, int id_2, int id_3, int id_4, int id_5, int id_6, int id_10,
+    int op_add, int op_sub, int op_mul, int op_div, int op_pow, int op_mod,
+    int op_sin, int op_cos, int op_tan,
+    int op_log, int op_exp,
+    int op_sqrt, int op_abs, int op_neg,
+    int op_fact, int op_floor, int op_ceil, int op_sign,
+    int op_gamma, int op_lgamma,
+    int op_asin, int op_acos, int op_atan,
+    double pi_val, double e_val,
+    int strict_mode,
+    int scaled
 );
 
 void run_rpn_cuda(
@@ -289,7 +320,8 @@ void launch_fused_pso(
     int op_asin, int op_acos, int op_atan,
     double pi_val, double e_val,
     uint64_t rng_seed,
-    int strict_mode
+    int strict_mode,
+    int scaled
 );
 
 // --- Phase 5 Forward Declarations (Simplifier + Generator Kernels) ---
@@ -462,7 +494,31 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("op_asin"), py::arg("op_acos"), py::arg("op_atan"),
         py::arg("pi_val"), py::arg("e_val"),
         py::arg("strict_mode") = 0,
-        py::arg("launch_mode") = 0);
+        py::arg("launch_mode") = 0,
+        py::arg("scaled") = 0,
+        py::arg("out_ab") = torch::empty({0}),
+        py::arg("reuse_parent") = torch::empty({0}),
+        py::arg("reuse_pop") = torch::empty({0}),
+        py::arg("reuse_consts") = torch::empty({0}),
+        py::arg("reuse_fit") = torch::empty({0}));
+    m.def("lm_optimize", &launch_lm_optimize,
+        "Levenberg-Marquardt constant optimisation, one warp per individual (CUDA)",
+        py::arg("population"), py::arg("init_consts"), py::arg("x"), py::arg("y_target"),
+        py::arg("out_consts"), py::arg("out_rmse"),
+        py::arg("max_iter"), py::arg("const_min"), py::arg("const_max"),
+        py::arg("PAD_ID"), py::arg("id_x_start"),
+        py::arg("id_C"), py::arg("id_pi"), py::arg("id_e"),
+        py::arg("id_0"), py::arg("id_1"), py::arg("id_2"), py::arg("id_3"), py::arg("id_4"), py::arg("id_5"), py::arg("id_6"), py::arg("id_10"),
+        py::arg("op_add"), py::arg("op_sub"), py::arg("op_mul"), py::arg("op_div"), py::arg("op_pow"), py::arg("op_mod"),
+        py::arg("op_sin"), py::arg("op_cos"), py::arg("op_tan"),
+        py::arg("op_log"), py::arg("op_exp"),
+        py::arg("op_sqrt"), py::arg("op_abs"), py::arg("op_neg"),
+        py::arg("op_fact"), py::arg("op_floor"), py::arg("op_ceil"), py::arg("op_sign"),
+        py::arg("op_gamma"), py::arg("op_lgamma"),
+        py::arg("op_asin"), py::arg("op_acos"), py::arg("op_atan"),
+        py::arg("pi_val"), py::arg("e_val"),
+        py::arg("strict_mode") = 1,
+        py::arg("scaled") = 0);
     m.def("decode_rpn", &decode_rpn, "RPN Decoder (C++)",
         py::arg("population"), py::arg("constants"), py::arg("vocab"), py::arg("arities"), py::arg("PAD_ID"), py::arg("precision") = 4);
     

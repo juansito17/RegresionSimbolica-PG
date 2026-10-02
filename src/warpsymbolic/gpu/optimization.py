@@ -411,10 +411,54 @@ class GPUOptimizer:
             vm.op_asin, vm.op_acos, vm.op_atan,
             math.pi, math.e,
             rng_seed,
-            int(bool(getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False)))
+            int(bool(getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False))),
+            int(self.evaluator.scaled_search())
         )
-        
+
         return gbest_pos, gbest_err
+
+    def can_use_levenberg_marquardt(self, population: torch.Tensor, constants: torch.Tensor) -> bool:
+        return (
+            self._rpn_cuda is not None
+            and hasattr(self._rpn_cuda, 'lm_optimize')
+            and population.is_cuda
+            and population.ndim == 2
+            and constants.ndim == 2
+            and population.shape[1] <= 256
+            and constants.shape[1] <= 32
+            and constants.dtype in (torch.float32, torch.float64)
+        )
+
+    def levenberg_marquardt(self, population: torch.Tensor, constants: torch.Tensor,
+                            x: torch.Tensor, y: torch.Tensor,
+                            max_iter: int = 10) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Gradient-based constant refinement (native Levenberg–Marquardt).
+
+        Exact forward-mode derivatives of the search semantics, one warp per
+        individual. Optimises the same objective as the fitness (including
+        linear scaling) and never returns constants worse than the input.
+        Falls back to nano_pso when the native kernel is unavailable.
+        Returns (constants [B, K], rmse [B]).
+        """
+        if population.shape[0] == 0:
+            return constants, torch.empty(0, device=self.device, dtype=self.dtype)
+        if not self.can_use_levenberg_marquardt(population, constants):
+            return self.nano_pso(population, constants, x, y,
+                                 steps=int(getattr(GpuGlobals, 'PSO_STEPS_NORMAL', 20)),
+                                 num_particles=int(getattr(GpuGlobals, 'PSO_PARTICLES', 20)))
+        D_expected = y.numel()
+        if x.ndim == 1:
+            x = x.unsqueeze(0)
+        elif x.ndim == 2 and x.shape[0] == D_expected and x.shape[1] != D_expected:
+            x = x.T
+        x = x.contiguous()
+        work_dtype = x.dtype
+        new_c, rmse = self.evaluator.vm.lm_optimize(
+            population, constants.to(work_dtype), x, y.reshape(-1).to(work_dtype), int(max_iter),
+            GpuGlobals.CONSTANT_MIN_VALUE, GpuGlobals.CONSTANT_MAX_VALUE,
+            strict_mode=int(bool(getattr(GpuGlobals, 'FORCE_STRICT_VALIDATION', False))),
+            scaled=self.evaluator.scaled_search())
+        return new_c.to(self.dtype), rmse.to(self.dtype)
 
     def _multi_kernel_nano_pso(self, population: torch.Tensor, constants: torch.Tensor, x: torch.Tensor, y: torch.Tensor, 
                 steps: int = 20, num_particles: int = 20, w: float = 0.5, c1: float = 1.5, c2: float = 1.5) -> Tuple[torch.Tensor, torch.Tensor]:
