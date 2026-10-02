@@ -2328,27 +2328,44 @@ class TensorGeneticEngine:
                 _in_stagnation = stagnation > GpuGlobals.PSO_STAGNATION_THRESHOLD
                 k_opt = int(GpuGlobals.LM_K_STAGNATION if _in_stagnation else GpuGlobals.LM_K_NORMAL)
                 k_opt = max(1, min(self.pop_size, k_opt))
-                _rank = fitness_rmse.clone()
+                _rank = fitness_rmse
                 if _cached_var_pen is not None:
-                    _rank.add_(_cached_var_pen.to(_rank.dtype), alpha=GpuGlobals.VAR_DIVERSITY_PENALTY)
-                _excluded = None
-                if getattr(GpuGlobals, 'LM_UNIQUE_CANDIDATES', True):
-                    _excluded = ~(population == self.grammar.token_to_id.get('C', -1)).any(dim=1)
-                    _dup_mask = self.operators.structural_duplicate_mask(population)
-                    if _dup_mask is not None:
-                        _excluded |= _dup_mask
-                    _rank.masked_fill_(_excluded, float('inf'))
+                    _rank = fitness_rmse + _cached_var_pen.to(fitness_rmse.dtype) * GpuGlobals.VAR_DIVERSITY_PENALTY
+                _unique = bool(getattr(GpuGlobals, 'LM_UNIQUE_CANDIDATES', True))
+                _id_c = self.grammar.token_to_id.get('C', -1)
+                # Structural duplicates are masked over the whole population
+                # (most of the top-K are clones of a few structures); the
+                # cheaper "has a free constant" filter only runs on the pool.
+                _dup_all = self.operators.structural_duplicate_mask(population) if _unique else None
+                if _dup_all is not None:
+                    _rank = _rank.masked_fill(_dup_all, float('inf'))
+
+                def _lm_pick(pool_idx, pool_score, k):
+                    if _unique:
+                        excluded = ~(population[pool_idx] == _id_c).any(dim=1)
+                        if _dup_all is not None:
+                            excluded |= _dup_all[pool_idx]
+                        pool_score = pool_score.masked_fill(excluded, float('inf'))
+                    k = min(k, pool_idx.numel())
+                    _, sel = torch.topk(pool_score, k, largest=False, sorted=False)
+                    return pool_idx[sel]
+
+                _pool_mult = 2 if _unique else 1
                 if _in_stagnation:
                     # Half exploit (best), half explore (random candidates).
                     k_top = k_opt // 2
-                    _, _top_part = torch.topk(_rank, k_top, largest=False, sorted=False)
-                    _rand_rank = torch.rand(self.pop_size, device=self.device)
-                    if _excluded is not None:
-                        _rand_rank.masked_fill_(_excluded, 2.0)
-                    _, _rand_part = torch.topk(_rand_rank, k_opt - k_top, largest=False, sorted=False)
+                    k_rand = k_opt - k_top
+                    _, _top_pool = torch.topk(_rank, min(self.pop_size, _pool_mult * k_top),
+                                              largest=False, sorted=False)
+                    _top_part = _lm_pick(_top_pool, _rank[_top_pool], k_top)
+                    _rand_pool = torch.randint(0, self.pop_size, (min(self.pop_size, _pool_mult * k_rand),),
+                                               device=self.device)
+                    _rand_part = _lm_pick(_rand_pool, torch.rand(_rand_pool.numel(), device=self.device), k_rand)
                     lm_idx = torch.cat([_top_part, _rand_part])
                 else:
-                    _, lm_idx = torch.topk(_rank, k_opt, largest=False, sorted=False)
+                    _, _pool = torch.topk(_rank, min(self.pop_size, _pool_mult * k_opt),
+                                          largest=False, sorted=False)
+                    lm_idx = _lm_pick(_pool, _rank[_pool], k_opt)
 
                 opt_pop = population[lm_idx]
                 opt_consts = pop_constants[lm_idx]

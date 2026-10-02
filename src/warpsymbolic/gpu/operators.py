@@ -1286,14 +1286,16 @@ class GPUOperators:
         id_x_start = self.grammar.token_to_id.get('x0', self.grammar.token_to_id.get('x', 1))
         rpn_cuda_native.compute_population_hashes(
             population, hashes, var_presence, PAD_ID, id_x_start, self.num_variables)
-        table_size = 1 << max(20, int(2 * B - 1).bit_length())
-        if self._dedup_hash_table is None or self._dedup_hash_table.numel() != table_size:
-            self._dedup_hash_table = torch.empty(table_size, dtype=torch.long, device=self.device)
-        self._dedup_hash_table.fill_(-1)
+        # Own table sized to the batch (callers pass small candidate pools).
+        table_size = 1 << max(12, int(2 * B - 1).bit_length())
+        table = getattr(self, '_dup_mask_hash_table', None)
+        if table is None or table.numel() != table_size or table.device != population.device:
+            table = torch.empty(table_size, dtype=torch.long, device=self.device)
+            self._dup_mask_hash_table = table
+        table.fill_(-1)
         dup = torch.empty(B, dtype=torch.int32, device=self.device)
         original = torch.empty(B, dtype=torch.long, device=self.device)
-        rpn_cuda_native.structural_dedup(
-            hashes, self._dedup_hash_table, dup, original, population, PAD_ID)
+        rpn_cuda_native.structural_dedup(hashes, table, dup, original, population, PAD_ID)
         return dup != 0
 
     def _dedup_replacements(self, population: torch.Tensor, constants: torch.Tensor, dup_indices: torch.Tensor):

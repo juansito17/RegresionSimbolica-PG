@@ -772,3 +772,203 @@ __device__ __forceinline__ bool rpn_run_program_dual(
     dout = dv;
     return true;
 }
+
+// ----------------------------------------------------------------------------
+// Reverse mode (adjoints) on a value tape
+// ----------------------------------------------------------------------------
+//
+// Every node of a decoded program writes its value to tape[pc]; operands are
+// read through precomputed child positions instead of a stack. A backward
+// sweep then yields the derivative of the result with respect to every
+// constant slot at once, so a Jacobian row costs two passes whatever the
+// number of constants (forward mode needs one pass per constant).
+
+#define RPN_NO_CHILD 255
+
+__device__ __forceinline__ int rpn_code_arity(unsigned char c) {
+    if (c == RC_IMM || c == RC_VAR || c == RC_CONST) return 0;
+    if (c >= RC_ADD && c <= RC_MOD) return 2;
+    return 1;
+}
+
+// Child tape positions of every node of a valid program (one thread).
+// Positions fit in uint8, so programs longer than 255 tokens are not supported.
+__device__ __forceinline__ void rpn_program_children(
+    const unsigned char* __restrict__ code, int len,
+    unsigned char* __restrict__ lc, unsigned char* __restrict__ rc
+) {
+    unsigned char st[RPN_EVAL_STACK];
+    int sp = 0;
+    for (int pc = 0; pc < len; ++pc) {
+        const int ar = rpn_code_arity(code[pc]);
+        if (ar == 2) {
+            rc[pc] = st[--sp];
+            lc[pc] = st[--sp];
+        } else if (ar == 1) {
+            lc[pc] = st[--sp];
+            rc[pc] = RPN_NO_CHILD;
+        } else {
+            lc[pc] = RPN_NO_CHILD;
+            rc[pc] = RPN_NO_CHILD;
+        }
+        st[sp++] = (unsigned char)pc;
+    }
+}
+
+// Forward sweep: same values and error semantics as rpn_run_program.
+template <typename T, bool STRICT>
+__device__ __forceinline__ bool rpn_tape_forward(
+    const unsigned char* __restrict__ code,
+    const unsigned char* __restrict__ aux,
+    const T* __restrict__ imm,
+    const unsigned char* __restrict__ lc,
+    const unsigned char* __restrict__ rc,
+    int len,
+    const T* __restrict__ x, long long D, long long d,
+    const T* __restrict__ consts,
+    T* __restrict__ tape
+) {
+    bool err = false;
+    for (int pc = 0; pc < len; ++pc) {
+        T v;
+        switch (code[pc]) {
+            case RC_IMM: v = imm[pc]; break;
+            case RC_VAR: v = x[(long long)aux[pc] * D + d]; break;
+            case RC_CONST: v = consts[aux[pc]]; break;
+            case RC_ADD: v = tape[lc[pc]] + tape[rc[pc]]; break;
+            case RC_SUB: v = tape[lc[pc]] - tape[rc[pc]]; break;
+            case RC_MUL: v = tape[lc[pc]] * tape[rc[pc]]; break;
+            case RC_DIV: v = STRICT ? strict_div(tape[lc[pc]], tape[rc[pc]], err) : safe_div(tape[lc[pc]], tape[rc[pc]], err); break;
+            case RC_POW: v = STRICT ? strict_pow(tape[lc[pc]], tape[rc[pc]], err) : safe_pow(tape[lc[pc]], tape[rc[pc]], err); break;
+            case RC_MOD: v = STRICT ? strict_mod(tape[lc[pc]], tape[rc[pc]], err) : safe_mod(tape[lc[pc]], tape[rc[pc]], err); break;
+            case RC_SIN: v = sin(tape[lc[pc]]); break;
+            case RC_COS: v = cos(tape[lc[pc]]); break;
+            case RC_TAN: v = tan(tape[lc[pc]]); break;
+            case RC_ASIN: v = STRICT ? strict_asin(tape[lc[pc]], err) : safe_asin(tape[lc[pc]], err); break;
+            case RC_ACOS: v = STRICT ? strict_acos(tape[lc[pc]], err) : safe_acos(tape[lc[pc]], err); break;
+            case RC_ATAN: v = atan(tape[lc[pc]]); break;
+            case RC_LOG: v = STRICT ? strict_log(tape[lc[pc]], err) : safe_log(tape[lc[pc]], err); break;
+            case RC_EXP: v = STRICT ? strict_exp(tape[lc[pc]], err) : safe_exp(tape[lc[pc]], err); break;
+            case RC_SQRT: v = STRICT ? strict_sqrt(tape[lc[pc]], err) : safe_sqrt(tape[lc[pc]], err); break;
+            case RC_ABS: v = fabs(tape[lc[pc]]); break;
+            case RC_NEG: v = -tape[lc[pc]]; break;
+            case RC_FLOOR: v = floor(tape[lc[pc]]); break;
+            case RC_CEIL: v = ceil(tape[lc[pc]]); break;
+            case RC_SIGN: v = rpn_sign(tape[lc[pc]]); break;
+            case RC_FACT: v = STRICT ? strict_tgamma(tape[lc[pc]] + (T)1.0, err) : safe_tgamma(tape[lc[pc]] + (T)1.0, err); break;
+            case RC_GAMMA: v = STRICT ? strict_tgamma(tape[lc[pc]], err) : safe_tgamma(tape[lc[pc]], err); break;
+            case RC_LGAMMA: v = STRICT ? strict_lgamma(tape[lc[pc]], err) : safe_lgamma(tape[lc[pc]], err); break;
+            default: err = true; v = (T)0; break;
+        }
+        if (err) return false;
+        tape[pc] = v;
+    }
+    return true;
+}
+
+// Partial derivatives of a^b for the branch rpn's pow semantics take.
+template <typename T, bool STRICT>
+__device__ __forceinline__ void rpn_pow_partials(T a, T b, T res, T &da, T &db) {
+    da = (T)0;
+    db = (T)0;
+    if (fabs(a) < (T)1e-10 && fabs(b) < (T)1e-10) return;
+    T ea = a, sa = (T)1, eb = b;
+    bool b_free = true;
+    if (ea < (T)0) {
+        const T ib = round(eb);
+        if (fabs(eb - ib) > (T)1e-3) { ea = -ea; sa = (T)-1; }  // protected: |a|
+        else { eb = ib; b_free = false; }
+    }
+    if (!STRICT) {
+        if (fabs(ea) > (T)1.0 && eb > (T)80.0) { eb = (T)80.0; b_free = false; }
+        if (fabs(ea) > (T)100.0 && eb > (T)10.0) { eb = (T)10.0; b_free = false; }
+    }
+    const T pa = sa * eb * pow(ea, eb - (T)1);
+    da = isfinite(pa) ? pa : (T)0;
+    if (b_free && ea > (T)0) {
+        const T pb = res * log(ea);
+        db = isfinite(pb) ? pb : (T)0;
+    }
+}
+
+// Backward sweep over a tape filled by rpn_tape_forward. grad[s] receives the
+// derivative of the result with respect to constant slot s (s < n_grad).
+template <typename T, bool STRICT>
+__device__ __forceinline__ void rpn_tape_backward(
+    const unsigned char* __restrict__ code,
+    const unsigned char* __restrict__ aux,
+    const unsigned char* __restrict__ lc,
+    const unsigned char* __restrict__ rc,
+    int len,
+    const T* __restrict__ tape,
+    T* __restrict__ adj,
+    T* __restrict__ grad, int n_grad
+) {
+    for (int i = 0; i < len; ++i) adj[i] = (T)0;
+    for (int j = 0; j < n_grad; ++j) grad[j] = (T)0;
+    adj[len - 1] = (T)1;
+    for (int pc = len - 1; pc >= 0; --pc) {
+        const T g = adj[pc];
+        if (g == (T)0) continue;
+        const unsigned char c = code[pc];
+        if (c == RC_CONST) {
+            const int s = aux[pc];
+            if (s < n_grad) grad[s] += g;
+            continue;
+        }
+        if (c == RC_IMM || c == RC_VAR) continue;
+        const int l = lc[pc];
+        const T in = tape[l];
+        const T out = tape[pc];
+        T pl = (T)0, pr = (T)0;
+        switch (c) {
+            case RC_ADD: pl = (T)1; pr = (T)1; break;
+            case RC_SUB: pl = (T)1; pr = (T)-1; break;
+            case RC_MUL: pl = tape[rc[pc]]; pr = in; break;
+            case RC_DIV: {
+                const T bv = tape[rc[pc]];
+                if (fabs(bv) < (T)1e-9) { pl = (T)1; }      // protected branch returns a
+                else { pl = (T)1 / bv; pr = -out / bv; }
+                break;
+            }
+            case RC_POW: rpn_pow_partials<T, STRICT>(in, tape[rc[pc]], out, pl, pr); break;
+            case RC_MOD: {
+                const T bv = tape[rc[pc]];
+                if (fabs(bv) >= (T)1e-9) { pl = (T)1; pr = -round((in - out) / bv); }
+                break;
+            }
+            case RC_SIN: pl = cos(in); break;
+            case RC_COS: pl = -sin(in); break;
+            case RC_TAN: pl = (T)1 + out * out; break;
+            case RC_ASIN:
+            case RC_ACOS: {
+                const T den = sqrt(fmax((T)0, (T)1 - in * in));
+                const bool outside = (in < (T)-1.0 || in > (T)1.0);
+                const T p = (outside || den <= (T)0) ? (T)0 : (T)1 / den;
+                pl = (c == RC_ASIN) ? p : -p;
+                break;
+            }
+            case RC_ATAN: pl = (T)1 / ((T)1 + in * in); break;
+            case RC_LOG: pl = STRICT ? (T)1 / in : rpn_sign(in) / (fabs(in) + (T)1e-9); break;
+            case RC_EXP:
+                pl = (!STRICT && (in < (T)-80.0 || in > (T)80.0)) ? (T)0 : out;
+                break;
+            case RC_SQRT:
+                pl = (out > (T)0) ? (STRICT ? (T)1 : rpn_sign(in)) / ((T)2 * out) : (T)0;
+                break;
+            case RC_ABS: pl = rpn_sign(in); break;
+            case RC_NEG: pl = (T)-1; break;
+            case RC_FACT: pl = (out != (T)0) ? out * rpn_digamma(in + (T)1) : (T)0; break;
+            case RC_GAMMA: pl = (out != (T)0) ? out * rpn_digamma(in) : (T)0; break;
+            case RC_LGAMMA: pl = (in <= (T)0 && floor(in) == in) ? (T)0 : rpn_digamma(in); break;
+            default: break;  // floor, ceil, sign: zero slope
+        }
+        const T cl = g * pl;
+        if (isfinite(cl)) adj[l] += cl;
+        if (rpn_code_arity(c) == 2) {
+            const T cr = g * pr;
+            if (isfinite(cr)) adj[rc[pc]] += cr;
+        }
+    }
+    for (int j = 0; j < n_grad; ++j) if (!isfinite(grad[j])) grad[j] = (T)0;
+}

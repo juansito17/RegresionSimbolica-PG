@@ -3,8 +3,10 @@
  *
  * One warp per individual. The program is decoded once (constant tokens keep
  * their slot), the Jacobian of the residuals with respect to the constants is
- * computed with forward-mode dual numbers (exact derivatives of the same
- * strict/protected semantics used by the fused evaluator), and the damped
+ * computed in reverse mode on a per-sample value tape (one forward and one
+ * backward sweep give the whole row; programs longer than LM_TAPE use one
+ * forward-mode dual pass per constant). Derivatives are exact for the same
+ * strict/protected semantics used by the fused evaluator. The damped
  * normal equations
  *
  *     (J^T J + lambda * diag(J^T J)) delta = -J^T r
@@ -22,8 +24,8 @@
  * linear-scaling objective of the fused evaluator.
  *
  * Compared with the fused PSO (30 particles x 40 steps = 1200 evaluations per
- * individual), an iteration costs n_const derivative passes plus one or two
- * trial evaluations, so a whole optimisation is typically 40-100 evaluations.
+ * individual), an iteration costs one forward and one backward sweep plus one
+ * or two trial evaluations.
  */
 
 #include <torch/extension.h>
@@ -46,6 +48,10 @@
 #define LM_ENTRIES_PER_LANE ((LM_N_ENTRIES + 31) / 32)
 #define LM_WARPS_PER_BLOCK 4
 #define LM_MAX_TRIALS 6
+// Programs up to this length use the reverse-mode tape (two passes per sample
+// for the whole Jacobian row); longer ones fall back to one forward-mode dual
+// pass per constant.
+#define LM_TAPE 128
 
 // Residual sum of squares at explicit (constants, a, b). Without SCALED the
 // residual is f - y and a/b are ignored.
@@ -113,8 +119,10 @@ lm_optimize_kernel(
     if (b >= B) return;  // whole warp
 
     scalar_t* imm = reinterpret_cast<scalar_t*>(lm_smem) + (size_t)warp * L;
-    unsigned char* code = lm_smem + (size_t)LM_WARPS_PER_BLOCK * L * sizeof(scalar_t) + (size_t)warp * 2 * L;
+    unsigned char* code = lm_smem + (size_t)LM_WARPS_PER_BLOCK * L * sizeof(scalar_t) + (size_t)warp * 4 * L;
     unsigned char* aux = code + L;
+    unsigned char* lc = aux + L;   // child tape positions (reverse mode)
+    unsigned char* rc = lc + L;
     DecodedProgram<scalar_t> prog{code, aux, imm};
 
     scalar_t* cur = s_c[warp][0];
@@ -151,6 +159,12 @@ lm_optimize_kernel(
     const int nA = P * (P + 1) / 2;
     const int nE = nA + P;
     double lambda = 1e-3;
+    const bool use_tape = len <= LM_TAPE;
+    if (use_tape && lane == 0) rpn_program_children(code, len, lc, rc);
+    __syncwarp();
+    scalar_t tape[LM_TAPE];
+    scalar_t adj[LM_TAPE];
+    scalar_t grad[LM_MAX_C];
 
     for (int it = 0; it < max_iter; ++it) {
         // ---------------- Jacobian pass ----------------
@@ -163,14 +177,24 @@ lm_optimize_kernel(
             scalar_t* row = s_J[warp][lane];
             if (d < D) {
                 scalar_t f = (scalar_t)0;
-                for (int j = 0; j < nc; ++j) {
-                    scalar_t v, dv;
-                    if (!rpn_run_program_dual<scalar_t, STRICT>(code, aux, imm, len, x, D, d, cur, j, v, dv)) {
+                if (use_tape) {
+                    if (rpn_tape_forward<scalar_t, STRICT>(code, aux, imm, lc, rc, len, x, D, d, cur, tape)) {
+                        f = tape[len - 1];
+                        rpn_tape_backward<scalar_t, STRICT>(code, aux, lc, rc, len, tape, adj, grad, nc);
+                        for (int j = 0; j < nc; ++j) row[j] = SCALED ? cb * grad[j] : grad[j];
+                    } else {
                         bad = true;
-                        break;
                     }
-                    f = v;
-                    row[j] = SCALED ? cb * dv : dv;
+                } else {
+                    for (int j = 0; j < nc; ++j) {
+                        scalar_t v, dv;
+                        if (!rpn_run_program_dual<scalar_t, STRICT>(code, aux, imm, len, x, D, d, cur, j, v, dv)) {
+                            bad = true;
+                            break;
+                        }
+                        f = v;
+                        row[j] = SCALED ? cb * dv : dv;
+                    }
                 }
                 if (!isfinite(f)) bad = true;
                 if (SCALED) {
@@ -226,7 +250,8 @@ lm_optimize_kernel(
                 }
                 const double floor_d = 1e-9 * (trace / P) + 1e-30;
                 for (int i = 0; i < P; ++i) M[i][i] += lambda * (M[i][i] + floor_d) + 1e-30;
-                // In-place Cholesky (lower triangle).
+                // In-place Cholesky (lower triangle). A Jacobi-scaled float32
+                // solve was measured to be no faster and converged worse.
                 bool ok = isfinite(trace);
                 for (int j = 0; j < P && ok; ++j) {
                     double s = M[j][j];
@@ -380,7 +405,7 @@ void launch_lm_optimize(
     TORCH_CHECK(blocks <= 2147483647LL, "lm_optimize: population too large for one launch");
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "lm_optimize_kernel", ([&] {
-        const size_t smem = (size_t)LM_WARPS_PER_BLOCK * L * (sizeof(scalar_t) + 2);
+        const size_t smem = (size_t)LM_WARPS_PER_BLOCK * L * (sizeof(scalar_t) + 4);
         auto launch = [&](auto strict_tag, auto scaled_tag) {
             constexpr bool strict = decltype(strict_tag)::value;
             constexpr bool sc = decltype(scaled_tag)::value;

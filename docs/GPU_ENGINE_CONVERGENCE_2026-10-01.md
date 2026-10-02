@@ -57,19 +57,27 @@ El PSO fusionado y el evaluador clásico usan el mismo objetivo.
 ### Levenberg–Marquardt nativo (`CONSTANT_OPTIMIZER = 'lm'`)
 
 `cuda/lm_kernels.cu`: un warp por individuo. El jacobiano respecto a las
-constantes se calcula con números duales (`rpn_run_program_dual` en
-`eval_core.cuh`), con las derivadas exactas de la misma semántica
-estricta/protegida del evaluador (incluidas `pow` con base negativa,
-`log`/`sqrt` protegidos y gamma vía digamma). Cada lane escribe la fila del
+constantes se calcula en modo inverso sobre una cinta de valores por muestra
+(`rpn_tape_forward`/`rpn_tape_backward` en `eval_core.cuh`): una pasada hacia
+delante y otra hacia atrás dan la fila entera, tenga la fórmula las constantes
+que tenga; los hijos de cada nodo se precalculan una vez por individuo en
+memoria compartida. Programas de más de 128 tokens usan una pasada de números
+duales por constante (`rpn_run_program_dual`). Las derivadas son exactas para la
+misma semántica estricta/protegida del evaluador (incluidas `pow` con base
+negativa, `log`/`sqrt` protegidos y gamma vía digamma). Cada lane escribe la fila del
 jacobiano de su muestra en memoria compartida y los lanes reducen JᵀJ y Jᵀr
 repartiéndose las entradas. Un lane resuelve `(JᵀJ + λ·diag) δ = −Jᵀr` con
 Cholesky en doble precisión. Con linear scaling `a` y `b` se optimizan junto
 con las constantes y tras cada paso aceptado se reproyectan a su óptimo exacto.
 
-Coste: optimizar 4000 individuos lleva ~2,4 ms (el PSO tardaba ~40 ms con
-500). En el bucle se aplica a los `LM_K_NORMAL` mejores individuos
-estructuralmente distintos que tienen al menos una constante libre (antes el
-top-K estaba lleno de clones del mejor).
+En el bucle se aplica cada `LM_INTERVAL` generaciones a los `LM_K_NORMAL`
+(4096) mejores individuos estructuralmente distintos que tienen al menos una
+constante libre: la máscara de duplicados se calcula sobre toda la población
+(el 70 % son clones; filtrar solo un top-K dejaba 369 estructuras distintas de
+4096 candidatos) y el filtro de constantes solo sobre un grupo de 2·K.
+El coste por individuo depende de la longitud de la fórmula y del número de
+constantes: ~17–32 evaluaciones equivalentes en los problemas de 128 puntos,
+frente a 1200 del PSO.
 
 ### Reutilización de fitness (`USE_FITNESS_REUSE`)
 
@@ -109,38 +117,68 @@ Protocolo de `benchmark_convergence`: 15 problemas × 3 semillas, 15 s de pared
 por corrida, 128 puntos de entrenamiento y 512 de test. «Resuelta» = RMSE de
 entrenamiento < 1e-6 (umbral absoluto).
 
-| Configuración | Población | Resueltas | Pared total | NRMSE test (media geom.) | gen/s (mediana) |
-|---|---|---:|---:|---:|---:|
-| Línea base (`b24272a`) | 1 M | 30/45 | 250,2 s | 6,88e-6 | 15,1 |
-| LM, sin linear scaling | 1 M | 33/45 | 209,6 s | 2,41e-6 | 15,9 |
-| LM + linear scaling desde el inicio | 1 M | 31/45 | 245,7 s | 2,67e-6 | 10,5 |
-| **LM + linear scaling adaptativo (por defecto)** | 1 M | **33/45** | **208,2 s** | **1,68e-6** | 15,9 |
-| Línea base (`b24272a`) | 50 k | 22/45 | 366,9 s | 2,78e-5 | 61,1 |
-| LM, sin linear scaling | 50 k | 36/45 | 166,9 s | 2,30e-6 | 85,3 |
-| **LM + linear scaling adaptativo (por defecto)** | 50 k | **35/45** | **172,5 s** | **1,32e-6** | 84,5 |
+| Configuración | Población | Resueltas | Pared total | NRMSE test (media geom.) |
+|---|---|---:|---:|---:|
+| Línea base (`b24272a`) | 1 M | 30/45 | 250,2 s | 6,88e-6 |
+| LM, sin linear scaling | 1 M | 33/45 | 209,6 s | 2,41e-6 |
+| LM + linear scaling desde el inicio | 1 M | 31/45 | 245,7 s | 2,67e-6 |
+| **Versión final (LM + linear scaling adaptativo)** | 1 M | **33/45** | **211,3 s** | **1,72e-6** |
+| Línea base (`b24272a`) | 50 k | 22/45 | 366,9 s | 2,78e-5 |
+| LM, sin linear scaling | 50 k | 36/45 | 166,9 s | 2,30e-6 |
+| **Versión final (LM + linear scaling adaptativo)** | 50 k | **35/45** | **171,8 s** | **1,44e-6** |
+
+Las filas intermedias son de compilaciones previas del LM (modo directo); la
+versión final usa el jacobiano en modo inverso y se volvió a medir completa.
 
 Por problema (mediana de 3 semillas; resueltas · NRMSE de test):
 
-| Problema | Base 1 M | Nueva 1 M | Base 50 k | Nueva 50 k |
+| Problema | Base 1 M | Final 1 M | Base 50 k | Final 50 k |
 |---|---|---|---|---|
-| Nguyen-5 | 3/3 · 1,7e-7 | 3/3 · 1,8e-7 | 0/3 · 5,0e-5 | 3/3 · 4,1e-6 |
-| Nguyen-7 | 0/3 · inf | 0/3 · 2,5e-6 | 0/3 · 5,8e-5 | 1/3 · 1,3e-6 |
-| Gaussiana de Feynman | 3/3 · 1,4e-7 | 3/3 · 1,3e-7 | 1/3 · 1,1e-4 | 3/3 · 1,5e-7 |
-| Nguyen-12 | 3/3 · 7,4e-8 (2,5 s) | 3/3 · 8,0e-8 (1,7 s) | 2/3 · 7,2e-7 (8,9 s) | 3/3 · 7,0e-8 (0,7 s) |
-| Keijzer-11 | 3/3 (2,5 s) | 3/3 (0,5 s) | 2/3 (6,0 s) | 3/3 (3,7 s) |
-| Vladislavleva-1 | 0/3 · 1,4e-2 | 0/3 · 2,8e-4 | 0/3 · 3,3e-2 | 1/3 · 1,9e-4 |
-| Pagie-1 | 0/3 · 3,3e-2 | 0/3 · 3,2e-3 | 0/3 · 4,7e-2 | 1/3 · 2,3e-3 |
-| Gaussiana de Feynman 3 var. | 0/3 · 2,3e-3 | 3/3 · 3,0e-5 | 0/3 · 5,1e-2 | 2/3 · 2,1e-5 |
-| Friedman-1 (ruido) | 0/3 · 1,1e-1 | 0/3 · 1,2e-1 | 0/3 · 1,9e-1 | 0/3 · 1,1e-1 |
+| Nguyen-3 | 3/3 (0,4 s) | 3/3 (0,4 s) | 2/3 (0,3 s) | 3/3 (0,1 s) |
+| Nguyen-5 | 3/3 · 1,7e-7 | 3/3 · 1,8e-7 | 0/3 · 5,0e-5 | 3/3 · 4,9e-6 |
+| Nguyen-7 | 0/3 · inf | 0/3 · 2,0e-6 | 0/3 · 5,8e-5 | 1/3 · 1,8e-6 |
+| Gaussiana de Feynman | 3/3 · 1,4e-7 | 3/3 · 1,3e-7 | 1/3 · 1,1e-4 | 3/3 · 1,4e-7 |
+| Nguyen-12 | 3/3 (2,5 s) | 3/3 (1,5 s) | 2/3 (8,9 s) | 3/3 (0,5 s) |
+| Keijzer-11 | 3/3 (2,5 s) | 3/3 (0,5 s) | 2/3 (6,0 s) | 3/3 (1,8 s) |
+| Vladislavleva-1 | 0/3 · 1,4e-2 | 0/3 · 3,4e-3 | 0/3 · 3,3e-2 | 1/3 · 1,9e-4 |
+| Pagie-1 | 0/3 · 3,3e-2 | 0/3 · 3,5e-3 | 0/3 · 4,7e-2 | 1/3 · 9,6e-4 |
+| Gaussiana de Feynman 3 var. | 0/3 · 2,3e-3 | 3/3 · 3,0e-5 | 0/3 · 5,1e-2 | 2/3 · 6,3e-5 |
+| Friedman-1 (ruido) | 0/3 · 1,1e-1 | 0/3 · 2,2e-1 | 0/3 · 1,9e-1 | 0/3 · 1,2e-1 |
 
 El resto (Nguyen-1, 3, 6, 8, 10, Coulomb) se resuelve 3/3 en < 0,4 s en todas
 las configuraciones.
 
-Rendimiento del bucle (vlad1, 1 M, 8 s): configuración antigua 13,8 gen/s;
-nueva 13,0 gen/s (12,0 sin reutilización de fitness: la reutilización aporta
-~8 %; el linear scaling de dos pasadas y el LM cuestan ~5 %, a cambio de un
-mejor RMSE ~50× menor en esa corrida). A 50 k la mediana sube de 61 a 85 gen/s
-porque el LM sustituye al PSO, que era un coste fijo de ~40 ms por llamada.
+### Rendimiento (candidatos·generación por segundo)
+
+El rendimiento depende mucho del tamaño del dataset. Protocolo de la auditoría
+del 2026-07-26 (A000170: 17 puntos, 3 variables, objetivo en log, `fact`/`gamma`;
+1 M de población, 120 generaciones, semillas 4200+, se descarta la primera):
+
+| Código / configuración | Candidatos·gen/s | Mejor RMSE (mediana) |
+|---|---:|---:|
+| 2026-07-26 (auditoría) | 25,7 M/s | 0,032 |
+| Actual con PSO (`CONSTANT_OPTIMIZER='pso'`, sin LS ni reutilización) | 33,9 M/s | 0,021 |
+| Primera versión del LM (jacobiano en modo directo) | 21,6 M/s | 0,0033 |
+| **Versión final (LM en modo inverso)** | **22,4 M/s** | **0,0029** |
+| Final con `LM_K_NORMAL = 2048` | ~29 M/s | ~0,004 |
+
+Con 17 puntos evaluar es tan barato que el LM (4096 individuos cada 2
+generaciones, fórmulas de ~40 tokens y ~8 constantes) pesa: es la causa
+del ~35 % menos de candidatos/s frente al PSO, a cambio de un RMSE 7× menor a
+igual número de generaciones. El jacobiano en modo inverso redujo cada llamada
+de 27,5 a 14 ms en este caso; el resto del coste es memoria local por hilo (la
+cinta de valores no cabe en L1 con ~20 warps por SM). `LM_K_NORMAL` es el
+mando para cambiar velocidad por calidad.
+
+Con 128 puntos (vlad1, 1 M, 8 s) la configuración antigua daba 13,8 gen/s y
+la nueva ~13 gen/s (la reutilización de fitness aporta ~8 %). A 50 k la
+mediana del benchmark de convergencia sube de 61 a 68 gen/s porque el LM
+sustituye al PSO, que era un coste fijo de ~40 ms por llamada.
+
+Evaluaciones por generación (vlad1/pagie1, 128 puntos): a 1 M, ~1,14 M antes
+(1,01 M de evaluación + ~130 k del PSO sobre 125 individuos) frente a ~0,80 M
+ahora (~0,76 M reales tras reutilizar ~25 % + ~35 k equivalentes del LM sobre
+2048 individuos); a 50 k, ~185 k antes (el PSO era el 70 %) frente a ~95 k.
 
 ### Linear scaling: por qué adaptativo
 
@@ -172,9 +210,12 @@ de mediana) y sustituye demasiada población a la vez.
 
 ### Límites y observaciones
 
-- Friedman-1 (ruido σ = 1): con LM el RMSE de entrenamiento baja a 0,85–0,98,
-  por debajo del ruido; parte del ruido se ajusta. Con 3 semillas la diferencia
-  con la línea base no es concluyente.
+- Friedman-1 (ruido σ = 1) es el único problema ruidoso y el resultado es
+  mixto: el RMSE de entrenamiento baja a 0,83–1,0 (línea base 0,93–1,13), es
+  decir, se ajusta parte del ruido. NRMSE de test por semilla: a 1 M
+  0,22/0,23/0,10 frente a inf/0,11/0,085 (peor); a 50 k 0,14/0,11/0,12 frente
+  a 0,19/0,25/0,08 (mejor). Para datos ruidosos conviene validar con un
+  conjunto de reserva (el estimador sklearn ya lo hace).
 - El umbral de «resuelta» es absoluto: en la Gaussiana de Feynman de 3
   variables (y ≈ 0,05) una aproximación con RMSE < 1e-6 cuenta como resuelta
   aunque su NRMSE de test sea ~2e-5.
